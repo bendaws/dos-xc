@@ -1,0 +1,71 @@
+;
+; BenDOS /dos/bios.asm
+; Copyright (c) 2026 Ben Daws - see LICENSE.txt
+;
+
+bits 16
+bios_service:
+    xor ax, ax
+    mov es, ax
+    mov eax, [es:0x7044]
+    mov word [bios_dap+2], 1
+    mov dl, [es:0x7042]
+    cmp dl, [es:0x7014]
+    jne .physical
+    cmp dword [es:0x7010], 'CDVF'
+    jne .physical
+    cmp byte [es:0x7041], 0x43
+    je .readonly
+    shr eax, 2
+    add eax, [es:0x701c]
+.physical:
+    mov [bios_dap+8], eax
+    mov dl, [es:0x7042]
+    mov ah, [es:0x7041]
+    mov si, bios_dap
+    xor al, al
+    int 0x13
+    mov eax, 0
+    jnc .result
+.readonly:
+    mov eax, -1
+.result:
+    xor bx, bx
+    mov es, bx
+    mov [es:0x7048], eax
+    mov byte [es:0x7040], 0
+    cli
+    xor ax, ax
+    mov ds, ax
+    lgdt [0x70a0]
+    mov eax, [0x7090]
+    mov cr4, eax
+    mov eax, [0x708c]
+    mov cr3, eax
+    mov eax, [0x7088]
+    and eax, 0x7fffffff
+    or eax, 1
+    mov cr0, eax
+    jmp dword 8:(0x90000+bios_protected)
+bits 32
+bios_protected:
+    mov ax, 0x10
+    mov ds, ax
+    mov es, ax
+    mov ss, ax
+    cmp word [0x70b4], 0x18
+    jne .legacy
+    mov ecx, 0xc0000080
+    rdmsr
+    or eax, 1<<8
+    wrmsr
+.legacy:
+    mov eax, [0x7088]
+    mov cr0, eax
+    lidt [0x70c0]
+    jmp far [0x70b0]
+bits 16
+align 4
+bios_dap: db 16,0
+          dw 1,0,0x7800
+          dq 0
