@@ -9,3 +9,7 @@
 
 /* File names are case-insensitive: FOO.C is C, not C++ (see gcc.cc).  */
 #define GCC_CASE_INSENSITIVE_SUFFIXES 1
+
+/* DOS-style search paths: PATH, LIBRARY_PATH and friends use ';', since
+   directory names may start with a drive letter ("C:/DIR").  */
+#define PATH_SEPARATOR ';'

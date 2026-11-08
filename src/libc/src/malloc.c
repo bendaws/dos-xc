@@ -3,7 +3,7 @@
  * Copyright (c) 2026 Ben Daws - see LICENSE.txt
  *
  * Segregated free lists with boundary tags.  Memory comes from the
- * system in growing regions (dosxc_api.alloc); requests of 1 MiB or more
+ * system in growing regions (the alloc system call); requests of 1 MiB or more
  * get a region of their own, which free() returns to the system.
  *
  * Chunk layout (16-byte aligned, 16-byte header):
@@ -109,10 +109,10 @@ static int grow(size_t size) {
     size_t want = size + 2 * HEADER;
     if (want < next_region) want = next_region;
     want = (want + 4095) & ~(size_t)4095;
-    char *region = API->alloc(want);
+    char *region = dosxc_sys_alloc(want);
     if (!region) {
         want = (size + 2 * HEADER + 4095) & ~(size_t)4095;
-        region = API->alloc(want);
+        region = dosxc_sys_alloc(want);
         if (!region) return -1;
     } else if (next_region < (64u << 20)) {
         next_region *= 2;
@@ -149,7 +149,7 @@ static size_t request_size(size_t n) {
 
 static void *map_large(size_t size) {
     size_t total = (size + 4095) & ~(size_t)4095;
-    chunk *c = API->alloc(total);
+    chunk *c = dosxc_sys_alloc(total);
     if (!c) return 0;
     c->prev_size = 0;
     c->size = total | MAPPED | INUSE | PREV_INUSE;
@@ -188,12 +188,12 @@ void free(void *p) {
     chunk *c = CHUNK(p);
     if (c->size & MAPPED) {
         total_mapped -= SIZE(c) + c->prev_size;
-        API->release((char *)c - c->prev_size);
+        dosxc_sys_release((char *)c - c->prev_size);
         return;
     }
     if (!(c->size & INUSE)) {
         static const char message[] = "free(): invalid or double free\n";
-        API->write(2, message, sizeof(message) - 1);
+        dosxc_sys_write(2, message, sizeof(message) - 1);
         abort();
     }
     release_chunk(c, SIZE(c));

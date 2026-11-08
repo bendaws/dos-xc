@@ -1,8 +1,11 @@
 #!/bin/sh
 # Build the DOS-XC C library.
 #   src/libc/build.sh ARCH OUTPUT [CC]
-# ARCH is x86_64 or i386.  OUTPUT receives include/ and lib/ (a sysroot).
-# CC defaults to clang; a DOS-XC cross gcc works as well.
+# ARCH is x86_64 or i386.  OUTPUT receives include/ and lib/ (a sysroot):
+# crt0.o, crti.o, crtn.o, libc.a, libm.a and the shared libc.so.
+# CC defaults to clang; a DOS-XC cross gcc works as well.  libc.so is
+# linked with ld.lld against the cross compiler's libgcc.a (LIBGCC=path to
+# override) when one is found.
 set -eu
 HERE=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
 ARCH=$1
@@ -21,7 +24,7 @@ case "$CC" in
 *clang*) flags="--target=$target -nostdinc -isystem $HERE/include -isystem $("$CC" -print-resource-dir)/include" ;;
 *) flags="-nostdinc -isystem $HERE/include -isystem $("$CC" -print-file-name=include)" ;;
 esac
-flags="$flags $machine -std=gnu11 -O2 -fPIE -ffreestanding -fno-stack-protector -fno-strict-aliasing -Wall -Wextra -Wno-unused-parameter -Wno-sign-compare"
+flags="$flags $machine -std=gnu11 -O2 -fPIC -ffreestanding -fno-stack-protector -fno-strict-aliasing -Wall -Wextra -Wno-unused-parameter -Wno-sign-compare"
 
 work="$OUT/.libc-$ARCH"
 rm -rf "$work"
@@ -39,6 +42,16 @@ rm -f "$OUT/lib/libc.a" "$OUT/lib/libm.a"
 # one tiny object because GNU ld rejects archives without a symbol index.
 echo 'char __dosxc_libm;' | $CC $flags -x c -c - -o "$work/libm.o"
 "$AR" rcs "$OUT/lib/libm.a" "$work/libm.o"
+# The shared C library (\\SYSTEM\\LIB\\libc.so on DOS-XC).
+LLD=${LLD:-ld.lld}
+case "$ARCH" in x86_64) emulation=elf_x86_64 triple=x86_64-dosxc ;; *) emulation=elf_i386 triple=i686-dosxc ;; esac
+if [ -z "${LIBGCC:-}" ] && [ -x "$HERE/../../toolchain/cross/bin/$triple-gcc" ]; then
+    LIBGCC=$("$HERE/../../toolchain/cross/bin/$triple-gcc" -print-libgcc-file-name)
+fi
+if command -v "$LLD" >/dev/null 2>&1; then
+    "$LLD" -m "$emulation" -shared -soname libc.so --hash-style=both -z text -z max-page-size=4096 -z noexecstack \
+        -o "$OUT/lib/libc.so" $objects "$work/setjmp.o" ${LIBGCC:+"$LIBGCC"}
+fi
 for crt in crt0 crti crtn; do
     $CC $flags -I"$HERE/crt" -c "$HERE/crt/$crt-$ARCH.S" -o "$OUT/lib/$crt.o"
 done

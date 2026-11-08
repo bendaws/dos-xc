@@ -63,21 +63,14 @@ start:
     call read_module
     xor ax, ax
     mov es, ax
+    ; A fresh boot (not the restart after a 16-bit program) resets the
+    ; 16-bit CPU speed and the "returning" flag.  Setup is not started at
+    ; boot any more: the live shell offers the SETUP command.
     cmp word [es:0x700c], 0xb007
     je .skip_setup
     mov byte [es:0x7028], 5
     mov byte [es:0x702c], 0
     mov dword [es:0x7060], 0
-    mov eax, [es:0x7c00+0x1c0]
-    shr eax, 2
-    add eax, [es:0x701c]
-    mov [setup_dap+8], eax
-    mov ax, [es:0x7c00+0x1c4]
-    mov [setup_dap+2], ax
-    mov si, setup_dap
-    call read_module
-    mov dl, [boot_drive]
-    jmp 0x5000:0
 .skip_setup:
     mov word [es:0x700c], 0
     cli
@@ -219,11 +212,6 @@ volume_dap:
     db 16,0
     dw 1,0x7c00,0
     dq 0
-setup_dap:
-    db 16,0
-    dw 0,0,0x5000
-    dq 0
-
     db 'FSIM'
 filesystem_lba dd 0
 

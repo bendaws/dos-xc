@@ -500,7 +500,29 @@ fs_search_lba dd 0
 fs_found_lba dd 0
 fs_found_offset dw 0
 
-; Existing FAT files are written through to disk; the CD source stays read-only.
+; CF clear when the live CD has a RAM overlay (the USB bridge at 0x1000 keeps
+; it, see bridge.asm): writes on the CD go there instead of failing.
+overlay_check:
+    push es
+    push ax
+    xor ax, ax
+    mov es, ax
+    cmp dword [es:0x1000], 'BRDG'
+    jne .none
+    cmp byte [es:0x1035], 0xff
+    je .none
+    pop ax
+    pop es
+    clc
+    ret
+.none:
+    pop ax
+    pop es
+    stc
+    ret
+
+; Existing FAT files are written through to disk (on the live CD, to its
+; RAM overlay).
 ; This version can extend within an existing cluster chain, but does not allocate
 ; new clusters through INT 21h. Native CMD programs provide general file creation.
 fs_write_existing:
@@ -523,7 +545,10 @@ fs_write_existing:
     xor ax, ax
     mov es, ax
     cmp dword [es:0x7010], 'CDVF'
-    je .denied
+    jne .writable
+    call overlay_check
+    jc .denied
+.writable:
     call get_handle
     jc .done
     cmp word [ss:bp-6], 0
@@ -638,7 +663,20 @@ fs_store:
     xor dx, dx
     mov es, dx
     cmp dword [es:0x7010], 'CDVF'
-    je .readonly
+    jne .store
+    call overlay_check
+    jc .readonly
+    mov [fs_dap+8], eax              ; image sectors, marked for the bridge
+    mov dword [fs_dap+12], 0x40000000
+    mov [fs_dap+2], cx
+    mov [fs_dap+4], bx
+    mov si, fs_dap
+    mov dl, [boot_drive]
+    mov ax, 0x4300
+    int 0x13
+    mov dword [fs_dap+12], 0
+    jmp .done
+.store:
     mov [fs_dap+8], eax
     mov [fs_dap+2], cx
     mov [fs_dap+4], bx

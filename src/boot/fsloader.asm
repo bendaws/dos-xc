@@ -69,17 +69,6 @@ start:
     call find_name
     mov eax, [cluster]
     mov [system_cluster], eax
-    cmp word [skip_setup], 0xb007
-    je boot_system
-    xor ax, ax
-    mov es, ax
-    cmp byte [es:0x7c00+0x1aa], 0
-    je boot_system
-    mov si, setup_name
-    mov ax, 0x5000
-    call load_file
-    mov dl, [drive]
-    jmp 0x5000:0
 boot_system:
     mov si, kernel_name
     mov ax, 0x2000
@@ -390,7 +379,6 @@ file_size dd 0
 destination dw 0
 chain_limit dd 0
 system_name db 'SYSTEM     '
-setup_name db 'SETUP   BIN'
 kernel_name db 'KERNEL  BIN'
 core_name db 'CORE    DLL'
 shell_name db 'SHELL   DLL'

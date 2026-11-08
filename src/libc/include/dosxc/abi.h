@@ -2,7 +2,7 @@
  * DOS-XC /libc/include/dosxc/abi.h
  * Copyright (c) 2026 Ben Daws - see LICENSE.txt
  *
- * The DOS-XC 32/64-bit program ABI (version 1).
+ * The DOS-XC 32/64-bit program ABI (version 2).
  *
  * Executable format
  *   A DOS-XC program is an ELF32 (i386) or ELF64 (x86-64) file named
@@ -17,23 +17,100 @@
  * Process start
  *   The entry point is entered with the System V process layout: the stack
  *   pointer addresses argc, followed by argv[], NULL, envp[], NULL and an
- *   auxiliary vector.  The auxiliary entry DOSXC_AT_API holds a pointer to
- *   the struct dosxc_api system table.  Programs run in ring 0 and must not
- *   use a red zone (interrupts are taken on the program stack).
+ *   auxiliary vector.  Programs run in ring 0 and must not use a red zone
+ *   (interrupts are taken on the program stack).
  *
  * System calls
- *   Every entry of struct dosxc_api is an ordinary function using the
- *   platform C calling convention.  Calls that can fail return a negative
- *   errno value (for example -DOSXC_ENOENT).
+ *   A program makes a system call with "int $0x80" (DOSXC_SYSCALL_VECTOR):
+ *   the call number (DOSXC_SYS_*) goes in eax/rax and the arguments in
+ *   registers; see <dosxc/syscall.h> for the register assignment and C
+ *   wrappers.  Calls that can fail return a negative errno value (for
+ *   example -DOSXC_ENOENT).
+ *
+ * The console understands the ANSI/VT100 escape sequences listed in
+ * docs/PROGRAMS.md.
+ *
+ * ABI versions
+ *   The note's abi_version selects the system call interface:
+ *     1  calls through the struct dosxc_api function table, whose address
+ *        is passed in the auxiliary entry DOSXC_AT_API (legacy; still
+ *        accepted by the loader)
+ *     2  interrupt 0x80 system calls; no DOSXC_AT_API entry is passed
  */
 
 #ifndef _DOSXC_ABI_H
 #define _DOSXC_ABI_H
 
-#define DOSXC_ABI_VERSION 1
+#define DOSXC_ABI_VERSION 2
+#define DOSXC_ABI_TABLE 1          /* oldest version: function table calls */
 #define DOSXC_NOTE_NAME "DOS-XC"
 #define DOSXC_NOTE_ABI 1
-#define DOSXC_AT_API 0x42440001
+#define DOSXC_AT_API 0x42440001    /* ABI 1 only: pointer to struct dosxc_api */
+#define DOSXC_AT_BASE 0x42440002   /* load address of the image */
+#define DOSXC_AT_INITS 0x42440003  /* shared library constructors to run, 0-terminated */
+#define DOSXC_AT_FINIS 0x42440004  /* shared library destructors to run, 0-terminated */
+#define DOSXC_SYSCALL_VECTOR 0x80
+
+/* System call numbers (eax/rax for int 0x80). */
+#define DOSXC_SYS_EXIT 1
+#define DOSXC_SYS_SPAWN 2
+#define DOSXC_SYS_GETPID 3
+#define DOSXC_SYS_GETPPID 4
+#define DOSXC_SYS_SYSTEM 5
+#define DOSXC_SYS_RUNDOS 6
+#define DOSXC_SYS_REBOOT 7
+#define DOSXC_SYS_OPEN 10
+#define DOSXC_SYS_CLOSE 11
+#define DOSXC_SYS_READ 12
+#define DOSXC_SYS_WRITE 13
+#define DOSXC_SYS_SEEK 14
+#define DOSXC_SYS_DUP 15
+#define DOSXC_SYS_DUP2 16
+#define DOSXC_SYS_FDFLAGS 17
+#define DOSXC_SYS_STATUS_FLAGS 18
+#define DOSXC_SYS_PIPE 19
+#define DOSXC_SYS_ISATTY 20
+#define DOSXC_SYS_FTRUNCATE 21
+#define DOSXC_SYS_FSYNC 22
+#define DOSXC_SYS_FSTAT 23
+#define DOSXC_SYS_STAT 30
+#define DOSXC_SYS_UNLINK 31
+#define DOSXC_SYS_RENAME 32
+#define DOSXC_SYS_MKDIR 33
+#define DOSXC_SYS_RMDIR 34
+#define DOSXC_SYS_CHDIR 35
+#define DOSXC_SYS_GETCWD 36
+#define DOSXC_SYS_LISTDIR 37
+#define DOSXC_SYS_RESOLVE 38
+#define DOSXC_SYS_ALLOC 40
+#define DOSXC_SYS_RELEASE 41
+#define DOSXC_SYS_TIME 50
+#define DOSXC_SYS_NANOSECONDS 51
+#define DOSXC_SYS_SLEEP 52
+#define DOSXC_SYS_CONSOLE 53
+#define DOSXC_SYS_SYSINFO 54
+#define DOSXC_SYS_ENVIRON 55
+#define DOSXC_SYS_SHELL 56
+#define DOSXC_SYS_VOLUMES 57
+#define DOSXC_SYS_DISK 58
+#define DOSXC_SYS_FULLPATH 59
+#define DOSXC_SYS_LIBRARY 60
+#define DOSXC_SYS_DRIVE 61
+#define DOSXC_SYS_POWER 62
+#define DOSXC_SYS_SOCKET 70        /* domain, type, protocol */
+#define DOSXC_SYS_CONNECT 71       /* fd, addr, length */
+#define DOSXC_SYS_BIND 72          /* fd, addr, length */
+#define DOSXC_SYS_LISTEN 73        /* fd, backlog */
+#define DOSXC_SYS_ACCEPT 74        /* fd, addr, length pointer */
+#define DOSXC_SYS_SENDTO 75        /* fd, struct dosxc_message * */
+#define DOSXC_SYS_RECVFROM 76      /* fd, struct dosxc_message * */
+#define DOSXC_SYS_SHUTDOWN 77      /* fd, how */
+#define DOSXC_SYS_SOCKOPT 78       /* fd, set, level, name, struct dosxc_sockopt * */
+#define DOSXC_SYS_SOCKNAME 79      /* fd, peer, addr, length pointer */
+#define DOSXC_SYS_FDPOLL 80        /* fd, DOSXC_POLL_* wanted; returns those ready */
+#define DOSXC_SYS_SETFL 81         /* fd, DOSXC_O_NONBLOCK | DOSXC_O_APPEND */
+#define DOSXC_SYS_NET 82           /* op, a, b */
+#define DOSXC_SYS_DRIVER 83        /* op, a, buffer, size */
 
 typedef __INT32_TYPE__ dosxc_i32;
 typedef __UINT32_TYPE__ dosxc_u32;
@@ -67,6 +144,7 @@ struct dosxc_note_abi {
 #define DOSXC_S_IFCHR  0020000
 #define DOSXC_S_IFIFO  0010000
 #define DOSXC_S_IFREG  0100000
+#define DOSXC_S_IFSOCK 0140000
 
 /* FAT attributes reported in dosxc_stat.attributes. */
 #define DOSXC_ATTR_READONLY  0x01
@@ -100,17 +178,143 @@ struct dosxc_sysinfo {
     char version[32];          /* "DOS-XC v0.2" */
     char drive;                /* system drive letter */
     char firmware;             /* 'B' for BIOS, 'U' for UEFI */
-    char reserved[6];
+    char live;                 /* 1 when running from installation media */
+    char reserved[5];
 };
+
+/* volumes(): one entry per drive letter. */
+#define DOSXC_VOLUME_SYSTEM    1
+#define DOSXC_VOLUME_READONLY  2
+#define DOSXC_VOLUME_REMOVABLE 4
+#define DOSXC_VOLUME_LIVE      8     /* system volume on installation media */
+struct dosxc_volume {
+    char letter;
+    unsigned char type;        /* 12, 16 or 32 (FAT type) */
+    unsigned char flags;       /* DOSXC_VOLUME_* */
+    unsigned char reserved;
+    dosxc_u32 disk;            /* disk() index; meaningless for the system volume */
+    dosxc_u64 total_bytes;
+    dosxc_u64 free_bytes;
+};
+
+/* disk(op, index, lba, buffer, count): whole physical disks, 512-byte
+   sectors, at most 64 sectors per transfer.  The disk DOS-XC booted from
+   is never writable. */
+#define DOSXC_DISK_INFO   1    /* buffer = struct dosxc_disk; returns disk count */
+#define DOSXC_DISK_READ   2
+#define DOSXC_DISK_WRITE  3
+#define DOSXC_DISK_RESCAN 4    /* mount the FAT volumes found on the disks again */
+#define DOSXC_DISK_REMOVABLE 1
+#define DOSXC_DISK_READONLY  2
+#define DOSXC_DISK_SYSTEM    4
+#define DOSXC_DISK_USB       8     /* driven by DOS-XC's own USB driver */
+struct dosxc_disk {
+    dosxc_u64 sectors;
+    dosxc_u32 flags;           /* DOSXC_DISK_* */
+    dosxc_u32 bios;            /* INT 13h drive number (BIOS boot), else 0 */
+};
+
+/* environ(op, name, buffer, size): the system (master) environment.  The
+   shell passes it to the programs it starts; SET changes it. */
+#define DOSXC_ENV_GET  1       /* value of name into buffer; returns its length */
+#define DOSXC_ENV_SET  2       /* buffer = value, or 0 to remove name */
+#define DOSXC_ENV_LIST 3       /* "NAME=value\0...\0\0" into buffer; returns the size */
+
+/* shell(op, a, b) */
+#define DOSXC_SHELL_CHDIR 1    /* a = path: the command shell's directory (CD in batch files) */
+#define DOSXC_SHELL_SPEED 2    /* a = 0: query, else set the 16-bit CPU duty percent (1..100) */
 
 /* console() operations */
 #define DOSXC_CONSOLE_CLEAR   1
-#define DOSXC_CONSOLE_COLOR   2   /* a = attribute (background << 4 | foreground) */
+#define DOSXC_CONSOLE_COLOR   2   /* a = attribute (background << 4 | foreground); | 0x100 recolors the screen */
 #define DOSXC_CONSOLE_CURSOR  3   /* a = row, b = column */
 #define DOSXC_CONSOLE_GETKEY  4   /* a != 0: wait.  Returns key or -1 */
 #define DOSXC_CONSOLE_BEEP    5   /* a = hertz, b = milliseconds */
 #define DOSXC_CONSOLE_MODE    6   /* a = DOSXC_CONSOLE_RAW or 0 (line editing + echo) */
+#define DOSXC_CONSOLE_POLL    7   /* returns 1 when a read of the console would not wait */
+#define DOSXC_CONSOLE_SIZE    8   /* returns rows << 16 | columns */
+#define DOSXC_CONSOLE_GETCOLOR 9  /* returns the current attribute */
+#define DOSXC_CONSOLE_MOUSE   10  /* a = struct dosxc_mouse *; returns 1 when a mouse is there */
 #define DOSXC_CONSOLE_RAW     1
+
+struct dosxc_mouse {
+    dosxc_i32 row, column;     /* text cell under the mouse cursor */
+    dosxc_u32 buttons;         /* bit 0 left, 1 right, 2 middle */
+    dosxc_i32 wheel;           /* wheel movement since the last call */
+};
+
+/* drive(op, a, buffer, size): drives coming and going. */
+#define DOSXC_DRIVE_EJECT  1   /* a = drive letter: write back, unmount, safe to remove */
+#define DOSXC_DRIVE_NOTICE 2   /* next message ("USB drive ready as E:") into buffer; 0 when none */
+
+/* power(op) */
+#define DOSXC_POWER_OFF 1      /* write back, switch off; never returns */
+
+/* Sockets.  Addresses are IPv4 sockaddr_in layout (network byte order). */
+#define DOSXC_AF_INET 2
+#define DOSXC_SOCK_STREAM 1
+#define DOSXC_SOCK_DGRAM 2
+#define DOSXC_POLL_IN 0x001
+#define DOSXC_POLL_OUT 0x004
+#define DOSXC_POLL_ERR 0x008
+#define DOSXC_POLL_HUP 0x010
+#define DOSXC_MSG_PEEK 0x02
+#define DOSXC_MSG_WAITALL 0x100
+#define DOSXC_MSG_DONTWAIT 0x40
+struct dosxc_sockaddr_in {
+    unsigned short family;
+    unsigned short port;
+    dosxc_u32 address;
+    unsigned char zero[8];
+};
+struct dosxc_message {
+    void *buffer;
+    dosxc_size length;
+    int flags;
+    void *address;             /* sockaddr, or 0 */
+    dosxc_u32 *address_length; /* in/out for receive; points at the size for send */
+};
+struct dosxc_sockopt {
+    void *value;
+    dosxc_u32 *length;
+};
+
+/* net(op, a, b) */
+#define DOSXC_NET_INFO   1     /* a = adapter, b = struct dosxc_netinfo *; returns the adapter count */
+#define DOSXC_NET_CONFIG 2     /* a = adapter, b = struct dosxc_netconfig * */
+#define DOSXC_NET_RENEW  3     /* a = adapter: ask the DHCP server again */
+#define DOSXC_NET_PING   4     /* a = IPv4 address (host order), b = timeout ms; returns microseconds */
+struct dosxc_netinfo {
+    char name[16];
+    unsigned char mac[6];
+    unsigned char link;        /* carrier present */
+    unsigned char dhcp;        /* 1: addresses came from DHCP */
+    dosxc_u32 speed;           /* Mbit/s */
+    dosxc_u32 ip, mask, gateway, dns[2];   /* host byte order */
+    dosxc_u32 lease;           /* seconds left of the DHCP lease */
+    dosxc_u64 rx_packets, tx_packets, rx_bytes, tx_bytes, rx_dropped;
+};
+struct dosxc_netconfig {
+    dosxc_u32 dhcp;            /* 1: use DHCP and ignore the rest */
+    dosxc_u32 ip, mask, gateway, dns[2];   /* host byte order */
+};
+
+/* driver(op, a, buffer, size): device drivers in \\SYSTEM\\DRIVERS */
+#define DOSXC_DRIVER_LIST   1  /* a = index, buffer = struct dosxc_driverinfo; returns the count */
+#define DOSXC_DRIVER_LOAD   2  /* buffer = path of the .DRV file */
+#define DOSXC_DRIVER_UNLOAD 3  /* buffer = file name, e.g. "E1000.DRV" */
+#define DOSXC_DRIVER_LOG    4  /* buffer: copy of the driver log; returns its length */
+#define DOSXC_DRIVER_STATE_LOADED 1   /* running, with at least one device */
+#define DOSXC_DRIVER_STATE_IDLE   2   /* running, its hardware is not in this computer */
+#define DOSXC_DRIVER_STATE_FAILED 3   /* stopped after a processor exception */
+struct dosxc_driverinfo {
+    char file[32];
+    char name[32];
+    char version[16];
+    char description[64];
+    dosxc_u32 state;           /* DOSXC_DRIVER_STATE_* */
+    dosxc_u32 devices;
+};
 
 /* fdflags() */
 #define DOSXC_FD_CLOEXEC 1
@@ -119,8 +323,10 @@ struct dosxc_sysinfo {
 #define DOSXC_EXITED(code) (((code) & 0xff) << 8)
 #define DOSXC_SIGNALED(signal) ((signal) & 0x7f)
 
+/* The ABI 1 system table.  The runtime still provides it to version 1
+   programs; each entry matches the system call of the same name. */
 struct dosxc_api {
-    dosxc_u32 version;        /* DOSXC_ABI_VERSION */
+    dosxc_u32 version;        /* 1 */
     dosxc_u32 size;           /* sizeof (struct dosxc_api) */
 
     /* Process control.  exit() takes a wait status (DOSXC_EXITED/SIGNALED).
@@ -208,16 +414,27 @@ struct dosxc_api {
 #define DOSXC_ENOSYS 38
 #define DOSXC_ENOTEMPTY 39
 #define DOSXC_ELOOP 40
-
-#ifndef __ASSEMBLER__
-#ifdef __cplusplus
-extern "C" {
-#endif
-/* Set by crt0 from the auxiliary vector. */
-extern const struct dosxc_api *__dosxc;
-#ifdef __cplusplus
-}
-#endif
-#endif
+#define DOSXC_ENOTSOCK 88
+#define DOSXC_EDESTADDRREQ 89
+#define DOSXC_EMSGSIZE 90
+#define DOSXC_EPROTOTYPE 91
+#define DOSXC_ENOPROTOOPT 92
+#define DOSXC_EPROTONOSUPPORT 93
+#define DOSXC_EOPNOTSUPP 95
+#define DOSXC_EAFNOSUPPORT 97
+#define DOSXC_EADDRINUSE 98
+#define DOSXC_EADDRNOTAVAIL 99
+#define DOSXC_ENETDOWN 100
+#define DOSXC_ENETUNREACH 101
+#define DOSXC_ECONNABORTED 103
+#define DOSXC_ECONNRESET 104
+#define DOSXC_ENOBUFS 105
+#define DOSXC_EISCONN 106
+#define DOSXC_ENOTCONN 107
+#define DOSXC_ETIMEDOUT 110
+#define DOSXC_ECONNREFUSED 111
+#define DOSXC_EHOSTUNREACH 113
+#define DOSXC_EALREADY 114
+#define DOSXC_EINPROGRESS 115
 
 #endif

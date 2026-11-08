@@ -3,8 +3,9 @@ ENTRY(runtime_init)
 SECTIONS {
   . = RUNTIME_ADDRESS;
   .header : {
-    LONG(0x46454442) LONG(1) LONG(RUNTIME_BITS) LONG(RUNTIME_ADDRESS)
+    LONG(0x46454442) LONG(2) LONG(RUNTIME_BITS) LONG(RUNTIME_ADDRESS)
     LONG(runtime_init) LONG(runtime_run) LONG(__runtime_bss_start) LONG(__runtime_bss_end)
+    LONG(runtime_resume)
   }
   .text : { *(.text*) }
   .rodata : { *(.rodata*) }

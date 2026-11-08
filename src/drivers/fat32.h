@@ -63,3 +63,8 @@ int fat32_copy(const struct fat32_volume *, const char *, const char *);
 int fat32_read_at(const struct fat32_volume *, const char *, uint32_t, void *, uint32_t);
 int fat32_copy_to(const struct fat32_volume *, const char *, const struct fat32_volume *, const char *);
 int fat32_file_lba(const struct fat32_volume *,const char *,uint32_t *,uint32_t *);
+int fat32_short_path(const struct fat32_volume *, const char *, char *, uint32_t);
+
+/* Cursor for sequential reads of one file; zero it before the first call. */
+struct fat32_cursor { uint32_t first, size, cluster, cluster_offset, size_known; };
+int fat32_read_cursor(const struct fat32_volume *, const char *, struct fat32_cursor *, uint32_t, void *, uint32_t);

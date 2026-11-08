@@ -39,7 +39,7 @@ CROSS=$HERE/cross
 SYSROOT=$CROSS/$TARGET/sysroot
 STAGING=$WORK/staging-$ARCH          # DESTDIR for the native toolchain
 DIST=$HERE/dist/$ARCH
-PREFIX=/gcc                          # C:\GCC on DOS-XC
+PREFIX=/Programs/GCC                 # C:\Programs\GCC (the GCC package)
 JOBS=${JOBS:-$(sysctl -n hw.ncpu 2>/dev/null || nproc)}
 MAKE=${MAKE:-make}
 export PATH="$CROSS/bin:$PATH"
@@ -54,7 +54,7 @@ remove_tree() {
 }
 fresh_directory() { remove_tree "$1"; mkdir -p "$1"; }
 run_logged() {
-    run_log=$WORK/$1.log; shift
+    run_log=$WORK/$1-$ARCH.log; shift
     if ! "$@" > "$run_log" 2>&1; then
         echo "error: command failed; last lines of $run_log:" >&2
         tail -30 "$run_log" >&2
@@ -114,7 +114,12 @@ GCC_OPTIONS="--disable-nls --disable-shared --enable-static --disable-multilib -
  --enable-initfini-array --without-isl --disable-bootstrap --disable-werror --disable-gcov \
  --disable-libstdcxx-pch --disable-libstdcxx-backtrace --enable-languages=c,c++ --with-gnu-as --with-gnu-ld"
 
+# The target description lives in toolchain/gcc-config; copy it (and the
+# other idempotent source edits) again so a rebuild sees the current one.
+refresh_sources() { "$HERE/patch-sources.sh" "$SRC" >/dev/null; }
+
 gcc() {
+    refresh_sources
     for lib in gmp mpfr mpc; do
         version=$(eval echo \$$(echo $lib | tr a-z A-Z)_VERSION)
         [ -e "$SRC/gcc-$GCC_VERSION/$lib" ] || ln -s "../$lib-$version" "$SRC/gcc-$GCC_VERSION/$lib"
@@ -181,6 +186,7 @@ native_binutils() {
 }
 
 native_gcc() {
+    refresh_sources
     # The in-tree math libraries served the cross build; use the native ones now.
     for lib in gmp mpfr mpc; do
         [ -L "$SRC/gcc-$GCC_VERSION/$lib" ] && rm "$SRC/gcc-$GCC_VERSION/$lib"

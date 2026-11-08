@@ -443,7 +443,7 @@ int clearenv(void) {
 static unsigned long long temp_seed;
 static void fill_template(char *x, size_t n) {
     static const char letters[] = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789";
-    if (!temp_seed) temp_seed = API->nanoseconds() ^ ((unsigned long long)API->getpid() << 32);
+    if (!temp_seed) temp_seed = dosxc_sys_nanoseconds() ^ ((unsigned long long)dosxc_sys_getpid() << 32);
     for (size_t i = 0; i < n; ++i) x[i] = letters[next_random(&temp_seed) % 62];
 }
 
@@ -595,7 +595,7 @@ char *getpass(const char *prompt) {
     static char buffer[128];
     fputs(prompt, stderr);
     fflush(stderr);
-    int old = API->console(DOSXC_CONSOLE_MODE, DOSXC_CONSOLE_RAW, 0);
+    int old = dosxc_sys_console(DOSXC_CONSOLE_MODE, DOSXC_CONSOLE_RAW, 0);
     size_t n = 0;
     for (;;) {
         char c;
@@ -603,7 +603,7 @@ char *getpass(const char *prompt) {
         if (c == '\b') { if (n) --n; continue; }
         if (n + 1 < sizeof(buffer)) buffer[n++] = c;
     }
-    API->console(DOSXC_CONSOLE_MODE, old, 0);
+    dosxc_sys_console(DOSXC_CONSOLE_MODE, old, 0);
     buffer[n] = 0;
     fputs("\n", stderr);
     return buffer;

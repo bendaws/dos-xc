@@ -2,16 +2,16 @@
 ; DOS-XC /runtime/switch64.asm
 ; Copyright (c) 2026 Ben Daws - see LICENSE.txt
 ;
-; Program entry/exit and exception entry for the 64-bit runtime.
+; Program entry/exit, exception and system call entry for the 64-bit runtime.
 ;
 
 bits 64
 default rel
 section .text
 
-global runtime_enter, runtime_leave, runtime_spurious, bios_call
-global runtime_exception_stubs
-extern runtime_exception
+global runtime_enter, runtime_leave, runtime_spurious, bios_call, runtime_save, runtime_switch
+global runtime_exception_stubs, runtime_syscall_entry
+extern runtime_exception, runtime_syscall, runtime_fxsr
 
 ; int runtime_enter(uptr entry, uptr stack, struct saved_context *save, int sse)
 ; Saves the caller's callee-saved state, switches to the program stack and
@@ -71,12 +71,108 @@ runtime_leave:
     popfq
     jmp [rdi+56]
 
+; int runtime_save(struct saved_context *save): like setjmp.  Returns 0; a
+; later runtime_leave(save, value) returns value from here again.
+runtime_save:
+    call save_state
+    xor eax, eax
+    ret
+
+; int runtime_switch(struct saved_context *save, struct saved_context *target, int value)
+; Saves the caller in SAVE, then continues TARGET with VALUE.
+runtime_switch:
+    call save_state
+    mov rdi, rsi
+    mov esi, edx
+    jmp runtime_leave
+
+; Store the state of save_state's caller's caller (rsp/return address of
+; the runtime_save or runtime_switch call) in [rdi].
+save_state:
+    mov [rdi+0], rbx
+    mov [rdi+8], rbp
+    mov [rdi+16], r12
+    mov [rdi+24], r13
+    mov [rdi+32], r14
+    mov [rdi+40], r15
+    lea rax, [rsp+16]
+    mov [rdi+48], rax
+    mov rax, [rsp+8]
+    mov [rdi+56], rax
+    pushfq
+    pop qword [rdi+64]
+    fnstcw [rdi+72]
+    mov eax, [runtime_fxsr]
+    mov [rdi+80], eax
+    test eax, eax
+    jz .done
+    stmxcsr [rdi+76]
+.done:
+    ret
+
 ; BIOS services through the kernel's real-mode bridge (kernel base + 320).
 bios_call:
     mov eax, 0x20140
     jmp rax
 
 runtime_spurious:
+    iretq
+
+; int 0x80 system call entry (ABI 2).  rax = number, arguments in rdi, rsi,
+; rdx, r10, r8, r9.  Every register but rax, and the x87/SSE state, is
+; preserved.  Programs run in ring 0, so the frame is on the program stack.
+runtime_syscall_entry:
+    push r15
+    push r14
+    push r13
+    push r12
+    push r11
+    push r10
+    push r9
+    push r8
+    push rbp
+    push rdi
+    push rsi
+    push rdx
+    push rcx
+    push rbx
+    push rax
+    cld
+    mov rbx, rsp                ; struct syscall_frame
+    sub rsp, 512
+    and rsp, -16
+    cmp dword [runtime_fxsr], 0
+    je .fnsave
+    fxsave [rsp]
+    jmp .saved
+.fnsave:
+    fnsave [rsp]
+.saved:
+    mov rdi, rbx
+    call runtime_syscall
+    cmp dword [runtime_fxsr], 0
+    je .frstor
+    fxrstor [rsp]
+    jmp .restored
+.frstor:
+    frstor [rsp]
+.restored:
+    mov rsp, rbx
+    pop rax
+    pop rbx
+    pop rcx
+    pop rdx
+    pop rsi
+    pop rdi
+    pop rbp
+    pop r8
+    pop r9
+    pop r10
+    pop r11
+    pop r12
+    pop r13
+    pop r14
+    pop r15
     iretq
 
 %macro stub 1
@@ -112,3 +208,25 @@ runtime_exception_stubs:
     dq stub_ %+ v
 %assign v v+1
 %endrep
+
+; The real-mode USB bridge (src/dos/bridge.asm, copied to 0x1000 by
+; bridge.c) calls bridge_entry in long mode with interrupts off.
+global bridge_entry, bridge_image, bridge_image_end
+extern bridge_service
+section .text
+bridge_entry:
+    mov [rel bridge_saved], rsp
+    lea rsp, [rel bridge_stack_top]
+    call bridge_service
+    mov rsp, [rel bridge_saved]
+    ret
+section .rodata
+align 16
+bridge_image:
+    incbin "bridge.bin"
+bridge_image_end:
+section .bss
+align 16
+bridge_saved: resq 1
+bridge_stack: resb 65536
+bridge_stack_top:

@@ -6,15 +6,26 @@
 bits 16
 ; Protected-mode request block at 0:0x7040:
 ;   +1 function: 0x42 read, 0x43 write (one sector), 0xC2 read [0x704C] sectors
-;      (2048-byte blocks on the boot CD), 0xE8 E820 memory map to 0x78000
+;      (2048-byte blocks on the boot CD), 0xC3 write [0x704C] sectors,
+;      0x48 drive parameters (INT 13h AH=48h) to 0x78000,
+;      0xE8 E820 memory map to 0x78000
 ;   +2 drive, +4 LBA, +8 result (0 or -1; E820 entry count)
 bios_service:
     xor ax, ax
     mov es, ax
     cmp byte [es:0x7041], 0xe8
     je memory_map
+    cmp byte [es:0x7041], 0x48
+    je drive_parameters
     mov eax, [es:0x7044]
     mov word [bios_dap+2], 1
+    cmp byte [es:0x7041], 0xc3
+    jne .read_many
+    mov cx, [es:0x704c]
+    mov [bios_dap+2], cx
+    mov byte [es:0x7041], 0x43
+    jmp .single
+.read_many:
     cmp byte [es:0x7041], 0xc2
     jne .single
     mov cx, [es:0x704c]
@@ -100,6 +111,26 @@ memory_map:
     jb .next
 .done:
     movzx eax, bp
+    jmp bios_service.result
+drive_parameters:
+    push ds
+    mov ax, 0x7800
+    mov ds, ax
+    xor si, si
+    mov cx, 15
+.clear:
+    mov word [si], 0
+    add si, 2
+    loop .clear
+    xor si, si
+    mov word [si], 30
+    mov dl, [es:0x7042]
+    mov ah, 0x48
+    int 0x13
+    pop ds
+    mov eax, 0
+    jnc bios_service.result
+    mov eax, -1
     jmp bios_service.result
 align 4
 bios_dap: db 16,0

@@ -12,49 +12,24 @@
  */
 
 #include "runtime.h"
+#include "elf.h"
+#include "net.h"
 
-#if __SIZEOF_POINTER__ == 8
-typedef struct { u8 ident[16]; u16 type, machine; u32 version; u64 entry, phoff, shoff; u32 flags;
-                 u16 ehsize, phentsize, phnum, shentsize, shnum, shstrndx; } Ehdr;
-typedef struct { u32 type, flags; u64 offset, vaddr, paddr, filesz, memsz, align; } Phdr;
-typedef struct { i64 tag; u64 value; } Dyn;
-typedef struct { u64 offset, info; i64 addend; } Rela;
-#define ELF_CLASS 2
-#define ELF_MACHINE 62
-#define R_IRELATIVE 37
-#define R_TYPE(info) ((u32)(info))
-#define MACHINE_NAME "x86-64"
-#else
-typedef struct { u8 ident[16]; u16 type, machine; u32 version, entry, phoff, shoff, flags;
-                 u16 ehsize, phentsize, phnum, shentsize, shnum, shstrndx; } Ehdr;
-typedef struct { u32 type, offset, vaddr, paddr, filesz, memsz, flags, align; } Phdr;
-typedef struct { int tag; u32 value; } Dyn;
-typedef struct { u32 offset, info; int addend; } Rela;
-#define ELF_CLASS 1
-#define ELF_MACHINE 3
-#define R_IRELATIVE 42
-#define R_TYPE(info) ((info) & 0xff)
-#define MACHINE_NAME "i386"
-#endif
-typedef struct { uptr offset, info; } Rel;
-
-#define ET_EXEC 2
-#define ET_DYN 3
-#define PT_LOAD 1
-#define PT_DYNAMIC 2
-#define PT_INTERP 3
-#define PT_NOTE 4
-#define PT_PHDR 6
-#define PT_TLS 7
-#define PT_GNU_STACK 0x6474e551u
 #define R_NONE 0
 #define R_RELATIVE 8
-#define MAX_PHDRS 64
+#if __SIZEOF_POINTER__ == 8
+#define R_IRELATIVE 37
+#else
+#define R_IRELATIVE 42
+#endif
 
-struct image { uptr base, entry, phdr, phnum, stack_size; };
+struct image { uptr base, entry, phdr, phnum, stack_size; u32 abi; uptr dynamic, bias; int interp; };
 
 static struct process processes[MAX_DEPTH];
 struct process *current;
+static struct process *root;
+
+struct process *process_root(void) { return root; }
 static int next_pid = 1;
 static u8 header[4096];
 static Phdr phdrs[MAX_PHDRS];
@@ -71,10 +46,11 @@ static void complain(const char *path, const char *message) {
 
 static int read_at(const char *path, u64 offset, void *buffer, uptr size, u64 file_size) {
     if (offset > file_size || size > file_size - offset) return -1;
-    return size ? ctx->read_at(ctx->volume, path, (u32)offset, buffer, (u32)size) : 0;
+    return size ? fs_read_at(path, (u32)offset, buffer, (u32)size) : 0;
 }
 
-static int has_dosxc_note(const char *path, const Phdr *ph, u64 file_size) {
+/* The ABI version from the program's DOS-XC note, or 0 without one. */
+static u32 dosxc_note_abi(const char *path, const Phdr *ph, u64 file_size) {
     uptr size = ph->filesz < sizeof(note) ? (uptr)ph->filesz : sizeof(note);
     if (read_at(path, ph->offset, note, size, file_size)) return 0;
     for (uptr at = 0; at + 12 <= size;) {
@@ -83,7 +59,7 @@ static int has_dosxc_note(const char *path, const Phdr *ph, u64 file_size) {
         if (next > size || next <= at) return 0;
         if (namesz == 7 && type == DOSXC_NOTE_ABI && !memcmp(note + name, DOSXC_NOTE_NAME, 7) &&
             descsz >= 4 && *(u32 *)(note + desc) >= 1)
-            return 1;
+            return *(u32 *)(note + desc);
         at = next;
     }
     return 0;
@@ -93,7 +69,6 @@ static int relocate(const char *path, uptr bias, const Dyn *dynamic) {
     uptr rela = 0, rela_size = 0, rel = 0, rel_size = 0, relr = 0, relr_size = 0;
     for (const Dyn *d = dynamic; d->tag; ++d) {
         switch (d->tag) {
-        case 1: complain(path, "requires shared libraries, which DOS-XC does not support."); return -1;
         case 7: rela = bias + (uptr)d->value; break;
         case 8: rela_size = (uptr)d->value; break;
         case 17: rel = bias + (uptr)d->value; break;
@@ -143,7 +118,7 @@ unsupported:
 
 static int load_image(struct process *p, const char *path, struct image *out) {
     struct fat32_info info;
-    if (ctx->stat(ctx->volume, path, &info)) return -DOSXC_ENOENT;
+    if (fs_stat(path, &info)) return -DOSXC_ENOENT;
     u64 size = info.size;
     uptr first = size < sizeof(header) ? (uptr)size : sizeof(header);
     if (read_at(path, 0, header, first, size)) return -DOSXC_EIO;
@@ -152,7 +127,7 @@ static int load_image(struct process *p, const char *path, struct image *out) {
         return -DOSXC_ENOEXEC;
     if (e->ident[4] != ELF_CLASS || e->machine != ELF_MACHINE) {
         complain(path, e->ident[4] == 2 ? "is a 64-bit (x86-64) program; boot the x64 edition of DOS-XC to run it."
-                                        : "is a 32-bit (i386) program; boot the x32 edition of DOS-XC to run it.");
+                                        : "is a 32-bit (i386) program; boot the x86 edition of DOS-XC to run it.");
         return -DOSXC_ENOEXEC;
     }
     if (e->type != ET_DYN && e->type != ET_EXEC) { complain(path, "is not an executable ELF file."); return -DOSXC_ENOEXEC; }
@@ -161,14 +136,26 @@ static int load_image(struct process *p, const char *path, struct image *out) {
         complain(path, "has invalid ELF program headers.");
         return -DOSXC_ENOEXEC;
     }
+    out->interp = 0;
     uptr low = (uptr)-1, high = 0, align = PAGE, phdr = 0, stack = 0;
-    int noted = 0;
+    u32 abi = 0;
     const Phdr *dynamic = 0;
     for (unsigned i = 0; i < e->phnum; ++i) {
         const Phdr *ph = &phdrs[i];
-        if (ph->type == PT_INTERP) { complain(path, "is dynamically linked; DOS-XC programs must be static PIE (-static-pie)."); return -DOSXC_ENOEXEC; }
+        if (ph->type == PT_INTERP) {
+            char interp[64];
+            uptr n = ph->filesz < sizeof(interp) - 1 ? (uptr)ph->filesz : sizeof(interp) - 1;
+            if (read_at(path, ph->offset, interp, n, size)) return -DOSXC_EIO;
+            interp[n] = 0;
+            while (n && !interp[n - 1]) --n;
+            if (n < 10 || !rt_equal_nocase(interp + n - 10, "ELFAPI.DLL")) {
+                complain(path, "is dynamically linked for another operating system.");
+                return -DOSXC_ENOEXEC;
+            }
+            out->interp = 1;
+        }
         if (ph->type == PT_TLS) { complain(path, "uses thread-local storage, which DOS-XC does not provide."); return -DOSXC_ENOEXEC; }
-        if (ph->type == PT_NOTE && !noted) noted = has_dosxc_note(path, ph, size);
+        if (ph->type == PT_NOTE && !abi) abi = dosxc_note_abi(path, ph, size);
         if (ph->type == PT_DYNAMIC) dynamic = ph;
         if (ph->type == PT_PHDR) phdr = (uptr)ph->vaddr;
         if (ph->type == PT_GNU_STACK) stack = (uptr)ph->memsz;
@@ -178,8 +165,12 @@ static int load_image(struct process *p, const char *path, struct image *out) {
         if ((uptr)(ph->vaddr + ph->memsz) > high) high = (uptr)(ph->vaddr + ph->memsz);
         if (ph->align > align && ph->align <= 0x200000) align = (uptr)ph->align;
     }
-    if (!noted) {
+    if (!abi) {
         complain(path, "is not a DOS-XC program (it has no .note.dosxc ABI note). Link it with crt0.o from the DOS-XC C library.");
+        return -DOSXC_ENOEXEC;
+    }
+    if (abi > DOSXC_ABI_VERSION) {
+        complain(path, "needs a newer version of DOS-XC (its program ABI is not supported).");
         return -DOSXC_ENOEXEC;
     }
     if (e->type == ET_EXEC) {
@@ -198,12 +189,14 @@ static int load_image(struct process *p, const char *path, struct image *out) {
             return -DOSXC_EIO;
         }
     }
-    if (dynamic && relocate(path, bias, (const Dyn *)(bias + (uptr)dynamic->vaddr))) return -DOSXC_ENOEXEC;
+    out->dynamic = dynamic ? bias + (uptr)dynamic->vaddr : 0;
+    out->bias = bias;
     out->base = (uptr)base;
     out->entry = bias + (uptr)e->entry;
     out->phdr = phdr ? bias + phdr : bias + low + (uptr)e->phoff;
     out->phnum = e->phnum;
     out->stack_size = stack;
+    out->abi = abi;
     p->image_base = (uptr)base;
     p->image_size = high - low;
     return 0;
@@ -211,14 +204,16 @@ static int load_image(struct process *p, const char *path, struct image *out) {
 
 /* System V initial stack: argc, argv[], 0, envp[], 0, auxv[], strings. */
 static uptr build_stack(uptr base, uptr size, const char *execfn, char *const argv[], char *const envp[],
-                        const struct image *image) {
+                        const struct image *image, const struct link_result *link) {
     uptr argc = 0, envc = 0, strings = rt_strlen(execfn) + 1 + 16;
+    uptr lists = link ? (uptr)(link->init_count + link->fini_count + 2) * sizeof(uptr) : 0;
+    strings += lists + sizeof(uptr);
     for (; argv[argc]; ++argc) strings += rt_strlen(argv[argc]) + 1;
     for (; envp && envp[envc]; ++envc) strings += rt_strlen(envp[envc]) + 1;
     if (strings > size / 4 || argc > 65536 || envc > 65536) return 0;
     uptr top = base + size;
     char *text = (char *)((top - strings) & ~(uptr)15);
-    enum { AUX = 12 };
+    enum { AUX = 14 };
     uptr words = 1 + argc + 1 + envc + 1 + 2 * AUX;
     uptr sp = ((uptr)text - words * sizeof(uptr)) & ~(uptr)15;
     uptr *w = (uptr *)sp;
@@ -247,11 +242,24 @@ static uptr build_stack(uptr base, uptr size, const char *execfn, char *const ar
     *w++ = 0;
     uptr name = (uptr)cursor;
     memcpy(cursor, execfn, rt_strlen(execfn) + 1);
+    cursor += rt_strlen(execfn) + 1;
+    uptr inits = 0, finis = 0;
+    if (link) {
+        uptr *list = (uptr *)(((uptr)cursor + sizeof(uptr) - 1) & ~(uptr)(sizeof(uptr) - 1));
+        inits = (uptr)list;
+        for (int i = 0; i < link->init_count; ++i) *list++ = link->inits[i];
+        *list++ = 0;
+        finis = (uptr)list;
+        for (int i = 0; i < link->fini_count; ++i) *list++ = link->finis[i];
+        *list++ = 0;
+    }
     extern struct dosxc_api runtime_api;
+    /* Only ABI 1 programs call through the table; others get AT_IGNORE (1). */
+    int table = image->abi == DOSXC_ABI_TABLE;
     uptr aux[AUX * 2] = {
         3, image->phdr, 4, sizeof(Phdr), 5, image->phnum, 6, PAGE, 7, 0, 9, image->entry,
-        25, random, 31, name, DOSXC_AT_API, (uptr)&runtime_api, 0x42440002u, image->base,
-        23, 0, 0, 0,
+        25, random, 31, name, table ? DOSXC_AT_API : 1, table ? (uptr)&runtime_api : 0, DOSXC_AT_BASE, image->base,
+        23, 0, inits ? DOSXC_AT_INITS : 1, inits, finis ? DOSXC_AT_FINIS : 1, finis, 0, 0,
     };
     memcpy(w, aux, sizeof(aux));
     return sp;
@@ -261,13 +269,13 @@ static int find_program(struct process *parent, const char *path, char *canonica
     int r = path_resolve(parent, path, canonical);
     if (r) return r;
     struct fat32_info info;
-    if (!ctx->stat(ctx->volume, canonical, &info))
+    if (!fs_stat(canonical, &info))
         return (info.attributes & DOSXC_ATTR_DIRECTORY) ? -DOSXC_EACCES : 0;
     uptr n = rt_strlen(canonical), at = n;
     while (at && canonical[at - 1] != '\\' && canonical[at - 1] != '.') --at;
     if ((at && canonical[at - 1] == '.') || n + 5 >= PATH_MAX_RT) return -DOSXC_ENOENT;
     rt_strcpy(canonical + n, ".EXE");
-    if (!ctx->stat(ctx->volume, canonical, &info) && !(info.attributes & DOSXC_ATTR_DIRECTORY)) return 0;
+    if (!fs_stat(canonical, &info) && !(info.attributes & DOSXC_ATTR_DIRECTORY)) return 0;
     return -DOSXC_ENOENT;
 }
 
@@ -299,7 +307,23 @@ int process_spawn(struct process *parent, const char *path, char *const argv[], 
     }
     struct image image;
     uptr stack_size = 0, stack = 0, sp = 0;
+    static struct link_result links[MAX_DEPTH];
+    struct link_result *link = 0;
     r = load_image(p, canonical, &image);
+    if (!r && image.dynamic) {
+        struct elf_object program;
+        elf_parse_dynamic(&program, image.bias, (const Dyn *)image.dynamic);
+        if (program.needed_count || image.interp) {
+            struct process *saved = current;
+            current = p;                    /* library searches use the child's directory */
+            link = &links[p - processes];
+            r = dynamic_link(p, canonical, &program, link);
+            current = saved;
+            if (r < 0 && r != -DOSXC_ENOMEM && r != -DOSXC_ENOENT) r = -DOSXC_ENOEXEC;
+        } else if (relocate(canonical, image.bias, (const Dyn *)image.dynamic)) {
+            r = -DOSXC_ENOEXEC;
+        }
+    }
     if (!r) {
         stack_size = image.stack_size ? image.stack_size : memory_total() >= (512u << 20) ? 16u << 20 : 4u << 20;
         if (stack_size < 65536) stack_size = 65536;
@@ -311,23 +335,35 @@ int process_spawn(struct process *parent, const char *path, char *const argv[], 
         }
     }
     if (!r) {
+        struct process *saved = current;
+        current = p;                    /* argv[0] is spelled relative to the child's drive */
         path_posix(canonical, posix, sizeof(posix));
+        current = saved;
         char *default_argv[2] = {posix, 0};
-        sp = build_stack(stack, stack_size, posix, argv && argv[0] ? argv : default_argv, envp, &image);
+        sp = build_stack(stack, stack_size, posix, argv && argv[0] ? argv : default_argv,
+                         envp ? envp : environment_master(), &image, link);
         if (!sp) r = -DOSXC_E2BIG;
     }
     if (!r) {
         struct process *saved = current;
         current = p;
+        if (!parent) root = p;
         cpu_install_idt();
         r = runtime_enter(image.entry, sp, &p->saved, cpu_has_sse());
         cpu_restore_idt();
         current = saved;
     }
+    process_finish(p);
+    return r;
+}
+
+/* Release what a finished process owned. */
+void process_finish(struct process *p) {
+    libraries_release(p);
     files_release(p);
     memory_free_owner(p->pid);
+    if (p == root) root = 0;
     p->used = 0;
-    return r;
 }
 
 void process_exit(int wait_status) {
@@ -344,6 +380,7 @@ void runtime_exception(uptr *frame) {
         "Alignment check", "Machine check", "SIMD floating-point error", "Virtualization exception",
         "Control protection fault"};
     uptr vector = frame[0] & 31, error = frame[1], ip = frame[2];
+    drivers_fault(vector, ip);             /* does not return inside a driver */
     int signal = vector == 0 || vector == 16 || vector == 19 ? 8
                : vector == 6 ? 4 : vector == 1 || vector == 3 ? 5 : vector == 17 ? 7 : 11;
     rt_print("\r\n");
@@ -356,9 +393,19 @@ void runtime_exception(uptr *frame) {
     rt_print(names[vector] ? names[vector] : "Processor exception");
     rt_print(" at ");
     rt_print_hex(ip);
+    uptr offset;
+    const char *library = library_at(ip, &offset);
     if (current && ip >= current->image_base && ip < current->image_base + current->image_size) {
         rt_print(" (image+");
         rt_print_hex(ip - current->image_base);
+        rt_print(")");
+    } else if (library) {
+        char posix[PATH_MAX_RT];
+        path_posix(library, posix, sizeof(posix));
+        rt_print(" (");
+        rt_print(posix);
+        rt_print("+");
+        rt_print_hex(offset);
         rt_print(")");
     }
     if (vector == 14) {

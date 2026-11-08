@@ -55,7 +55,8 @@ int keyboard_read(void) {
         if(scan==0x48)return 0x101;if(scan==0x50)return 0x102;
         if(scan==0x4d)return 0x103;if(scan==0x4b)return 0x104;
         if(scan==0x47)return 0x105;if(scan==0x4f)return 0x106;
-        if(scan==0x53)return 0x108;if(scan>=0x3b&&scan<=0x44)return 0x10b+scan-0x3b;
+        if(scan==0x53)return 0x108;if(scan==0x52)return 0x107;if(scan==0x49)return 0x109;if(scan==0x51)return 0x10a;
+        if(scan>=0x3b&&scan<=0x44)return 0x10b+scan-0x3b;if(scan==0x85)return 0x115;if(scan==0x86)return 0x116;
         return -1;
     }
     if (!(inb(0x64) & 1)) return -1;
@@ -67,7 +68,8 @@ int keyboard_read(void) {
         if(code==0x48)return 0x101;if(code==0x50)return 0x102;
         if(code==0x4d)return 0x103;if(code==0x4b)return 0x104;
         if(code==0x47)return 0x105;if(code==0x4f)return 0x106;
-        if(code==0x53)return 0x108;return -1;
+        if(code==0x53)return 0x108;if(code==0x52)return 0x107;
+        if(code==0x49)return 0x109;if(code==0x51)return 0x10a;return -1;
     }
     unsigned char key = code & 0x7f;
     if (key == 0x2a || key == 0x36) {
@@ -80,7 +82,7 @@ int keyboard_read(void) {
     }
     if(key==0x1d){control=!(code&128);if(control)*flags|=4;else *flags&=~4;return -1;}
     if (code & 0x80) return -1;
-    if(key>=0x3b&&key<=0x44)return 0x10b+key-0x3b;
+    if(key>=0x3b&&key<=0x44)return 0x10b+key-0x3b;if(key==0x57)return 0x115;if(key==0x58)return 0x116;
     if (key == 0x3a) { caps_lock ^= 1; *flags^=64; return -1; }
     if (key >= sizeof(normal) - 1 || !normal[key]) return -1;
     char value = normal[key];

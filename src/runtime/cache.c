@@ -162,6 +162,22 @@ static int cached_write(void *context, uint32_t lba, const void *buffer) {
     return store(lba, buffer, 1);
 }
 
+/* The real-mode bridge, for 16-bit programs on read-only media: the RAM
+   overlay's copy of sector LBA (1 when there is one), and new overlay data. */
+int cache_overlay_read(u32 lba, void *buffer) {
+    if (!h || !h->readonly) return 0;
+    u32 i = lookup(lba);
+    if (i == NIL || !(line_flags[i] & PINNED)) return 0;
+    memcpy(buffer, data + (uptr)i * 512, 512);
+    return 1;
+}
+
+int cache_overlay_write(u32 lba, const void *buffer) {
+    if (!h || !h->readonly) return -1;
+    if (h->pinned + 256 >= h->lines && lookup(lba) == NIL) return -1;   /* RAM disk full */
+    return store(lba, buffer, 1);
+}
+
 void cache_init(void) {
     struct fat32_volume *volume = ctx->volume;
     if (!volume || !volume->read_sector) return;
@@ -209,6 +225,29 @@ void cache_init(void) {
     original_write = volume->write_sector;
     original_context = volume->context;
     bios_chunks = ctx->bios_available;
+    volume->read_sector = cached_read;
+    volume->write_sector = cached_write;
+}
+
+/* The kernel mounted the system volume again after a 16-bit program, which
+   may have written to the disk: drop what was cached (a read-only medium's
+   RAM overlay is kept) and hook the new volume. */
+void cache_resume(void) {
+    struct fat32_volume *volume = ctx->volume;
+    if (!h || !volume || !volume->read_sector) return;
+    if (!h->readonly) {
+        h->head = h->tail = NIL;
+        h->pinned = 0;
+        for (u32 b = 0; b < h->buckets; ++b) bucket[b] = NIL;
+        for (u32 i = 0; i < h->lines; ++i) {
+            line_flags[i] = 0;
+            line_next[i] = i + 1 < h->lines ? i + 1 : NIL;
+        }
+        h->free_head = 0;
+    }
+    original_read = volume->read_sector;
+    original_write = volume->write_sector;
+    original_context = volume->context;
     volume->read_sector = cached_read;
     volume->write_sector = cached_write;
 }

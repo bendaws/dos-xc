@@ -18,3 +18,7 @@ void console_set_cursor(unsigned row, unsigned column);
 void console_set_cursor_output(void (*set_cursor)(void *, unsigned, unsigned));
 
 void console_resume(void);
+void console_get_cursor(unsigned *row, unsigned *column);
+void console_put_at(unsigned row, unsigned column, char c);
+void console_erase(unsigned row, unsigned column, unsigned count);
+int console_scroll(unsigned top, unsigned bottom, int up);

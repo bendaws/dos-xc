@@ -59,6 +59,21 @@ timer_interrupt:
     pushf
     call far [old_timer]
 .duty:
+    ; Programs that play music on the PC speaker time it with loops
+    ; calibrated against the full-speed CPU: running in 5 ms bursts would
+    ; slow the music down and chop it up.  While the speaker is in use (and
+    ; 200 ms after), the CPU runs at full speed.
+    in al, 0x61
+    test al, 2
+    jz .quiet
+    mov byte [speaker_hold], 40
+.quiet:
+    cmp byte [speaker_hold], 0
+    je .throttle
+    dec byte [speaker_hold]
+    mov word [duty_budget], 100
+    jmp .done
+.throttle:
     movzx ax, byte [cpu_duty]
     add [duty_budget], ax
     cmp byte [timer_waiting], 0
@@ -84,3 +99,4 @@ timer_phase dw 0
 duty_budget dw 0
 timer_waiting db 0
 timer_installed db 0
+speaker_hold db 0

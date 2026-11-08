@@ -8,7 +8,6 @@
 #include <signal.h>
 #include <stdio.h>
 
-const struct dosxc_api *__dosxc;
 char **environ;
 const char *__progname = "";
 const char *__progname_full = "";
@@ -27,8 +26,19 @@ void _init(void) __attribute__((weak));
 void _fini(void) __attribute__((weak));
 int main(int, char **, char **);
 
-void __libc_start(uintptr_t *sp) __attribute__((noreturn, used));
-void __libc_start(uintptr_t *sp) {
+/* What crt0 passes about the program (see crt0-*.S). */
+struct start_info {
+    void (**preinit_start)(void), (**preinit_end)(void);
+    void (**init_start)(void), (**init_end)(void);
+    void (**fini_start)(void), (**fini_end)(void);
+    void (*init)(void), (*fini)(void);
+};
+static struct start_info program;
+/* Shared library constructors/destructors from the system loader. */
+static void (**library_inits)(void), (**library_finis)(void);
+
+void __libc_start(uintptr_t *sp, const struct start_info *info) __attribute__((noreturn, used));
+void __libc_start(uintptr_t *sp, const struct start_info *info) {
     int argc = (int)sp[0];
     char **argv = (char **)(sp + 1);
     char **envp = argv + argc + 1;
@@ -36,14 +46,14 @@ void __libc_start(uintptr_t *sp) {
     while (*end) ++end;
     for (uintptr_t *aux = (uintptr_t *)(end + 1); aux[0]; aux += 2) {
         switch (aux[0]) {
-        case DOSXC_AT_API: __dosxc = (const struct dosxc_api *)aux[1]; break;
-        case 0x42440002u: __dosxc_image_base = aux[1]; break;
+        case DOSXC_AT_BASE: __dosxc_image_base = aux[1]; break;
+        case DOSXC_AT_INITS: library_inits = (void (**)(void))aux[1]; break;
+        case DOSXC_AT_FINIS: library_finis = (void (**)(void))aux[1]; break;
         case 3: __dosxc_phdr = (void *)aux[1]; break;
         case 5: __dosxc_phnum = aux[1]; break;
         case 25: memcpy(&__stack_chk_guard, (void *)aux[1], sizeof(__stack_chk_guard)); break;
         }
     }
-    if (!__dosxc || __dosxc->version < DOSXC_ABI_VERSION) for (;;) __builtin_trap();
     __stack_chk_guard &= ~(uintptr_t)0xff;     /* a NUL byte stops string overruns */
     environ = envp;
     if (argc && argv[0]) {
@@ -53,9 +63,21 @@ void __libc_start(uintptr_t *sp) {
             if (*p == '/' || *p == '\\') name = p + 1;
         __progname = name;
     }
-    for (void (**f)(void) = __preinit_array_start; f < __preinit_array_end; ++f) (*f)();
-    if (_init) _init();
-    for (void (**f)(void) = __init_array_start; f < __init_array_end; ++f) (*f)();
+    if (info) program = *info;
+    else {                                /* crt0 of an older C library */
+        program.preinit_start = __preinit_array_start;
+        program.preinit_end = __preinit_array_end;
+        program.init_start = __init_array_start;
+        program.init_end = __init_array_end;
+        program.fini_start = __fini_array_start;
+        program.fini_end = __fini_array_end;
+        program.init = _init;
+        program.fini = _fini;
+    }
+    for (void (**f)(void) = library_inits; f && *f; ++f) (*f)();
+    for (void (**f)(void) = program.preinit_start; f < program.preinit_end; ++f) (*f)();
+    if (program.init) program.init();
+    for (void (**f)(void) = program.init_start; f < program.init_end; ++f) (*f)();
     exit(main(argc, argv, envp));
 }
 
@@ -100,8 +122,9 @@ int at_quick_exit(void (*function)(void)) {
 
 hidden void __run_exit_handlers(void) {
     __cxa_finalize(0);
-    for (void (**f)(void) = __fini_array_end; f > __fini_array_start;) (*--f)();
-    if (_fini) _fini();
+    for (void (**f)(void) = program.fini_end; f > program.fini_start;) (*--f)();
+    if (program.fini) program.fini();
+    for (void (**f)(void) = library_finis; f && *f; ++f) (*f)();
 }
 
 void exit(int status) {
@@ -110,11 +133,11 @@ void exit(int status) {
         __run_exit_handlers();
     }
     __stdio_exit();
-    API->exit(DOSXC_EXITED(status));
+    dosxc_sys_exit(DOSXC_EXITED(status));
 }
 
-void _Exit(int status) { API->exit(DOSXC_EXITED(status)); }
-void _exit(int status) { API->exit(DOSXC_EXITED(status)); }
+void _Exit(int status) { dosxc_sys_exit(DOSXC_EXITED(status)); }
+void _exit(int status) { dosxc_sys_exit(DOSXC_EXITED(status)); }
 
 void quick_exit(int status) {
     while (quick_count) quick_handlers[--quick_count]();
@@ -123,8 +146,8 @@ void quick_exit(int status) {
 
 void __stack_chk_fail(void) {
     static const char message[] = "*** stack smashing detected ***: terminated\n";
-    API->write(2, message, sizeof(message) - 1);
-    API->exit(DOSXC_SIGNALED(SIGABRT));
+    dosxc_sys_write(2, message, sizeof(message) - 1);
+    dosxc_sys_exit(DOSXC_SIGNALED(SIGABRT));
 }
 void __stack_chk_fail_local(void) { __stack_chk_fail(); }
 

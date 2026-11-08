@@ -4,7 +4,7 @@
  */
 
 #include "efi.h"
-#include "../setup/install.h"
+#include "../kernel/bootinfo.h"
 
 static struct TABLE *st;
 static struct FILE *root;
@@ -20,9 +20,15 @@ void *memset(void *p,int c,UINTN n) { U8 *b=p;while(n--)*b++=c;return p; }
 void *memcpy(void *d,const void *s,UINTN n) { U8 *a=d;const U8 *b=s;while(n--)*a++=*b++;return d; }
 static U32 get32(U8 *p) { return p[0]|((U32)p[1]<<8)|((U32)p[2]<<16)|((U32)p[3]<<24); }
 static void put32(U8 *p,U32 n) { for(int i=0;i<4;++i)p[i]=n>>(i*8); }
+/* CP437 block and shade characters (the logo, Setup's progress bar) as Unicode. */
+static CHAR16 glyph(U8 c) {
+ switch(c){case 0xb0:return 0x2591;case 0xb1:return 0x2592;case 0xb2:return 0x2593;case 0xdb:return 0x2588;
+  case 0xdc:return 0x2584;case 0xdd:return 0x258c;case 0xde:return 0x2590;case 0xdf:return 0x2580;}
+ return c;
+}
 static void text(const char *s) {
  CHAR16 out[2]={0,0};
- while(*s) { if(*s=='\n'){out[0]='\r';st->out->write(st->out,out);}char c=*s++;out[0]=(U8)c;st->out->write(st->out,out);__asm__ volatile("outb %0, $0xe9"::"a"((U8)c));if(c=='\n')for(int i=0;i<indent;++i){out[0]=' ';st->out->write(st->out,out);} }
+ while(*s) { if(*s=='\n'){out[0]='\r';st->out->write(st->out,out);}char c=*s++;out[0]=glyph((U8)c);st->out->write(st->out,out);__asm__ volatile("outb %0, $0xe9"::"a"((U8)c));if(c=='\n')for(int i=0;i<indent;++i){out[0]=' ';st->out->write(st->out,out);} }
 }
 static void at(UINTN x,UINTN y,const char *s) { st->out->cursor(st->out,x,y);text(s); }
 static void number(U64 n) { char b[24];int i=0;do{b[i++]=(char)('0'+n%10);n/=10;}while(n);while(i){char s[2]={b[--i],0};text(s);} }
@@ -31,16 +37,36 @@ static struct KEY key(void) {
 }
 static void screen(const char *body) {
  st->out->attribute(st->out,0x17);st->out->clear(st->out);
- at(1,1,DOSXC_LABEL " Setup");at(0,2,"================");
+ at(1,1,DOSXC_LABEL);at(0,2,"==================================");
  st->out->attribute(st->out,0x70);at(0,24,"                                                                               ");
  at(2,24,"ENTER=Continue  F1=Help  F3=Exit");st->out->attribute(st->out,0x1f);
  at(6,4,body);
 }
 static void fatal(const char *s) { screen(s);text("\n\nPress any key to stop.");key();for(;;)__asm__ volatile("hlt"); }
+/* LBA and BYTES count 512-byte sectors.  A device with larger blocks (the
+   CD-ROM El Torito boot volume has 2048-byte blocks once the image is too
+   big for its catalogue entry) is read a block at a time through a cache. */
+static U8 block_cache[4096];
+static struct BLOCK *cached_disk;
+static U64 cached_block=~0ull;
 static int read_block(struct BLOCK *disk,U64 lba,UINTN bytes,void *p) {
- return disk->read(disk,disk->media->id,lba,bytes,p)!=0;
+ U32 size=disk->media->block_size;
+ if(size==512)return disk->read(disk,disk->media->id,lba,bytes,p)!=0;
+ if(size<512||size>sizeof(block_cache)||size%512)return 1;
+ U8 *out=p;U32 per=size/512;
+ for(UINTN done=0;done<bytes;done+=512,++lba){
+  U64 block=lba/per;
+  if(cached_disk!=disk||cached_block!=block){
+   if(disk->read(disk,disk->media->id,block,size,block_cache)){cached_disk=0;return 1;}
+   cached_disk=disk;cached_block=block;
+  }
+  memcpy(out+done,block_cache+(lba%per)*512,bytes-done<512?bytes-done:512);
+ }
+ return 0;
 }
 static int write_block(struct BLOCK *disk,U64 lba,UINTN bytes,const void *p) {
+ if(disk->media->block_size!=512)return 1;       /* only CD-ROMs have other sizes */
+ if(cached_disk==disk)cached_disk=0;
  return disk->write(disk,disk->media->id,lba,bytes,p)!=0;
 }
 static int file_read(const char *path,void *p,UINTN *size) {
@@ -48,10 +74,47 @@ static int file_read(const char *path,void *p,UINTN *size) {
  struct FILE *f;if(root->open(root,&f,name,1,0))return -1;
  EFI_STATUS result=f->read(f,size,p);f->close(f);return result?-1:0;
 }
-static void help(void) {
- screen("Setup Help\n\nENTER continues. F3 leaves Setup.\n\nSelect a physical internal disk of at least 64 MiB.\nSetup replaces its partition table and creates a full-drive FAT32\nsystem partition. Existing partitions will be lost.\n\nNo disk is written until you type ERASE and press ENTER.\n\nPress any key to return.");key();
+/* Every physical 512-byte-sector disk becomes a firmware disk for the
+   runtime (Setup and the drive letters D:, E: ... use them).  The list is
+   looked at again for hot plug (firmware_disk_rescan): indices stay the
+   same, a disk that went away keeps its slot with no Block I/O. */
+static struct BLOCK *disks[16];
+static HANDLE disk_handles[16];
+static unsigned disk_flags[16];
+static UINTN disk_total;
+static U8 *bounce;
+/* The disk is still there: its handle still carries the same Block I/O. */
+static int disk_alive(unsigned i) {
+ struct BLOCK *b;
+ return i<disk_total&&disks[i]&&!st->services->protocol(disk_handles[i],&block_guid,(void **)&b)&&b==disks[i];
 }
-static int discover(void) {
+static void add_disks(int first_time) {
+ HANDLE *handles;UINTN count;
+ if(st->services->handles(2,&block_guid,0,&count,&handles))return;
+ /* Gone: no longer in the list. */
+ for(UINTN d=0;d<disk_total;++d){
+  if(!disks[d])continue;
+  int found=0;for(UINTN i=0;i<count;++i)if(handles[i]==disk_handles[d])found=1;
+  if(!found||!disk_alive((unsigned)d))disks[d]=0;
+ }
+ for(UINTN i=0;i<count;++i) {
+  int known=0;for(UINTN d=0;d<disk_total;++d)if(disks[d]&&disk_handles[d]==handles[i])known=1;
+  if(known)continue;
+  struct BLOCK *disk;
+  if(st->services->protocol(handles[i],&block_guid,(void **)&disk))continue;
+  struct MEDIA *m=disk->media;
+  if(m->logical || m->block_size!=512)continue;
+  if(first_time&&!m->present)continue;
+  unsigned flags=(m->removable?DISK_FLAG_REMOVABLE:0)|(m->readonly?DISK_FLAG_READONLY:0);
+  if(first_time&&!read_block(disk,0,512,buffer) && get32(buffer+440)==source_serial)flags|=DISK_FLAG_SYSTEM;
+  UINTN slot=disk_total;
+  if(slot==16)break;
+  ++disk_total;
+  disks[slot]=disk;disk_handles[slot]=handles[i];disk_flags[slot]=flags;
+ }
+ st->services->free_pool(handles);
+}
+static void collect_disks(void) {
  /* A removable boot path may leave internal storage controllers disconnected. */
  HANDLE *all;UINTN all_count;
  if(!st->services->handles(0,0,0,&all_count,&all)){
@@ -60,68 +123,77 @@ static int discover(void) {
   for(UINTN i=0;i<all_count;++i)connect(all[i],0,0,1);
   st->services->free_pool(all);
  }
- HANDLE *handles;UINTN count;
- if(st->services->handles(2,&block_guid,0,&count,&handles))return -1;
- target_count=0;source=0;
- for(UINTN i=0;i<count;++i) {
-  struct BLOCK *disk;
-  if(st->services->protocol(handles[i],&block_guid,(void **)&disk))continue;
-  struct MEDIA *m=disk->media;
-  if(!m->present || m->logical || m->block_size!=512)continue;
-  if(!read_block(disk,0,512,buffer) && get32(buffer+440)==source_serial){source=disk;continue;}
-  if(m->removable || m->readonly || m->last<131071 || m->last>=0xffffffffull || target_count==9)continue;
-  targets[target_count++]=disk;
- }
- st->services->free_pool(handles);return 0;
+ add_disks(1);
 }
-static int __attribute__((sysv_abi)) sector_read(void *,U32,void *);
-static int __attribute__((sysv_abi)) sector_write(void *,U32,const void *);
-static void install_progress(void *ctx,const char *phase,unsigned percent){
- (void)ctx;at(6,8,"                                                                    ");at(6,8,phase);
- at(6,10,"                    ");if(percent){at(6,10,"");number(percent);text("%");}
+static unsigned __attribute__((sysv_abi)) firmware_disk_count(void){return (unsigned)disk_total;}
+static unsigned __attribute__((sysv_abi)) firmware_disk_rescan(void){add_disks(0);return (unsigned)disk_total;}
+static int __attribute__((sysv_abi)) firmware_disk_info(unsigned i,U64 *sectors,unsigned *flags){
+ if(!disk_alive(i)||!disks[i]->media->present)return -1;
+ *sectors=disks[i]->media->last+1;*flags=disk_flags[i]|(disks[i]->media->readonly?DISK_FLAG_READONLY:0);return 0;
 }
-static int install(struct BLOCK *disk) {
- screen("Installing system files...\n\nCreating C:\\SYSTEM and copying the system components.\nEvery copied block is read back and verified.\n\nDo not turn off your computer.");
- struct fat32_volume source_filesystem;
- source_filesystem.context=volume;source_filesystem.read_sector=sector_read;source_filesystem.write_sector=0;
- if(disk->media->last>=0xffffffffull||fat32_mount(&source_filesystem,0))return -1;
- if(install_system(&source_filesystem,disk,(U32)(disk->media->last+1),sector_read,sector_write,install_progress,0))return -1;
- if(disk->flush&&disk->flush(disk))return -1;return 0;
-}
-
-static void setup(void) {
-welcome:
- for(;;) {
-  screen("Welcome to Setup.\n\nSetup installs DOS-XC on an internal drive.\nSystem files will be stored in C:\\SYSTEM.\n\nFor more information, press F1.\n\nTo choose an installation drive, press ENTER.\n\nTo leave Setup without installing, press F3.");
-  struct KEY k=key();if(k.scan==11){help();continue;}if(k.scan==13)return;if(k.unicode==13)break;
- }
- if(discover()) {screen("The physical setup drive could not be identified.\n\nSetup has not written any disk.\nPress any key to return.");key();goto welcome;}
- if(!target_count){screen("No eligible internal disk was found.\n\nAttach a writable 512-byte-sector disk of at least 64 MiB.\nPress any key to return.");key();goto welcome;}
- UINTN selected=0;
- for(;;) {
-  screen("Choose the internal drive for your installation.\n\nUse arrows or a number, then press ENTER.\nThe external setup drive is excluded.");
-  for(UINTN i=0;i<target_count;++i){at(6,9+i,i==selected?"> ":"  ");number(i+1);text(". Internal disk   ");number((targets[i]->media->last+1)/2048);text(" MiB");}
-  struct KEY k=key();if(k.scan==13)return;if(k.scan==11){help();continue;}
-  if(k.scan==1 && selected)--selected;if(k.scan==2 && selected+1<target_count)++selected;
-  if(k.unicode>='1' && k.unicode<'1'+target_count)selected=k.unicode-'1';
-  if(k.unicode!=13)continue;
-  screen("Confirm installation\n\nSelected destination: internal disk ");number(selected+1);text("  (");number((targets[selected]->media->last+1)/2048);text(" MiB)\n\nWARNING: All existing partitions on this drive will be lost.\nSetup replaces its partition table and uses all available\nspace for a FAT32 system partition.\n\nType ERASE and press ENTER to install.\nPress ESC to choose another drive, or F3 to exit.\n\nConfirmation: ");
-  char answer[6];unsigned used=0;int confirmed=0;
-  for(;;) {
-   k=key();if(k.scan==13)return;if(k.unicode==27)break;
-   if(k.unicode==13){answer[used]=0;if(used==5 && answer[0]=='E'&&answer[1]=='R'&&answer[2]=='A'&&answer[3]=='S'&&answer[4]=='E')confirmed=1;break;}
-   if(k.unicode==8 && used){--used;text("\b \b");continue;}
-   U16 c=k.unicode;if(c>='a'&&c<='z')c-=32;
-   if(c>='A'&&c<='Z'&&used<5){answer[used++]=(char)c;char s[2]={(char)c,0};text(s);}
+/* Simple Pointer devices (mice), found again every second. */
+struct POINTER_STATE { int x,y,z; U8 left,right; };
+struct POINTER_MODE { U64 rx,ry,rz; U8 left,right; };
+struct POINTER { void *reset; EFI_STATUS (*state)(struct POINTER *,struct POINTER_STATE *); void *event; struct POINTER_MODE *mode; };
+static struct GUID pointer_guid={0x31878c87,0x0b75,0x11d5,{0x9a,0x4f,0x00,0x90,0x27,0x3f,0xc1,0x4d}};
+static struct POINTER *pointers[4];
+static UINTN pointer_count,pointer_polls;
+static int __attribute__((sysv_abi)) firmware_pointer(int *dx,int *dy,int *wheel,unsigned *buttons){
+ static unsigned held;
+ if(pointer_polls++%200==0){
+  HANDLE *handles;UINTN count;pointer_count=0;
+  if(!st->services->handles(2,&pointer_guid,0,&count,&handles)){
+   for(UINTN i=0;i<count&&pointer_count<4;++i){struct POINTER *p;
+    if(!st->services->protocol(handles[i],&pointer_guid,(void **)&p))pointers[pointer_count++]=p;}
+   st->services->free_pool(handles);
   }
-  if(!confirmed)continue;
-  if(install(targets[selected])){screen("Setup could not read, write, or verify the selected drive.\nInstallation is incomplete. Do not boot this disk.\n\nPress any key to return.");key();goto welcome;}
-  screen("Setup has finished installing DOS-XC.\n\nSystem directory: C:\\SYSTEM\n\nRemove the external setup drive, then press ENTER\nto restart from the internal drive.");
-  while(key().unicode!=13){}
-  typedef void (*RESET)(U32,EFI_STATUS,UINTN,void *);
-  RESET reset=*(RESET *)((U8 *)st->runtime+104);reset(0,0,0,0);
-  for(;;)__asm__ volatile("hlt");
  }
+ *dx=*dy=*wheel=0;
+ for(UINTN i=0;i<pointer_count;++i){
+  struct POINTER_STATE s;
+  if(pointers[i]->state(pointers[i],&s))continue;
+  /* Resolution is in counts per millimetre: about 2 mm per text column
+     (the runtime moves one column per 8 units). */
+  long long rx=pointers[i]->mode&&pointers[i]->mode->rx?(long long)pointers[i]->mode->rx:2;
+  long long ry=pointers[i]->mode&&pointers[i]->mode->ry?(long long)pointers[i]->mode->ry:2;
+  *dx+=(int)((long long)s.x*4/rx);*dy+=(int)((long long)s.y*4/ry);
+  *wheel+=s.z>0?-1:s.z<0?1:0;
+  held=(s.left?1u:0)|(s.right?2u:0);
+ }
+ *buttons=held;
+ return pointer_count>0;
+}
+static int __attribute__((sysv_abi)) firmware_disk_io(unsigned i,U64 lba,unsigned count,void *data,int write){
+ if(!disk_alive(i)||!count||count>64)return -1;
+ struct BLOCK *disk=disks[i];UINTN bytes=(UINTN)count*512;
+ if(write){
+  if(disk->media->readonly)return -1;
+  memcpy(bounce,data,bytes);if(write_block(disk,lba,bytes,bounce))return -1;
+  if(disk->flush)disk->flush(disk);return 0;
+ }
+ if(read_block(disk,lba,bytes,bounce))return -1;memcpy(data,bounce,bytes);return 0;
+}
+static void __attribute__((sysv_abi)) firmware_reset(void){
+ typedef void (*RESET)(U32,EFI_STATUS,UINTN,void *);
+ RESET reset=*(RESET *)((U8 *)st->runtime+104);reset(0,0,0,0);
+ for(;;)__asm__ volatile("hlt");
+}
+static void __attribute__((sysv_abi)) firmware_poweroff(void){
+ typedef void (*RESET)(U32,EFI_STATUS,UINTN,void *);
+ RESET reset=*(RESET *)((U8 *)st->runtime+104);reset(2,0,0,0);   /* EfiResetShutdown */
+}
+/* The ACPI RSDP from the configuration table (2.0 preferred over 1.0). */
+static U64 acpi_rsdp(void){
+ static const U8 acpi20[16]={0x71,0xe8,0x68,0x88,0xf1,0xe4,0xd3,0x11,0xbc,0x22,0x00,0x80,0xc7,0x3c,0x88,0x81};
+ static const U8 acpi10[16]={0x30,0x2d,0x9d,0xeb,0x88,0x2d,0xd3,0x11,0x9a,0x16,0x00,0x90,0x27,0x3f,0xc1,0x4d};
+ U64 found=0;
+ for(UINTN i=0;i<st->table_count;++i){
+  const U8 *g=(const U8 *)&st->tables[i].guid;int is20=1,is10=1;
+  for(int k=0;k<16;++k){if(g[k]!=acpi20[k])is20=0;if(g[k]!=acpi10[k])is10=0;}
+  if(is20)return (U64)st->tables[i].table;
+  if(is10)found=(U64)st->tables[i].table;
+ }
+ return found;
 }
 static int __attribute__((sysv_abi)) sector_read(void *ctx,U32 lba,void *out) {return read_block(ctx,lba,512,out)?-1:0;}
 static int __attribute__((sysv_abi)) sector_write(void *ctx,U32 lba,const void *in) {return write_block(ctx,lba,512,in)?-1:0;}
@@ -131,13 +203,13 @@ static void __attribute__((sysv_abi)) color(void *ctx,U8 c) {(void)ctx;st->out->
 static void __attribute__((sysv_abi)) cursor(void *ctx,unsigned row,unsigned col){(void)ctx;st->out->cursor(st->out,col,row);}
 static int __attribute__((sysv_abi)) input(void *ctx) {
  (void)ctx;struct KEY k;if(st->in->read(st->in,&k))return -1;
- if(k.unicode==13)return '\n';if(k.scan)return 0x100+k.scan;return k.unicode?k.unicode:-1;
+ if(k.unicode==13)return '\n';if(k.scan==0x17)return 27;if(k.scan)return 0x100+k.scan;return k.unicode?k.unicode:-1;
 }
 static void boot_kernel(void) {
  indent=0;st->out->visible(st->out,1);
  U64 address=0x2000000;
  if(st->services->pages(2,2,768,&address))fatal("Cannot reserve memory for the system components.");
- /* 0x4000000..0x5000000: command programs, batch processor and ELFAPI.DLL. */
+ /* 0x4000000..0x5000000: ELFAPI.DLL and the saved init context. */
  U64 programs=0x4000000;if(st->services->pages(2,2,4096,&programs))fatal("Cannot reserve command program memory.");
  /* The largest block the firmware will spare becomes the 32/64-bit program
     arena; the rest stays available to the firmware's own drivers. */
@@ -157,6 +229,10 @@ static void boot_kernel(void) {
  info.read_key=input;info.keyboard_context=0;info.write_char=output;info.console_context=0;
  info.volume=&filesystem;info.clear_screen=clear;info.set_color=color;info.drive_letter=external?'X':'C';info.set_cursor=cursor;
  info.memory_base=arena;info.memory_size=arena_size;
+ collect_disks();
+ info.disk_count=firmware_disk_count;info.disk_info=firmware_disk_info;info.disk_io=firmware_disk_io;info.reboot=firmware_reset;
+ info.disk_rescan=firmware_disk_rescan;info.pointer=firmware_pointer;
+ info.poweroff=firmware_poweroff;info.acpi_rsdp=acpi_rsdp();
  st->out->attribute(st->out,7);st->out->clear(st->out);
  typedef void (__attribute__((sysv_abi)) *ENTRY)(struct boot_info *);
  ((ENTRY)0x2000000)(&info);
@@ -168,6 +244,7 @@ EFI_STATUS efi_main(HANDLE image,struct TABLE *table) {
  U64 work=0;if(st->services->pages(0,2,16,&work))return 1;buffer=(U8 *)work;verify_buffer=buffer+32768;
  if(read_block(volume,0,512,buffer)||get32(buffer+0x1a0)!=0x53464442)fatal("Invalid DOS-XC system volume.");
  source_serial=get32(buffer+((buffer[22]||buffer[23])?39:67));copy_end=get32(buffer+0x1ac);config_lba=get32(buffer+0x1b4);external=buffer[0x1aa]!=0;
- if(buffer[0x1ab]!=64)fatal("Use the x64 setup image for UEFI installation.");
- if(external)setup();boot_kernel();return 0;
+ if(buffer[0x1ab]!=64)fatal("This is the x86 edition of DOS-XC; use the x64 edition for UEFI boot.");
+ bounce=buffer+32768;(void)config_lba;(void)copy_end;(void)verify_buffer;
+ boot_kernel();return 0;
 }

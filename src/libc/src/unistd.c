@@ -22,7 +22,7 @@ int open(const char *path, int flags, ...) {
         mode = va_arg(ap, int);
         va_end(ap);
     }
-    return (int)__result(API->open(path, flags, mode));
+    return (int)__result(dosxc_sys_open(path, flags, mode));
 }
 
 int openat(int dirfd, const char *path, int flags, ...) {
@@ -37,16 +37,20 @@ int openat(int dirfd, const char *path, int flags, ...) {
         errno = ENOSYS;
         return -1;
     }
-    return (int)__result(API->open(path, flags, mode));
+    return (int)__result(dosxc_sys_open(path, flags, mode));
 }
 
 int creat(const char *path, mode_t mode) { return open(path, O_WRONLY | O_CREAT | O_TRUNC, mode); }
-int close(int fd) { return (int)__result(API->close(fd)); }
-ssize_t read(int fd, void *buffer, size_t size) { return __result(API->read(fd, buffer, size)); }
-ssize_t write(int fd, const void *buffer, size_t size) { return __result(API->write(fd, buffer, size)); }
+int close(int fd) { return (int)__result(dosxc_sys_close(fd)); }
+ssize_t read(int fd, void *buffer, size_t size) {
+    ssize_t n = __result(dosxc_sys_read(fd, buffer, size));
+    if (n > 0 && __console_raw && dosxc_sys_isatty(fd) > 0) n = __console_input(buffer, n);
+    return n;
+}
+ssize_t write(int fd, const void *buffer, size_t size) { return __result(dosxc_sys_write(fd, buffer, size)); }
 
 off_t lseek(int fd, off_t offset, int whence) {
-    long long r = API->seek(fd, offset, whence);
+    long long r = dosxc_sys_seek(fd, offset, whence);
     if (r < 0) {
         errno = (int)-r;
         return -1;
@@ -70,15 +74,15 @@ ssize_t pwrite(int fd, const void *buffer, size_t size, off_t offset) {
     return n;
 }
 
-int dup(int fd) { return (int)__result(API->dup(fd, 0)); }
-int dup2(int fd, int target) { return (int)__result(API->dup2(fd, target)); }
+int dup(int fd) { return (int)__result(dosxc_sys_dup(fd, 0)); }
+int dup2(int fd, int target) { return (int)__result(dosxc_sys_dup2(fd, target)); }
 int dup3(int fd, int target, int flags) {
     if (fd == target) {
         errno = EINVAL;
         return -1;
     }
     int r = dup2(fd, target);
-    if (r >= 0 && (flags & O_CLOEXEC)) API->fdflags(r, 1, DOSXC_FD_CLOEXEC);
+    if (r >= 0 && (flags & O_CLOEXEC)) dosxc_sys_fdflags(r, 1, DOSXC_FD_CLOEXEC);
     return r;
 }
 
@@ -88,40 +92,40 @@ int fcntl(int fd, int command, ...) {
     long argument = va_arg(ap, long);
     va_end(ap);
     switch (command) {
-    case F_DUPFD: return (int)__result(API->dup(fd, (int)argument));
+    case F_DUPFD: return (int)__result(dosxc_sys_dup(fd, (int)argument));
     case F_DUPFD_CLOEXEC: {
-        int r = (int)__result(API->dup(fd, (int)argument));
-        if (r >= 0) API->fdflags(r, 1, DOSXC_FD_CLOEXEC);
+        int r = (int)__result(dosxc_sys_dup(fd, (int)argument));
+        if (r >= 0) dosxc_sys_fdflags(r, 1, DOSXC_FD_CLOEXEC);
         return r;
     }
-    case F_GETFD: return (int)__result(API->fdflags(fd, 0, 0));
-    case F_SETFD: return (int)__result(API->fdflags(fd, 1, (int)argument)) < 0 ? -1 : 0;
-    case F_GETFL: return (int)__result(API->status_flags(fd));
-    case F_SETFL: return (int)__result(API->status_flags(fd)) < 0 ? -1 : 0;
+    case F_GETFD: return (int)__result(dosxc_sys_fdflags(fd, 0, 0));
+    case F_SETFD: return (int)__result(dosxc_sys_fdflags(fd, 1, (int)argument)) < 0 ? -1 : 0;
+    case F_GETFL: return (int)__result(dosxc_sys_status_flags(fd));
+    case F_SETFL: return (int)__result(dosxc_sys_setfl(fd, (int)argument));
     case F_GETLK: {
-        if (__result(API->status_flags(fd)) < 0) return -1;
+        if (__result(dosxc_sys_status_flags(fd)) < 0) return -1;
         ((struct flock *)argument)->l_type = F_UNLCK;
         return 0;
     }
     case F_SETLK:
-    case F_SETLKW: return __result(API->status_flags(fd)) < 0 ? -1 : 0;
+    case F_SETLKW: return __result(dosxc_sys_status_flags(fd)) < 0 ? -1 : 0;
     }
     errno = EINVAL;
     return -1;
 }
 
-int pipe(int fds[2]) { return (int)__result(API->pipe(fds)); }
+int pipe(int fds[2]) { return (int)__result(dosxc_sys_pipe(fds)); }
 int pipe2(int fds[2], int flags) {
     if (pipe(fds)) return -1;
     if (flags & O_CLOEXEC) {
-        API->fdflags(fds[0], 1, DOSXC_FD_CLOEXEC);
-        API->fdflags(fds[1], 1, DOSXC_FD_CLOEXEC);
+        dosxc_sys_fdflags(fds[0], 1, DOSXC_FD_CLOEXEC);
+        dosxc_sys_fdflags(fds[1], 1, DOSXC_FD_CLOEXEC);
     }
     return 0;
 }
 
 int isatty(int fd) {
-    int r = API->isatty(fd);
+    int r = dosxc_sys_isatty(fd);
     if (r < 0) {
         errno = -r;
         return 0;
@@ -130,7 +134,7 @@ int isatty(int fd) {
     return r;
 }
 
-int ftruncate(int fd, off_t length) { return (int)__result(API->ftruncate(fd, length)); }
+int ftruncate(int fd, off_t length) { return (int)__result(dosxc_sys_ftruncate(fd, length)); }
 int truncate(const char *path, off_t length) {
     int fd = open(path, O_WRONLY);
     if (fd < 0) return -1;
@@ -140,13 +144,13 @@ int truncate(const char *path, off_t length) {
     errno = saved;
     return r;
 }
-int fsync(int fd) { return (int)__result(API->fsync(fd)); }
+int fsync(int fd) { return (int)__result(dosxc_sys_fsync(fd)); }
 int fdatasync(int fd) { return fsync(fd); }
 void sync(void) {}
 int lockf(int fd, int command, off_t length) {
     (void)command;
     (void)length;
-    return __result(API->status_flags(fd)) < 0 ? -1 : 0;
+    return __result(dosxc_sys_status_flags(fd)) < 0 ? -1 : 0;
 }
 
 /* ---- stat ---- */
@@ -166,14 +170,14 @@ hidden void __stat_convert(const struct dosxc_stat *in, void *output) {
 
 int stat(const char *path, struct stat *out) {
     struct dosxc_stat s;
-    if (__result(API->stat(path, &s)) < 0) return -1;
+    if (__result(dosxc_sys_stat(path, &s)) < 0) return -1;
     __stat_convert(&s, out);
     return 0;
 }
 int lstat(const char *path, struct stat *out) { return stat(path, out); }
 int fstat(int fd, struct stat *out) {
     struct dosxc_stat s;
-    if (__result(API->fstat(fd, &s)) < 0) return -1;
+    if (__result(dosxc_sys_fstat(fd, &s)) < 0) return -1;
     __stat_convert(&s, out);
     return 0;
 }
@@ -188,7 +192,7 @@ int fstatat(int dirfd, const char *path, struct stat *out, int flags) {
 
 int access(const char *path, int mode) {
     struct dosxc_stat s;
-    if (__result(API->stat(path, &s)) < 0) return -1;
+    if (__result(dosxc_sys_stat(path, &s)) < 0) return -1;
     if ((mode & W_OK) && (s.attributes & DOSXC_ATTR_READONLY)) {
         errno = EACCES;
         return -1;
@@ -198,11 +202,11 @@ int access(const char *path, int mode) {
 
 int mkdir(const char *path, mode_t mode) {
     (void)mode;
-    return (int)__result(API->mkdir(path));
+    return (int)__result(dosxc_sys_mkdir(path));
 }
-int rmdir(const char *path) { return (int)__result(API->rmdir(path)); }
-int unlink(const char *path) { return (int)__result(API->unlink(path)); }
-int chdir(const char *path) { return (int)__result(API->chdir(path)); }
+int rmdir(const char *path) { return (int)__result(dosxc_sys_rmdir(path)); }
+int unlink(const char *path) { return (int)__result(dosxc_sys_unlink(path)); }
+int chdir(const char *path) { return (int)__result(dosxc_sys_chdir(path)); }
 int fchdir(int fd) {
     (void)fd;
     errno = ENOSYS;
@@ -211,12 +215,12 @@ int fchdir(int fd) {
 int chmod(const char *path, mode_t mode) {
     (void)mode;
     struct dosxc_stat s;
-    return (int)__result(API->stat(path, &s)) < 0 ? -1 : 0;
+    return (int)__result(dosxc_sys_stat(path, &s)) < 0 ? -1 : 0;
 }
 int fchmod(int fd, mode_t mode) {
     (void)mode;
     struct dosxc_stat s;
-    return (int)__result(API->fstat(fd, &s)) < 0 ? -1 : 0;
+    return (int)__result(dosxc_sys_fstat(fd, &s)) < 0 ? -1 : 0;
 }
 static mode_t current_umask = 022;
 mode_t umask(mode_t mask) {
@@ -260,7 +264,7 @@ char *getcwd(char *buffer, size_t size) {
         errno = EINVAL;
         return 0;
     }
-    if (__result(API->getcwd(local, sizeof(local))) < 0) goto fail;
+    if (__result(dosxc_sys_getcwd(local, sizeof(local))) < 0) goto fail;
     if (strlen(local) + 1 > size) {
         errno = ERANGE;
         goto fail;
@@ -279,8 +283,8 @@ char *realpath(const char *path, char *resolved) {
         errno = EINVAL;
         return 0;
     }
-    if (__result(API->resolve(path, local, sizeof(local))) < 0) return 0;
-    if (__result(API->stat(local, &s)) < 0) return 0;
+    if (__result(dosxc_sys_resolve(path, local, sizeof(local))) < 0) return 0;
+    if (__result(dosxc_sys_stat(local, &s)) < 0) return 0;
     if (!resolved) return strdup(local);
     strcpy(resolved, local);
     return resolved;
@@ -315,7 +319,7 @@ DIR *opendir(const char *path) {
             free(d);
             return 0;
         }
-        long n = API->listdir(path, d->entries, capacity);
+        long n = dosxc_sys_listdir(path, d->entries, capacity);
         if (n < 0) {
             free(d->entries);
             free(d);

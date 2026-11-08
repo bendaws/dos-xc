@@ -52,11 +52,13 @@ struct SERVICES {
  EFI_STATUS (*handles)(U32,struct GUID *,void *,UINTN *,HANDLE **);
  void *locate_protocol,*install_multiple,*uninstall_multiple,*crc,*copy,*set,*create_event_ex;
 };
+struct CONFIG_TABLE { struct GUID guid; void *table; };
 struct TABLE {
  U8 header[24]; CHAR16 *vendor; U32 revision;
  HANDLE in_handle; struct INPUT *in;
  HANDLE out_handle; struct OUTPUT *out;
  HANDLE error_handle; void *error,*runtime; struct SERVICES *services;
+ UINTN table_count; struct CONFIG_TABLE *tables;
 };
 _Static_assert(__builtin_offsetof(struct SERVICES,protocol)==152,"EFI HandleProtocol offset");
 _Static_assert(__builtin_offsetof(struct SERVICES,handles)==312,"EFI LocateHandleBuffer offset");

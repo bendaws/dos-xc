@@ -118,7 +118,20 @@ substitute(gcc / 'gcc/gcc.cc', 'GCC_CASE_INSENSITIVE_SUFFIXES', '''  /* Look for
   /* Look for a suffix.  */
   for (cp = compilers + n_compilers - 1; cp >= compilers; cp--)''')
 
-# 8. libstdc++: probe the C library with link tests like other hosted OSes.
+# 8. Paths have drive letters ("C:/DIR") and '\\' separators, and PATH uses
+#    ';', as on DJGPP: DOS-XC is a DOS-based file system.
+for tree in (gcc, binutils):
+    substitute(tree / 'include/filenames.h', '__dosxc__',
+               '#if defined(__MSDOS__) || (defined(_WIN32) && ! defined(__CYGWIN__)) || \\\n    defined(__OS2__)',
+               '#if defined(__MSDOS__) || (defined(_WIN32) && ! defined(__CYGWIN__)) || \\\n    defined(__OS2__) || defined(__dosxc__)')
+    substitute(tree / 'libiberty/make-relative-prefix.c', '__dosxc__',
+               '    || defined (__DJGPP__) || defined (__OS2__)',
+               '    || defined (__DJGPP__) || defined (__OS2__) || defined (__dosxc__)')
+substitute(binutils / 'ld/lexsup.c', '__dosxc__',
+           '#if defined (__MSDOS__) || (defined (_WIN32) && ! defined (__CYGWIN32__))',
+           '#if defined (__MSDOS__) || (defined (_WIN32) && ! defined (__CYGWIN32__)) || defined (__dosxc__)')
+
+# 9. libstdc++: probe the C library with link tests like other hosted OSes.
 linux = '  *-linux* | *-uclinux* | *-gnu* | *-kfreebsd*-gnu | *-cygwin* | *-solaris*)'
 for name in ('libstdc++-v3/crossconfig.m4', 'libstdc++-v3/configure'):
     substitute(gcc / name, '*-dosxc*', linux, linux[:-1] + ' | *-dosxc*)')

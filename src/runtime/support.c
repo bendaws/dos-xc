@@ -117,3 +117,8 @@ i64 __moddi3(i64 a, i64 b) {
     return a < 0 ? -(i64)r : (i64)r;
 }
 #endif
+
+int rt_strcmp(const char *a, const char *b) {
+    while (*a && *a == *b) ++a, ++b;
+    return (int)(u8)*a - (int)(u8)*b;
+}

@@ -1,6 +1,10 @@
 /*
  * DOS-XC /kernel/console.c
  * Copyright (c) 2026 Ben Daws - see LICENSE.txt
+ *
+ * The 80x25 text console: VGA text memory on BIOS boot, the firmware's
+ * text output under UEFI.  The cursor position is tracked for both, so the
+ * runtime's terminal emulation can ask for it.
  */
 
 #include "console.h"
@@ -21,6 +25,7 @@ static void outb(unsigned short port, unsigned char value) {
 }
 
 static void update_cursor(void) {
+    if (output_char) return;
     outb(0x3d4, 14);
     outb(0x3d5, cursor >> 8);
     outb(0x3d4, 15);
@@ -52,22 +57,18 @@ void console_set_color(unsigned char attribute) {
 unsigned char console_get_color(void) { return color; }
 
 void console_clear(void) {
+    cursor = 0;
     if (output_char) {
         if (output_clear) output_clear(output_context);
         return;
     }
     for (unsigned int i = 0; i < WIDTH * HEIGHT; ++i) vga[i] = (color << 8) | ' ';
-    cursor = 0;
     update_cursor();
 }
 
 void console_putc(char c) {
-    if (output_char) {
-        output_char(output_context, c);
-        return;
-    }
     /* Mirror text to the Bochs/QEMU debug console (port 0xE9). */
-    outb(0xe9, (unsigned char)c);
+    if (!output_char) outb(0xe9, (unsigned char)c);
     switch (c) {
     case '\r': cursor -= cursor % WIDTH; break;
     case '\n': cursor += WIDTH - cursor % WIDTH; break;
@@ -81,12 +82,16 @@ void console_putc(char c) {
     case '\a': return;
     default:
         if ((unsigned char)c < 32) return;
-        vga[cursor++] = (color << 8) | (unsigned char)c;
+        if (!output_char) vga[cursor] = (color << 8) | (unsigned char)c;
+        ++cursor;
     }
+    if (output_char) output_char(output_context, c);
     while (cursor >= WIDTH * HEIGHT) {
-        for (unsigned int i = 0; i < WIDTH * (HEIGHT - 1); ++i) vga[i] = vga[i + WIDTH];
-        for (unsigned int i = WIDTH * (HEIGHT - 1); i < WIDTH * HEIGHT; ++i)
-            vga[i] = (color << 8) | ' ';
+        if (!output_char) {
+            for (unsigned int i = 0; i < WIDTH * (HEIGHT - 1); ++i) vga[i] = vga[i + WIDTH];
+            for (unsigned int i = WIDTH * (HEIGHT - 1); i < WIDTH * HEIGHT; ++i)
+                vga[i] = (color << 8) | ' ';
+        }
         cursor -= WIDTH;
     }
     update_cursor();
@@ -100,7 +105,64 @@ void console_set_cursor_output(void (*set_cursor)(void *,unsigned,unsigned)) { o
 void console_set_cursor(unsigned row,unsigned column) {
     if(row>=HEIGHT)row=HEIGHT-1;if(column>=WIDTH)column=WIDTH-1;
     cursor=row*WIDTH+column;
-    if(output_cursor)output_cursor(output_context,row,column);else if(!output_char)update_cursor();
+    if(output_cursor)output_cursor(output_context,row,column);else update_cursor();
+}
+
+void console_get_cursor(unsigned *row, unsigned *column) {
+    *row = cursor / WIDTH;
+    *column = cursor % WIDTH;
+}
+
+/* Write one cell without moving the cursor or scrolling. */
+void console_put_at(unsigned row, unsigned column, char c) {
+    if (row >= HEIGHT || column >= WIDTH) return;
+    if (!output_char) {
+        outb(0xe9, (unsigned char)c);
+        vga[row * WIDTH + column] = (color << 8) | (unsigned char)c;
+        return;
+    }
+    /* Firmware consoles scroll when the last cell is written. */
+    if (row == HEIGHT - 1 && column == WIDTH - 1) return;
+    unsigned saved = cursor;
+    if (output_cursor) output_cursor(output_context, row, column);
+    output_char(output_context, c);
+    cursor = saved;
+    if (output_cursor) output_cursor(output_context, saved / WIDTH, saved % WIDTH);
+}
+
+/* Blank COUNT cells from (row, column) in the current color. */
+void console_erase(unsigned row, unsigned column, unsigned count) {
+    if (row >= HEIGHT || column >= WIDTH) return;
+    unsigned at = row * WIDTH + column;
+    if (count > WIDTH * HEIGHT - at) count = WIDTH * HEIGHT - at;
+    if (!output_char) {
+        for (unsigned i = 0; i < count; ++i) vga[at + i] = (color << 8) | ' ';
+        return;
+    }
+    unsigned saved = cursor;
+    for (unsigned i = 0; i < count; ++i) {
+        unsigned cell = at + i;
+        if (cell == WIDTH * HEIGHT - 1) break;
+        if (i == 0 || cell % WIDTH == 0) {
+            if (output_cursor) output_cursor(output_context, cell / WIDTH, cell % WIDTH);
+        }
+        output_char(output_context, ' ');
+    }
+    cursor = saved;
+    if (output_cursor) output_cursor(output_context, saved / WIDTH, saved % WIDTH);
+}
+
+/* Scroll rows top..bottom by one line; the vacated row is blanked. */
+int console_scroll(unsigned top, unsigned bottom, int up) {
+    if (output_char || top > bottom || bottom >= HEIGHT) return -1;
+    if (up) {
+        for (unsigned i = top * WIDTH; i < bottom * WIDTH; ++i) vga[i] = vga[i + WIDTH];
+        for (unsigned i = bottom * WIDTH; i < (bottom + 1) * WIDTH; ++i) vga[i] = (color << 8) | ' ';
+    } else {
+        for (unsigned i = (bottom + 1) * WIDTH; i-- > (top + 1) * WIDTH;) vga[i] = vga[i - WIDTH];
+        for (unsigned i = top * WIDTH; i < (top + 1) * WIDTH; ++i) vga[i] = (color << 8) | ' ';
+    }
+    return 0;
 }
 
 void console_resume(void) {

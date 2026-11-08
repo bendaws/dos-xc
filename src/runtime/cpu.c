@@ -3,13 +3,16 @@
  * Copyright (c) 2026 Ben Daws - see LICENSE.txt
  *
  * Processor state for 32/64-bit programs: SSE enablement, identity paging
- * up to 4 GiB (64-bit BIOS boot), the exception IDT, time sources.
+ * up to 4 GiB (64-bit BIOS boot), the exception and system call IDT, time
+ * sources.
  */
 
 #include "runtime.h"
 
 extern uptr runtime_exception_stubs[32];
 extern char runtime_spurious[];
+extern char runtime_syscall_entry[];
+int runtime_fxsr;
 
 static int sse;
 static u64 tsc_hz;
@@ -47,7 +50,7 @@ static void enable_sse(void) {
     if (!(d & (1u << 25)) || !(d & (1u << 24))) return;      /* SSE, FXSR */
     write_cr0((read_cr0() & ~(uptr)((1u << 2) | (1u << 3))) | (1u << 1)); /* !EM !TS MP */
     write_cr4(read_cr4() | (1u << 9) | (1u << 10));              /* OSFXSR OSXMMEXCPT */
-    sse = 1;
+    sse = runtime_fxsr = 1;
 }
 
 #if __SIZEOF_POINTER__ == 8
@@ -72,11 +75,12 @@ static void extend_paging(void) {
 }
 #endif
 
-static void set_gate(int vector, uptr handler, u16 selector) {
+/* type 0x8e: interrupt gate (IF cleared); 0xef: trap gate, DPL 3 (IF kept). */
+static void set_gate(int vector, uptr handler, u16 selector, u8 type) {
     struct gate *g = &idt[vector];
     g->low = (u16)handler;
     g->selector = selector;
-    g->type = 0x8e;
+    g->type = type;
 #if __SIZEOF_POINTER__ == 8
     g->ist = 0;
     g->middle = (u16)(handler >> 16);
@@ -98,10 +102,13 @@ static void build_idt(void) {
     int copy = !ctx->bios_available && firmware.limit + 1 >= sizeof(idt) && firmware.base;
     for (int v = 0; v < 256; ++v) {
         if (copy) idt[v] = ((struct gate *)firmware.base)[v];
-        else set_gate(v, (uptr)runtime_spurious, cs);
+        else set_gate(v, (uptr)runtime_spurious, cs, 0x8e);
     }
     for (int v = 0; v < 32; ++v)
-        if (v != 2) set_gate(v, runtime_exception_stubs[v], cs);
+        if (v != 2) set_gate(v, runtime_exception_stubs[v], cs, 0x8e);
+    /* System calls run with the caller's interrupt flag, as direct ABI 1
+       calls did (UEFI firmware drivers depend on its timer interrupt). */
+    set_gate(DOSXC_SYSCALL_VECTOR, (uptr)runtime_syscall_entry, cs, 0xef);
     idt_pointer.limit = sizeof(idt) - 1;
     idt_pointer.base = (uptr)idt;
 }
@@ -111,6 +118,9 @@ void cpu_install_idt(void) {
     __asm__ volatile("sidt %0" : "=m"(saved_idt));
     __asm__ volatile("lidt %0" ::"m"(idt_pointer));
 }
+
+/* The kernel's IDT, for leaving to real mode from inside a program. */
+void cpu_kernel_idt(void) { __asm__ volatile("lidt %0" ::"m"(saved_idt)); }
 
 void cpu_restore_idt(void) {
     if (--idt_depth) return;
@@ -167,6 +177,18 @@ i64 cpu_rtc_time(void) {
     }
     year += century >= 19 && century <= 21 ? century * 100 : 2000;
     return rt_epoch(year, month, day, hour, minute, second);
+}
+
+/* After a 16-bit program the boot loader rebuilt the processor state:
+   enable SSE and the 4 GiB mapping again and take over the new kernel IDT. */
+void cpu_resume(void) {
+    enable_sse();
+#if __SIZEOF_POINTER__ == 8
+    if (ctx->bios_available) extend_paging();
+#endif
+    paging_resume();
+    __asm__ volatile("sidt %0" : "=m"(saved_idt));
+    if (idt_depth) __asm__ volatile("lidt %0" ::"m"(idt_pointer));
 }
 
 int cpu_init(void) {

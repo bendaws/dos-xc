@@ -12,14 +12,17 @@
  */
 
 #include "runtime.h"
+#include "net.h"
 
-enum { KIND_FILE = 1, KIND_CONSOLE, KIND_NULL, KIND_PIPE_READ, KIND_PIPE_WRITE, KIND_DIRECTORY };
+enum { KIND_FILE = 1, KIND_CONSOLE, KIND_NULL, KIND_PIPE_READ, KIND_PIPE_WRITE, KIND_DIRECTORY, KIND_SOCKET };
 #define MAX_INODES 192
 #define MAX_OPEN 384
 #define MAX_PIPES 32
 
 struct inode {
     int refs, dirty, unlinked;
+    int loaded;                 /* data holds the file; otherwise reads go to disk */
+    struct fat32_cursor cursor;
     char path[PATH_MAX_RT];
     u8 *data;
     uptr size, capacity;
@@ -32,6 +35,7 @@ struct open_file {
     u64 offset;
     struct inode *inode;
     struct pipe *pipe;
+    struct socket *socket;
     char path[PATH_MAX_RT];
 };
 
@@ -57,23 +61,41 @@ static int device_kind(const char *path) {
     return 0;
 }
 
+/* The canonical directory a process without parent starts in. */
+static void root_directory(char *out) {
+    out[0] = (char)rt_upper(ctx->drive);
+    out[1] = ':';
+    rt_strcpy(out + 2, ctx->cwd[0] == '\\' ? ctx->cwd : "\\");
+}
+
+/* "D:\DIR\FILE" from any of: FILE, DIR/FILE, /DIR/FILE, D:/DIR/FILE, D:FILE.
+   A drive spec after a separator ("C:/HOME/D:/X", which Unix programs make
+   by joining the current folder with a DOS path) starts again at that
+   drive's root. */
 int path_resolve(const struct process *p, const char *s, char *out) {
-    char buffer[PATH_MAX_RT];
+    char buffer[PATH_MAX_RT], cwd_buffer[PATH_MAX_RT];
     uptr n;
     if (!s || !*s) return -DOSXC_ENOENT;
+    const char *cwd = p ? p->cwd : cwd_buffer;
+    if (!p) root_directory(cwd_buffer);
+    char drive = cwd[0];
+    int absolute = *s == '/' || *s == '\\';
     if (((s[0] | 32) >= 'a' && (s[0] | 32) <= 'z') && s[1] == ':') {
-        if (rt_upper(s[0]) != rt_upper(ctx->drive)) return -DOSXC_ENOENT;
+        drive = (char)rt_upper(s[0]);
+        if (!volume_exists(drive)) return -DOSXC_ENOENT;
+        if (drive != cwd[0]) absolute = 1;
         s += 2;
+        if (*s == '/' || *s == '\\') absolute = 1;
     }
-    if (*s == '/' || *s == '\\') {
-        buffer[0] = '\\';
-        n = 1;
+    buffer[0] = drive;
+    buffer[1] = ':';
+    if (absolute) {
+        buffer[2] = '\\';
+        n = 3;
     } else {
-        const char *cwd = p ? p->cwd : ctx->cwd;
         n = rt_strlen(cwd);
-        if (n >= PATH_MAX_RT) return -DOSXC_ENAMETOOLONG;
+        if (n < 3 || n >= PATH_MAX_RT) return -DOSXC_ENAMETOOLONG;
         memcpy(buffer, cwd, n);
-        if (!n) buffer[n++] = '\\';
     }
     while (*s) {
         while (*s == '/' || *s == '\\') ++s;
@@ -82,9 +104,16 @@ int path_resolve(const struct process *p, const char *s, char *out) {
         while (*s && *s != '/' && *s != '\\') ++s;
         uptr length = (uptr)(s - start);
         if (length == 1 && start[0] == '.') continue;
+        if (length == 2 && start[1] == ':' && ((start[0] | 32) >= 'a' && (start[0] | 32) <= 'z')) {
+            char letter = (char)rt_upper(start[0]);
+            if (!volume_exists(letter)) return -DOSXC_ENOENT;
+            buffer[0] = letter;
+            n = 3;
+            continue;
+        }
         if (length == 2 && start[0] == '.' && start[1] == '.') {
-            while (n > 1 && buffer[n - 1] != '\\') --n;
-            if (n > 1) --n;
+            while (n > 3 && buffer[n - 1] != '\\') --n;
+            if (n > 3) --n;
             continue;
         }
         for (uptr i = 0; i < length; ++i) {
@@ -93,7 +122,7 @@ int path_resolve(const struct process *p, const char *s, char *out) {
                 return -DOSXC_EINVAL;
         }
         if (n + length + 2 >= PATH_MAX_RT) return -DOSXC_ENAMETOOLONG;
-        if (n > 1) buffer[n++] = '\\';
+        if (n > 3) buffer[n++] = '\\';
         memcpy(buffer + n, start, length);
         n += length;
     }
@@ -102,21 +131,27 @@ int path_resolve(const struct process *p, const char *s, char *out) {
     return 0;
 }
 
+/* The POSIX spelling programs see: "D:/DIR/FILE" (as on DJGPP). */
 void path_posix(const char *canonical, char *out, uptr size) {
     uptr i = 0;
-    for (; canonical[i] && i + 1 < size; ++i) out[i] = canonical[i] == '\\' ? '/' : canonical[i];
+    if (canonical[0] && canonical[1] == ':' && size > 3) {
+        out[i++] = canonical[0];
+        out[i++] = ':';
+        canonical += 2;
+    }
+    for (; *canonical && i + 1 < size; ++canonical) out[i++] = *canonical == '\\' ? '/' : *canonical;
     out[i] = 0;
 }
 
 static void parent_of(const char *canonical, char *out) {
     rt_strcpy(out, canonical);
     uptr n = rt_strlen(out);
-    while (n > 1 && out[n - 1] != '\\') --n;
-    out[n > 1 ? n - 1 : 1] = 0;
+    while (n > 3 && out[n - 1] != '\\') --n;
+    out[n > 3 ? n - 1 : 3] = 0;
 }
 
 static int fat_info(const char *canonical, struct fat32_info *info) {
-    return ctx->volume && !ctx->stat(ctx->volume, canonical, info) ? 0 : -1;
+    return !fs_stat(canonical, info) ? 0 : -1;
 }
 
 static u32 path_hash(const char *path) {
@@ -140,6 +175,7 @@ static void fill_stat(struct dosxc_stat *st, u32 kind, u64 size, u8 attributes, 
     if (attributes & DOSXC_ATTR_DIRECTORY) st->mode = DOSXC_S_IFDIR | 0755;
     else if (kind == KIND_FILE) st->mode = DOSXC_S_IFREG | ((attributes & DOSXC_ATTR_READONLY) ? 0555 : 0755);
     else if (kind == KIND_PIPE_READ || kind == KIND_PIPE_WRITE) st->mode = DOSXC_S_IFIFO | 0600;
+    else if (kind == KIND_SOCKET) st->mode = DOSXC_S_IFSOCK | 0666;
     else st->mode = DOSXC_S_IFCHR | 0666;
 }
 
@@ -170,8 +206,8 @@ static int reserve(struct inode *n, uptr needed) {
 static int flush(struct inode *n) {
     if (!n->dirty || n->unlinked) return 0;
     if (n->size > 0xffffffffu) return -DOSXC_EFBIG;
-    if (!ctx->volume->write_sector) return -DOSXC_EROFS;
-    if (ctx->save(ctx->volume, n->path, n->data ? n->data : empty_buffer, (u32)n->size)) return -DOSXC_ENOSPC;
+    if (!fs_writable(n->path)) return -DOSXC_EROFS;
+    if (fs_save(n->path, n->data ? n->data : empty_buffer, (u32)n->size)) return -DOSXC_ENOSPC;
     n->dirty = 0;
     struct fat32_info info;
     if (!fat_info(n->path, &info)) {
@@ -214,6 +250,7 @@ static int release_open(struct open_file *f) {
     if (f->kind == KIND_FILE) result = release_inode(f->inode);
     else if (f->kind == KIND_PIPE_READ) { --f->pipe->readers; free_pipe(f->pipe); }
     else if (f->kind == KIND_PIPE_WRITE) { --f->pipe->writers; free_pipe(f->pipe); }
+    else if (f->kind == KIND_SOCKET) socket_close(f->socket);
     f->kind = 0;
     return result;
 }
@@ -251,8 +288,8 @@ static int open_inode(struct open_file *f, const char *path, int flags) {
         parent_of(path, parent);
         if (fat_info(parent, &folder)) return -DOSXC_ENOENT;
         if (!(folder.attributes & DOSXC_ATTR_DIRECTORY)) return -DOSXC_ENOTDIR;
-        if (!ctx->volume->write_sector) return -DOSXC_EROFS;
-        if (ctx->save(ctx->volume, path, empty_buffer, 0)) return -DOSXC_ENOSPC;
+        if (!fs_writable(path)) return -DOSXC_EROFS;
+        if (fs_save(path, empty_buffer, 0)) return -DOSXC_ENOSPC;
         if (fat_info(path, &info)) return -DOSXC_EIO;
     } else if (!n && writing && (info.attributes & DOSXC_ATTR_READONLY)) {
         return -DOSXC_EACCES;
@@ -266,18 +303,28 @@ static int open_inode(struct open_file *f, const char *path, int flags) {
         n->attributes = info.attributes;
         n->date = info.date;
         n->time = info.time;
+        n->loaded = 1;
         if (!(flags & DOSXC_O_TRUNC) && info.size) {
-            if (reserve(n, info.size)) return -DOSXC_ENOMEM;
-            if (ctx->read(ctx->volume, path, n->data, info.size)) {
-                memory_free(n->data, OWNER_KERNEL);
-                memset(n, 0, sizeof(*n));
-                return -DOSXC_EIO;
-            }
             n->size = info.size;
+            if (!writing) n->loaded = 0;       /* read on demand */
+            else {
+                if (reserve(n, info.size)) return -DOSXC_ENOMEM;
+                if (fs_read(path, n->data, info.size)) {
+                    memory_free(n->data, OWNER_KERNEL);
+                    memset(n, 0, sizeof(*n));
+                    return -DOSXC_EIO;
+                }
+            }
         }
     } else if ((flags & DOSXC_O_TRUNC) && n->size) {
         n->size = 0;
+        n->loaded = 1;
         n->dirty = 1;
+    }
+    if (writing && !n->loaded) {               /* a reader opened it first */
+        if (n->size && reserve(n, n->size)) return -DOSXC_ENOMEM;
+        if (n->size && fs_read(path, n->data, (u32)n->size)) return -DOSXC_EIO;
+        n->loaded = 1;
     }
     if ((flags & DOSXC_O_TRUNC) && exists && info.size) n->dirty = 1;
     ++n->refs;
@@ -318,89 +365,9 @@ static int api_close(int fd) {
     return release_open(f);
 }
 
-/* ---- console ---------------------------------------------------------- */
+/* ---- console (terminal.c) -------------------------------------------- */
 
-static char line[512];
-static uptr line_length, line_position;
-static int raw_mode;
-
-static int wait_key(void) {
-    int key;
-    do key = ctx->read_key();
-    while (key < 0);
-    return key;
-}
-
-static dosxc_ssize console_read(u8 *buffer, uptr size) {
-    if (!size) return 0;
-    if (raw_mode) {
-        int key;
-        do key = wait_key();
-        while (key > 255);
-        buffer[0] = (u8)key;
-        return 1;
-    }
-    if (line_position == line_length) {
-        line_position = line_length = 0;
-        for (;;) {
-            int key = wait_key();
-            if (key == '\n' || key == '\r') {
-                ctx->write("\r\n");
-                line[line_length++] = '\n';
-                break;
-            }
-            if (key == '\b') {
-                if (line_length) {
-                    --line_length;
-                    ctx->write("\b \b");
-                }
-                continue;
-            }
-            if ((key == 26 || key == 4) && !line_length) {   /* Ctrl+Z / Ctrl+D: end of input */
-                ctx->write("^Z\r\n");
-                return 0;
-            }
-            if (key == 3) {                                  /* Ctrl+C */
-                ctx->write("^C\r\n");
-                process_exit(DOSXC_SIGNALED(2));
-            }
-            if (key >= 32 && key < 127 && line_length < sizeof(line) - 1) {
-                line[line_length++] = (char)key;
-                ctx->putc((char)key);
-            }
-        }
-    }
-    uptr n = line_length - line_position;
-    if (n > size) n = size;
-    memcpy(buffer, line + line_position, n);
-    line_position += n;
-    return (dosxc_ssize)n;
-}
-
-static dosxc_ssize console_write(const u8 *buffer, uptr size) {
-    char chunk[257];
-    uptr n = 0;
-    for (uptr i = 0; i < size; ++i) {
-        if (!buffer[i]) continue;
-        chunk[n++] = (char)buffer[i];
-        if (n == sizeof(chunk) - 1) {
-            chunk[n] = 0;
-            ctx->write(chunk);
-            n = 0;
-        }
-    }
-    if (n) {
-        chunk[n] = 0;
-        ctx->write(chunk);
-    }
-    return (dosxc_ssize)size;
-}
-
-int files_console_mode(int mode) {
-    int old = raw_mode;
-    raw_mode = mode == DOSXC_CONSOLE_RAW;
-    return old ? DOSXC_CONSOLE_RAW : 0;
-}
+int files_console_mode(int mode) { return terminal_mode(mode); }
 
 /* ---- data transfer ---------------------------------------------------- */
 
@@ -413,11 +380,13 @@ static dosxc_ssize api_read(int fd, void *buffer, dosxc_size size) {
         if (f->offset >= n->size) return 0;
         uptr available = (uptr)(n->size - f->offset);
         if (size > available) size = available;
-        memcpy(buffer, n->data + f->offset, size);
+        if (!n->loaded) {
+            if (fs_read_cursor(n->path, &n->cursor, (u32)f->offset, buffer, (u32)size)) return -DOSXC_EIO;
+        } else memcpy(buffer, n->data + f->offset, size);
         f->offset += size;
         return (dosxc_ssize)size;
     }
-    case KIND_CONSOLE: return console_read(buffer, size);
+    case KIND_CONSOLE: return terminal_read(buffer, size);
     case KIND_NULL: return 0;
     case KIND_PIPE_READ: {
         struct pipe *p = f->pipe;
@@ -429,6 +398,7 @@ static dosxc_ssize api_read(int fd, void *buffer, dosxc_size size) {
         return (dosxc_ssize)size;
     }
     case KIND_DIRECTORY: return -DOSXC_EISDIR;
+    case KIND_SOCKET: return (dosxc_ssize)socket_read(f->socket, buffer, size, 0, (f->flags & DOSXC_O_NONBLOCK) != 0);
     }
     return -DOSXC_EBADF;
 }
@@ -452,7 +422,7 @@ static dosxc_ssize api_write(int fd, const void *buffer, dosxc_size size) {
         n->dirty = 1;
         return (dosxc_ssize)size;
     }
-    case KIND_CONSOLE: return console_write(buffer, size);
+    case KIND_CONSOLE: return terminal_write(buffer, size);
     case KIND_NULL: return (dosxc_ssize)size;
     case KIND_PIPE_WRITE: {
         struct pipe *p = f->pipe;
@@ -473,6 +443,7 @@ static dosxc_ssize api_write(int fd, const void *buffer, dosxc_size size) {
         p->tail += size;
         return (dosxc_ssize)size;
     }
+    case KIND_SOCKET: return (dosxc_ssize)socket_write(f->socket, buffer, size, 0, (f->flags & DOSXC_O_NONBLOCK) != 0);
     }
     return -DOSXC_EBADF;
 }
@@ -628,9 +599,9 @@ static int api_unlink(const char *path) {
     if (info.attributes & DOSXC_ATTR_DIRECTORY) return -DOSXC_EISDIR;
     if (info.attributes & DOSXC_ATTR_READONLY) return -DOSXC_EACCES;
     struct inode *n = find_inode(canonical);
+    if (!fs_writable(canonical)) return -DOSXC_EROFS;
     if (n) n->unlinked = 1;
-    if (!ctx->volume->write_sector) return -DOSXC_EROFS;
-    return ctx->remove(ctx->volume, canonical) ? -DOSXC_EIO : 0;
+    return fs_remove(canonical) ? -DOSXC_EIO : 0;
 }
 
 static int api_rename(const char *from, const char *to) {
@@ -641,6 +612,8 @@ static int api_rename(const char *from, const char *to) {
     struct fat32_info info, existing;
     if (fat_info(source, &info)) return -DOSXC_ENOENT;
     if (rt_equal_nocase(source, target)) return 0;
+    if (rt_upper(source[0]) != rt_upper(target[0])) return -DOSXC_EXDEV;
+    if (!fs_writable(source)) return -DOSXC_EROFS;
     struct inode *n = find_inode(source);
     if (n && (r = flush(n))) return r;
     if (!fat_info(target, &existing)) {
@@ -648,9 +621,9 @@ static int api_rename(const char *from, const char *to) {
         if (info.attributes & DOSXC_ATTR_DIRECTORY) return -DOSXC_ENOTDIR;
         struct inode *old = find_inode(target);
         if (old) old->unlinked = 1;
-        if (ctx->remove(ctx->volume, target)) return -DOSXC_EACCES;
+        if (fs_remove(target)) return -DOSXC_EACCES;
     }
-    if (ctx->rename(ctx->volume, source, target)) return -DOSXC_EACCES;
+    if (fs_rename(source, target)) return -DOSXC_EACCES;
     if (n) rt_strcpy(n->path, target);
     return 0;
 }
@@ -664,8 +637,8 @@ static int api_mkdir(const char *path) {
     parent_of(canonical, parent);
     if (fat_info(parent, &info)) return -DOSXC_ENOENT;
     if (!(info.attributes & DOSXC_ATTR_DIRECTORY)) return -DOSXC_ENOTDIR;
-    if (!ctx->volume->write_sector) return -DOSXC_EROFS;
-    return ctx->mkdir(ctx->volume, canonical) ? -DOSXC_ENOSPC : 0;
+    if (!fs_writable(canonical)) return -DOSXC_EROFS;
+    return fs_mkdir(canonical) ? -DOSXC_ENOSPC : 0;
 }
 
 static int api_rmdir(const char *path) {
@@ -675,8 +648,9 @@ static int api_rmdir(const char *path) {
     struct fat32_info info;
     if (fat_info(canonical, &info)) return -DOSXC_ENOENT;
     if (!(info.attributes & DOSXC_ATTR_DIRECTORY)) return -DOSXC_ENOTDIR;
-    if (rt_equal_nocase(canonical, "\\") || rt_equal_nocase(canonical, current->cwd)) return -DOSXC_EBUSY;
-    return ctx->rmdir(ctx->volume, canonical) ? -DOSXC_ENOTEMPTY : 0;
+    if (rt_strlen(canonical) <= 3 || rt_equal_nocase(canonical, current->cwd)) return -DOSXC_EBUSY;
+    if (!fs_writable(canonical)) return -DOSXC_EROFS;
+    return fs_rmdir(canonical) ? -DOSXC_ENOTEMPTY : 0;
 }
 
 static int api_chdir(const char *path) {
@@ -691,8 +665,10 @@ static int api_chdir(const char *path) {
 }
 
 static int api_getcwd(char *buffer, dosxc_size size) {
-    if (rt_strlen(current->cwd) + 1 > size) return -DOSXC_ERANGE;
-    path_posix(current->cwd, buffer, size);
+    char posix[PATH_MAX_RT];
+    path_posix(current->cwd, posix, sizeof(posix));
+    if (rt_strlen(posix) + 1 > size) return -DOSXC_ERANGE;
+    rt_strcpy(buffer, posix);
     return 0;
 }
 
@@ -700,9 +676,22 @@ static int api_resolve(const char *path, char *buffer, dosxc_size size) {
     char canonical[PATH_MAX_RT];
     int r = path_resolve(current, path, canonical);
     if (r) return r;
+    char posix[PATH_MAX_RT];
+    path_posix(canonical, posix, sizeof(posix));
+    uptr n = rt_strlen(posix);
+    if (n + 1 > size) return -DOSXC_ENAMETOOLONG;
+    rt_strcpy(buffer, posix);
+    return (int)n;
+}
+
+/* The DOS spelling, "D:\DIR\FILE". */
+int files_fullpath(const char *path, char *buffer, dosxc_size size) {
+    char canonical[PATH_MAX_RT];
+    int r = path_resolve(current, path, canonical);
+    if (r) return r;
     uptr n = rt_strlen(canonical);
     if (n + 1 > size) return -DOSXC_ENAMETOOLONG;
-    path_posix(canonical, buffer, size);
+    rt_strcpy(buffer, canonical);
     return (int)n;
 }
 
@@ -733,8 +722,36 @@ static dosxc_ssize api_listdir(const char *path, struct dosxc_dirent *entries, d
     if (fat_info(canonical, &info)) return -DOSXC_ENOENT;
     if (!(info.attributes & DOSXC_ATTR_DIRECTORY)) return -DOSXC_ENOTDIR;
     struct listing l = {entries, capacity, 0};
-    if (ctx->list(ctx->volume, canonical, collect, &l)) return -DOSXC_EIO;
+    if (fs_list(canonical, collect, &l)) return -DOSXC_EIO;
     return (dosxc_ssize)l.count;
+}
+
+/* ---- sockets (socket.c) ------------------------------------------------ */
+
+int files_socket_open(struct socket *s) {
+    int fd = lowest_fd(current, 0);
+    if (fd < 0) return fd;
+    struct open_file *f = new_open_file(KIND_SOCKET);
+    if (!f) return -DOSXC_ENFILE;
+    f->flags = DOSXC_O_RDWR;
+    f->socket = s;
+    current->fds[fd] = f;
+    current->cloexec[fd] = 0;
+    return fd;
+}
+
+struct socket *files_socket(int fd, int *flags) {
+    struct open_file *f = lookup(fd);
+    if (!f || f->kind != KIND_SOCKET) return 0;
+    if (flags) *flags = f->flags;
+    return f->socket;
+}
+
+int files_set_flags(int fd, int flags) {
+    struct open_file *f = lookup(fd);
+    if (!f) return -DOSXC_EBADF;
+    f->flags = (f->flags & ~(DOSXC_O_NONBLOCK | DOSXC_O_APPEND)) | (flags & (DOSXC_O_NONBLOCK | DOSXC_O_APPEND));
+    return 0;
 }
 
 /* ---- process plumbing ------------------------------------------------- */
@@ -745,13 +762,14 @@ int files_is_executable(const char *canonical, u8 magic[4]) {
     if (info.size < 4) return -DOSXC_ENOEXEC;
     struct inode *n = find_inode(canonical);
     if (n && n->dirty) return -DOSXC_EBUSY;           /* still being written */
-    return ctx->read_at(ctx->volume, canonical, 0, magic, 4) ? -DOSXC_EIO : 0;
+    return fs_read_at(canonical, 0, magic, 4) ? -DOSXC_EIO : 0;
 }
 
 int files_setup(struct process *child, struct process *parent, const char *output, int append) {
     memset(child->fds, 0, sizeof(child->fds));
     memset(child->cloexec, 0, sizeof(child->cloexec));
-    rt_strcpy(child->cwd, parent ? parent->cwd : (ctx->cwd[0] ? ctx->cwd : "\\"));
+    if (parent) rt_strcpy(child->cwd, parent->cwd);
+    else root_directory(child->cwd);
     if (parent) {
         for (int fd = 0; fd < MAX_FDS; ++fd)
             if (parent->fds[fd] && !parent->cloexec[fd]) {
@@ -765,8 +783,8 @@ int files_setup(struct process *child, struct process *parent, const char *outpu
     console->flags = DOSXC_O_RDWR;
     console->refs = 3;
     child->fds[0] = child->fds[1] = child->fds[2] = console;
-    line_position = line_length = 0;
-    raw_mode = 0;
+    terminal_input_reset();
+    terminal_reset();
     if (output) {
         struct process *saved = current;
         current = child;
@@ -789,6 +807,35 @@ void files_release(struct process *p) {
             p->fds[fd] = 0;
             if (release_open(f)) rt_print("Warning: a file could not be written back to disk.\r\n");
         }
+}
+
+/* Write every modified file back (before a 16-bit program runs). */
+void files_flush_all(void) {
+    for (unsigned i = 0; i < MAX_INODES; ++i)
+        if (inodes[i].refs) flush(&inodes[i]);
+}
+
+/* Drive LETTER went away (a USB disk was pulled or ejected).  Files still
+   open there fail from now on instead of reaching whatever disk gets the
+   letter next; directories of processes there are left as they are. */
+void files_volume_gone(char letter) {
+    letter = (char)rt_upper(letter);
+    for (unsigned i = 0; i < MAX_INODES; ++i)
+        if (inodes[i].refs && rt_upper(inodes[i].path[0]) == letter && inodes[i].path[1] == ':') {
+            inodes[i].path[0] = '?';
+            inodes[i].dirty = 0;
+            memset(&inodes[i].cursor, 0, sizeof(inodes[i].cursor));
+        }
+    for (unsigned i = 0; i < MAX_OPEN; ++i)
+        if (open_files[i].refs && rt_upper(open_files[i].path[0]) == letter && open_files[i].path[1] == ':')
+            open_files[i].path[0] = '?';
+}
+
+/* Write back what is waiting for drive LETTER (before it is ejected). */
+void files_flush_volume(char letter) {
+    letter = (char)rt_upper(letter);
+    for (unsigned i = 0; i < MAX_INODES; ++i)
+        if (inodes[i].refs && rt_upper(inodes[i].path[0]) == letter) flush(&inodes[i]);
 }
 
 int files_init(void) {

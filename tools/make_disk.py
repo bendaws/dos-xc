@@ -1,12 +1,15 @@
 #!/usr/bin/env python3
-"""Create an MBR/FAT16 installer image. Writes regular build files only.
+"""Create the MBR/FAT16 image of the live installation media.
 
-The image holds \\SYSTEM, the EFI loader, an empty \\TEMP and any extra trees
+  tools/make_disk.py BUILD BITS PACKAGES
+
+The image holds \\SYSTEM, the EFI loader, empty \\TEMP and \\Home folders,
+\\Programs with the coreutils and batch packages installed, \\Packages
+with every package for this edition (for Setup and PKG), any extra trees
 named in DOSXC_EXTRA_TREES or DOSXC_EXTRA_TREES_32/_64 (host directories
-separated by os.pathsep, e.g. the GCC toolchain), plus optional DOS programs
-from DOS_PROGRAMS_ZIP.  The
-FAT16 geometry grows with the content and keeps free space for programs
-that write files on the live (read-only) media.
+separated by os.pathsep) and optional DOS programs from DOS_PROGRAMS_ZIP.
+The FAT16 geometry grows with the content and keeps free space for
+programs that write files on the live (read-only) media.
 """
 import json
 import os
@@ -18,6 +21,10 @@ from pathlib import Path
 
 BUILD = Path(sys.argv[1])
 BITS = sys.argv[2]
+PACKAGES = Path(sys.argv[3])
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+import dsp  # noqa: E402
+ARCH = 'x86' if BITS == '32' else 'x64'
 VERSION = json.loads((BUILD / "version.json").read_text())
 PART = 2048
 RESERVED = 4
@@ -132,9 +139,13 @@ def clusters_needed(tree, cluster_bytes, root=False):
 mbr = bytearray((BUILD / 'mbr.bin').read_bytes())
 serial = 0xbd050000 + int(BITS)
 struct.pack_into('<I', mbr, 440, serial)
+user = BUILD / f'user{BITS}' / 'system'
 system = {
-    'CMD': {p.name: p.read_bytes() for p in sorted((BUILD / f'cmd{BITS}').glob('*.EXE'))},
-    'BATCH': {'BATCH.EXE': (BUILD / f'batch{BITS}.exe').read_bytes()},
+    'COMMAND.EXE': (user / 'COMMAND.EXE').read_bytes(),
+    'PKG.EXE': (user / 'PKG.EXE').read_bytes(),
+    'LIB': {'libc.so': (BUILD / f'sysroot{BITS}' / 'lib' / 'libc.so').read_bytes()},
+    'Drivers': {},
+    'SETUP.EXE': (user / 'SETUP.EXE').read_bytes(),
     'LOADER.BIN': (BUILD / f'loader{BITS}.bin').read_bytes(),
     'KERNEL.BIN': (BUILD / f'kernel{BITS}.bin').read_bytes(),
     'CORE.DLL': (BUILD / f'core{BITS}.dll').read_bytes(),
@@ -142,9 +153,7 @@ system = {
     'DOSAPI.DLL': (BUILD / 'dos-runtime.bin').read_bytes(),
     'DOSDATA.BIN': (BUILD / 'dos-data.bin').read_bytes(),
     'FAT32.BIN': (BUILD / 'volume32.bin').read_bytes(),
-    'INSTALL.EXE': (BUILD / f'install{BITS}.exe').read_bytes(),
     'ELFAPI.DLL': (BUILD / f'elfapi{BITS}.dll').read_bytes(),
-    'SETUP.BIN': (BUILD / 'setup.bin').read_bytes(),
     'SETUP.CFG': b'SETUP=1\r\n',
     'MBR.BIN': bytes(mbr),
     'KERNELU.BIN': (BUILD / 'kerneluefi.bin').read_bytes(),
@@ -152,12 +161,22 @@ system = {
     'SHELLU.DLL': (BUILD / 'shelluefi.dll').read_bytes(),
     'VERSION.TXT': (VERSION["label"] + "\r\nSystem directory: C:\\SYSTEM\r\n").encode("ascii"),
 }
-system['CMD'].update({alias: system['CMD'][name] for alias, name in
-                      [('MKDIR.EXE', 'MD.EXE'), ('RMDIR.EXE', 'RD.EXE'), ('ERASE.EXE', 'DEL.EXE'), ('RENAME.EXE', 'REN.EXE')]})
 tree = {'SYSTEM': system, 'EFI': {'BOOT': {'BOOTX64.EFI': (BUILD / 'iso64/EFI/BOOT/BOOTX64.EFI').read_bytes()}},
-        'TEMP': {}}
+        'TEMP': {}, 'Home': {}, 'Programs': {}, 'Packages': {}}
+
+# Packages for this edition (and 16-bit ones), named <Name>.dsp on the media.
+for package in sorted(PACKAGES.glob('*.dsp')):
+    stem, _, bits = package.stem.rpartition('-')
+    if bits in (BITS, '16'):
+        tree['Packages'][stem + '.dsp'] = package.read_bytes()
+# The live system comes with coreutils and batch installed.
+staging = BUILD / f'live{BITS}'
+shutil.rmtree(staging, ignore_errors=True)
+for name in ('coreutils', 'batch'):
+    dsp.install(PACKAGES / f'{name}-{BITS}.dsp', staging)
+tree['Programs'] = load_tree(staging / 'Programs')
 extra_trees = os.pathsep.join(os.environ.get(name, '') for name in
-                              ('DOSXC_DIST_TREE', 'DOSXC_EXTRA_TREES', f'DOSXC_EXTRA_TREES_{BITS}'))
+                              ('DOSXC_EXTRA_TREES', f'DOSXC_EXTRA_TREES_{BITS}'))
 for extra in filter(None, extra_trees.split(os.pathsep)):
     merge(tree, load_tree(extra))
 archive = os.environ.get('DOS_PROGRAMS_ZIP')
@@ -253,10 +272,10 @@ loader = locations['/SYSTEM/LOADER.BIN']
 struct.pack_into('<IHBBI', vbr, 0x1a4, loader['lba'], (loader['size'] + 511) // 512, 1, int(BITS), lba_of(next_cluster))
 struct.pack_into('<III', vbr, 0x1b0, PART, locations['/SYSTEM/SETUP.CFG']['lba'], locations['/SYSTEM/DOSDATA.BIN']['lba'])
 struct.pack_into('<I', vbr, 0x1bc, 1)
-struct.pack_into('<II', vbr, 0x1c0, locations['/SYSTEM/SETUP.BIN']['lba'], (locations['/SYSTEM/SETUP.BIN']['size'] + 2047) // 2048)
+struct.pack_into('<II', vbr, 0x1c0, 0, 0)
 image[:512] = mbr
 image[PART * 512:(PART + 1) * 512] = vbr
-out = BUILD / f'DOS-XC-Setup-x{BITS}.img'
+out = BUILD / f'DOS-XC-Setup-{ARCH}.img'
 out.write_bytes(image)
 (BUILD / f'filesystem{BITS}.json').write_text(json.dumps(locations, indent=2))
 print(f'Built {out} (MBR + FAT16, {SECTORS // 2048} MiB, {cluster_bytes // 1024} KiB clusters, '

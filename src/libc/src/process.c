@@ -110,12 +110,12 @@ static int save(struct saved_fd *saved, int *count, int fd) {
         if (saved[i].fd == fd) return 0;
     if (*count == 64) return EMFILE;
     struct saved_fd s = {fd, -1, 0};
-    int flags = API->fdflags(fd, 0, 0);
+    int flags = dosxc_sys_fdflags(fd, 0, 0);
     if (flags >= 0) {
         s.cloexec = flags;
-        s.copy = API->dup(fd, 32);
+        s.copy = dosxc_sys_dup(fd, 32);
         if (s.copy < 0) return -s.copy;
-        API->fdflags(s.copy, 1, DOSXC_FD_CLOEXEC);
+        dosxc_sys_fdflags(s.copy, 1, DOSXC_FD_CLOEXEC);
     }
     saved[(*count)++] = s;
     return 0;
@@ -125,11 +125,11 @@ static void restore(struct saved_fd *saved, int count) {
     while (count--) {
         struct saved_fd *s = &saved[count];
         if (s->copy >= 0) {
-            API->dup2(s->copy, s->fd);
-            API->close(s->copy);
-            API->fdflags(s->fd, 1, s->cloexec);
+            dosxc_sys_dup2(s->copy, s->fd);
+            dosxc_sys_close(s->copy);
+            dosxc_sys_fdflags(s->fd, 1, s->cloexec);
         } else {
-            API->close(s->fd);
+            dosxc_sys_close(s->fd);
         }
     }
 }
@@ -142,24 +142,24 @@ static int run(pid_t *pid, const char *path, const posix_spawn_file_actions_t *a
     for (int i = 0; actions && i < actions->__count && !error; ++i) {
         const struct __dosxc_spawn_action *a = &actions->__actions[i];
         if (a->type == ACTION_CLOSE) {
-            if (!(error = save(saved, &count, a->fd))) API->close(a->fd);
+            if (!(error = save(saved, &count, a->fd))) dosxc_sys_close(a->fd);
         } else if (a->type == ACTION_DUP2) {
             if (!(error = save(saved, &count, a->target))) {
-                int r = a->fd == a->target ? API->fdflags(a->fd, 1, 0) : API->dup2(a->fd, a->target);
+                int r = a->fd == a->target ? dosxc_sys_fdflags(a->fd, 1, 0) : dosxc_sys_dup2(a->fd, a->target);
                 if (r < 0) error = -r;
             }
         } else if (a->type == ACTION_OPEN) {
             if (!(error = save(saved, &count, a->fd))) {
-                int fd = API->open(a->path, a->flags, (int)a->mode);
+                int fd = dosxc_sys_open(a->path, a->flags, (int)a->mode);
                 if (fd < 0) error = -fd;
                 else if (fd != a->fd) {
-                    API->dup2(fd, a->fd);
-                    API->close(fd);
+                    dosxc_sys_dup2(fd, a->fd);
+                    dosxc_sys_close(fd);
                 }
             }
         }
     }
-    int status = error ? 0 : API->spawn(path, argv, envp ? envp : environ);
+    int status = error ? 0 : dosxc_sys_spawn(path, argv, envp ? envp : environ);
     restore(saved, count);
     if (error) return error;
     if (status < 0) return -status;
@@ -202,9 +202,9 @@ static int search(const char *file, char *found) {
         directory[n] = 0;
         if (!n || strlen(directory) + strlen(file) + 6 >= PATH_MAX) continue;
         snprintf(found, PATH_MAX, "%s/%s", directory, file);
-        if (!API->stat(found, &s) && !(s.attributes & DOSXC_ATTR_DIRECTORY)) return 0;
+        if (!dosxc_sys_stat(found, &s) && !(s.attributes & DOSXC_ATTR_DIRECTORY)) return 0;
         strcat(found, ".EXE");
-        if (!API->stat(found, &s) && !(s.attributes & DOSXC_ATTR_DIRECTORY)) return 0;
+        if (!dosxc_sys_stat(found, &s) && !(s.attributes & DOSXC_ATTR_DIRECTORY)) return 0;
     }
     return ENOENT;
 }
@@ -227,7 +227,7 @@ static int exec_common(const char *path, char *const argv[], char *const envp[],
     }
     int status = 0;
     waitpid(pid, &status, 0);
-    API->exit(status);
+    dosxc_sys_exit(status);
 }
 int execve(const char *path, char *const argv[], char *const envp[]) { return exec_common(path, argv, envp, 0); }
 int execv(const char *path, char *const argv[]) { return exec_common(path, argv, environ, 0); }
@@ -273,24 +273,92 @@ pid_t vfork(void) { errno = ENOSYS; return -1; }
 int system(const char *command) {
     if (!command) return 1;
     fflush(0);
-    return API->system(command);
+    return dosxc_sys_system(command);
+}
+
+/* popen: programs run to completion, so "r" runs the command at once into a
+   pipe, and "w" collects the output and runs the command at pclose. */
+struct popen_stream { FILE *file; int writing, read_end, status; char *command; struct popen_stream *next; };
+static struct popen_stream *streams;
+
+static const char *command_shell(void) {
+    const char *shell = getenv("COMSPEC");
+    return shell && *shell ? shell : "/SYSTEM/COMMAND.EXE";
+}
+
+static int run_shell(const char *command, int fd, int target) {
+    posix_spawn_file_actions_t actions;
+    posix_spawn_file_actions_init(&actions);
+    posix_spawn_file_actions_adddup2(&actions, fd, target);
+    char *argv[] = {"COMMAND.EXE", "/C", (char *)command, 0};
+    pid_t pid;
+    int r = posix_spawn(&pid, command_shell(), &actions, 0, argv, environ);
+    posix_spawn_file_actions_destroy(&actions);
+    if (r) return -1;
+    int status = 0;
+    waitpid(pid, &status, 0);
+    return status;
 }
 
 FILE *popen(const char *command, const char *mode) {
-    (void)command;
-    (void)mode;
-    errno = ENOSYS;
-    return 0;
+    if (!command || !mode || (mode[0] != 'r' && mode[0] != 'w')) {
+        errno = EINVAL;
+        return 0;
+    }
+    struct popen_stream *p = calloc(1, sizeof(*p));
+    int fds[2];
+    if (!p || pipe(fds)) {
+        free(p);
+        return 0;
+    }
+    fcntl(fds[0], F_SETFD, FD_CLOEXEC);
+    fcntl(fds[1], F_SETFD, FD_CLOEXEC);
+    if (mode[0] == 'r') {
+        p->status = run_shell(command, fds[1], 1);
+        close(fds[1]);
+        p->file = fdopen(fds[0], "r");
+        p->read_end = -1;
+    } else {
+        p->writing = 1;
+        p->command = strdup(command);
+        p->read_end = fds[0];
+        p->file = fdopen(fds[1], "w");
+    }
+    if (!p->file || (p->writing && !p->command)) {
+        close(fds[0]);
+        close(fds[1]);
+        free(p->command);
+        free(p);
+        return 0;
+    }
+    p->next = streams;
+    streams = p;
+    return p->file;
 }
+
 int pclose(FILE *stream) {
-    (void)stream;
-    errno = ECHILD;
-    return -1;
+    struct popen_stream **link = &streams;
+    while (*link && (*link)->file != stream) link = &(*link)->next;
+    if (!*link) {
+        errno = ECHILD;
+        return -1;
+    }
+    struct popen_stream *p = *link;
+    *link = p->next;
+    fclose(stream);
+    int status = p->status;
+    if (p->writing) {
+        status = run_shell(p->command, p->read_end, 0);
+        close(p->read_end);
+        free(p->command);
+    }
+    free(p);
+    return status;
 }
 
 /* ---- identity ---- */
-pid_t getpid(void) { return API->getpid(); }
-pid_t getppid(void) { return API->getppid(); }
+pid_t getpid(void) { return dosxc_sys_getpid(); }
+pid_t getppid(void) { return dosxc_sys_getppid(); }
 pid_t getpgrp(void) { return getpid(); }
 pid_t getsid(pid_t pid) { (void)pid; return getpid(); }
 pid_t setsid(void) { return getpid(); }
@@ -332,7 +400,7 @@ char *ctermid(char *buffer) {
 
 int uname(struct utsname *u) {
     struct dosxc_sysinfo info;
-    API->sysinfo(&info);
+    dosxc_sys_sysinfo(&info);
     memset(u, 0, sizeof(*u));
     strcpy(u->sysname, "DOS-XC");
     strcpy(u->nodename, "dosxc");
@@ -354,8 +422,8 @@ long sysconf(int name) {
     case _SC_PAGESIZE: return 4096;
     case _SC_NPROCESSORS_CONF:
     case _SC_NPROCESSORS_ONLN: return 1;
-    case _SC_PHYS_PAGES: API->sysinfo(&info); return (long)(info.memory_total / 4096);
-    case _SC_AVPHYS_PAGES: API->sysinfo(&info); return (long)(info.memory_free / 4096);
+    case _SC_PHYS_PAGES: dosxc_sys_sysinfo(&info); return (long)(info.memory_total / 4096);
+    case _SC_AVPHYS_PAGES: dosxc_sys_sysinfo(&info); return (long)(info.memory_free / 4096);
     case _SC_LINE_MAX: return LINE_MAX;
     case _SC_HOST_NAME_MAX: return HOST_NAME_MAX;
     case _SC_IOV_MAX: return IOV_MAX;
@@ -393,7 +461,7 @@ static void (*handlers[NSIG])(int);
 static sigset_t blocked;
 
 static __attribute__((noreturn)) void terminate(int signal) {
-    API->exit(DOSXC_SIGNALED(signal));
+    dosxc_sys_exit(DOSXC_SIGNALED(signal));
 }
 
 int raise(int signal) {

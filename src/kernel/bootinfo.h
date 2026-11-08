@@ -12,6 +12,7 @@
 #define DOSXC_LABEL DOSXC_NAME " v" DOSXC_VERSION
 
 #include "../drivers/fat32.h"
+#include "../programs/api.h"
 
 /* The ELF kernel uses the System V ABI; EFI itself uses the Microsoft ABI. */
 typedef int (__attribute__((sysv_abi)) *boot_read_key_fn)(void *context);
@@ -30,4 +31,13 @@ struct boot_info {
     char drive_letter;
     void (__attribute__((sysv_abi)) *set_cursor)(void *, unsigned, unsigned);
     uint64_t memory_base, memory_size;   /* RAM reserved for programs */
+    /* UEFI only: the firmware's physical disks and system reset. */
+    disk_count_fn disk_count;
+    disk_info_fn disk_info;
+    disk_io_fn disk_io;
+    void (__attribute__((sysv_abi)) *reboot)(void);
+    unsigned (__attribute__((sysv_abi)) *disk_rescan)(void);
+    int (__attribute__((sysv_abi)) *pointer)(int *, int *, int *, unsigned *);
+    void (__attribute__((sysv_abi)) *poweroff)(void);
+    uint64_t acpi_rsdp;
 };

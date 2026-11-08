@@ -8,12 +8,17 @@
    Software Foundation; either version 3, or (at your option) any later
    version.
 
-   DOS-XC executables are statically linked, position-independent ELF
-   images (ET_DYN without PT_INTERP) carrying a ".note.dosxc" ABI note,
-   always named with the .EXE extension.  The system loader places each
-   image anywhere in free memory and applies its RELATIVE relocations, so
-   nested programs (gcc -> cc1 -> as -> collect2 -> ld) can coexist in a
-   single address space without paging.  */
+   DOS-XC executables are position-independent ELF images (ET_DYN)
+   carrying a ".note.dosxc" ABI note, always named with the .EXE
+   extension.  The system loader places each image anywhere in free
+   memory and applies its relocations, so nested programs (gcc -> cc1 ->
+   as -> collect2 -> ld) coexist in one address space.
+
+   By default programs are linked dynamically: shared libraries (.so,
+   made with "-shared", libc.so included) are loaded by the system
+   loader, \SYSTEM\ELFAPI.DLL, which shares their code between programs
+   and gives every process its own copy of their data.  "-static" links a
+   static PIE without PT_INTERP instead.  */
 
 #undef TARGET_OS_CPP_BUILTINS
 #define TARGET_OS_CPP_BUILTINS()		\
@@ -36,7 +41,7 @@
 #define TARGET_SUBTARGET64_DEFAULT (MASK_128BIT_LONG_DOUBLE | MASK_NO_RED_ZONE)
 
 #undef STARTFILE_SPEC
-#define STARTFILE_SPEC "%{!r:%{!nostartfiles:crt0.o%s crti.o%s crtbeginS.o%s}}"
+#define STARTFILE_SPEC "%{!r:%{!nostartfiles:%{!shared:crt0.o%s} crti.o%s crtbeginS.o%s}}"
 
 #undef ENDFILE_SPEC
 #define ENDFILE_SPEC "%{!r:%{!nostartfiles:crtendS.o%s crtn.o%s}}"
@@ -46,10 +51,11 @@
 
 #undef LINK_SPEC
 #define LINK_SPEC \
-  "%{shared:%eDOS-XC does not support shared libraries} \
-   %{no-pie:%eDOS-XC programs are always position-independent (omit -no-pie)} \
-   %{!r:-static -pie --no-dynamic-linker -z text -z max-page-size=4096 \
-	-z noseparate-code -z noexecstack %{!o*:-o a.exe}}"
+  "%{no-pie:%eDOS-XC programs are always position-independent (omit -no-pie)} \
+   %{!r:-z text -z max-page-size=4096 -z noseparate-code -z noexecstack \
+	%{shared:-shared %{!o*:-o a.so}; \
+	  static|static-pie:-static -pie --no-dynamic-linker %{!o*:-o a.exe}; \
+	  :-pie -dynamic-linker /SYSTEM/ELFAPI.DLL -z now %{!o*:-o a.exe}}}"
 
 /* Mark every object as not needing an executable stack, as GNU/Linux does,
    so hand-run "ld" never warns about .note.GNU-stack.  */

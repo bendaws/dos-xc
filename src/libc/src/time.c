@@ -19,23 +19,23 @@ long timezone;
 int daylight;
 static unsigned long long start_ns;
 
-__attribute__((constructor)) static void record_start(void) { start_ns = API->nanoseconds(); }
+__attribute__((constructor)) static void record_start(void) { start_ns = dosxc_sys_nanoseconds(); }
 
 time_t time(time_t *out) {
-    time_t now = API->time();
+    time_t now = dosxc_sys_time();
     if (out) *out = now;
     return now;
 }
 
-static unsigned long long cpu_ns(void) { return API->nanoseconds() - start_ns; }
+static unsigned long long cpu_ns(void) { return dosxc_sys_nanoseconds() - start_ns; }
 
 clock_t clock(void) { return (clock_t)(cpu_ns() / 1000); }
 double difftime(time_t a, time_t b) { return (double)(a - b); }
 
 int gettimeofday(struct timeval *tv, void *tz) {
     if (tv) {
-        tv->tv_sec = API->time();
-        tv->tv_usec = (long)((API->nanoseconds() / 1000) % 1000000);
+        tv->tv_sec = dosxc_sys_time();
+        tv->tv_usec = (long)((dosxc_sys_nanoseconds() / 1000) % 1000000);
     }
     if (tz) memset(tz, 0, sizeof(struct timezone));
     return 0;
@@ -46,11 +46,11 @@ int clock_gettime(clockid_t clock, struct timespec *ts) {
     unsigned long long ns;
     switch (clock) {
     case CLOCK_REALTIME:
-        ts->tv_sec = API->time();
-        ts->tv_nsec = (long)(API->nanoseconds() % 1000000000ull);
+        ts->tv_sec = dosxc_sys_time();
+        ts->tv_nsec = (long)(dosxc_sys_nanoseconds() % 1000000000ull);
         return 0;
     case CLOCK_MONOTONIC:
-    case CLOCK_MONOTONIC_RAW: ns = API->nanoseconds(); break;
+    case CLOCK_MONOTONIC_RAW: ns = dosxc_sys_nanoseconds(); break;
     case CLOCK_PROCESS_CPUTIME_ID:
     case CLOCK_THREAD_CPUTIME_ID: ns = cpu_ns(); break;
     default: errno = EINVAL; return -1;
@@ -78,7 +78,7 @@ int nanosleep(const struct timespec *request, struct timespec *remaining) {
         errno = EINVAL;
         return -1;
     }
-    API->sleep((unsigned long long)request->tv_sec * 1000000000ull + (unsigned long long)request->tv_nsec);
+    dosxc_sys_sleep((unsigned long long)request->tv_sec * 1000000000ull + (unsigned long long)request->tv_nsec);
     if (remaining) remaining->tv_sec = remaining->tv_nsec = 0;
     return 0;
 }
@@ -87,17 +87,17 @@ int clock_nanosleep(clockid_t clock, int flags, const struct timespec *request, 
         struct timespec now;
         clock_gettime(clock, &now);
         long long ns = (request->tv_sec - now.tv_sec) * 1000000000ll + (request->tv_nsec - now.tv_nsec);
-        if (ns > 0) API->sleep((unsigned long long)ns);
+        if (ns > 0) dosxc_sys_sleep((unsigned long long)ns);
         return 0;
     }
     return nanosleep(request, remaining) ? errno : 0;
 }
 unsigned sleep(unsigned seconds) {
-    API->sleep((unsigned long long)seconds * 1000000000ull);
+    dosxc_sys_sleep((unsigned long long)seconds * 1000000000ull);
     return 0;
 }
 int usleep(useconds_t microseconds) {
-    API->sleep((unsigned long long)microseconds * 1000ull);
+    dosxc_sys_sleep((unsigned long long)microseconds * 1000ull);
     return 0;
 }
 
@@ -107,7 +107,7 @@ clock_t times(struct tms *t) {
         t->tms_utime = ticks;
         t->tms_stime = t->tms_cutime = t->tms_cstime = 0;
     }
-    return (clock_t)(API->nanoseconds() / 10000000ull);
+    return (clock_t)(dosxc_sys_nanoseconds() / 10000000ull);
 }
 
 int getrusage(int who, struct rusage *usage) {

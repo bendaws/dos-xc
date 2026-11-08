@@ -799,6 +799,9 @@ int21:
     mov [es:si], dx
     mov [es:si+2], ds
     sti
+    cmp si, 0x1b*4
+    jne .done
+    call crt_patch                       ; Turbo Pascal's CRT unit starts up here
     jmp .done
 .get_vector:
     xor ah, ah
@@ -1141,6 +1144,7 @@ write_file:
 
 %include "filesystem.asm"
 %include "throttle.asm"
+%include "crtdelay.asm"
 %include "bios.asm"
 
 int2f:

@@ -14,6 +14,15 @@
 static unsigned char sector_buffer[FAT_MAX_SECTOR];
 static unsigned char fat_buffer[FAT_MAX_SECTOR];
 static unsigned char zero_cluster[FAT_MAX_CLUSTER];
+static void forget_walk(void);
+/* The directory sector read last (directory_entry_at), kept until written. */
+static unsigned char dir_buffer[FAT_MAX_SECTOR];
+static const struct fat32_volume *dir_volume;
+static uint32_t dir_lba;
+static int put_sector(const struct fat32_volume *volume, uint32_t lba, const void *data) {
+    if (volume == dir_volume && lba == dir_lba) dir_volume = 0;
+    return volume->write_sector(volume->context, lba, data);
+}
 
 static unsigned int string_length(const char *text) {
     unsigned int length = 0;
@@ -105,7 +114,7 @@ static int write_fat_entry(const struct fat32_volume *volume, uint32_t cluster, 
     }
     for (uint32_t copy = 0; copy < volume->fat_count; ++copy) {
         uint32_t copy_lba = lba + copy * volume->sectors_per_fat;
-        if (volume->write_sector(volume->context, copy_lba, fat_buffer) != 0) return -1;
+        if (put_sector(volume, copy_lba, fat_buffer) != 0) return -1;
     }
     return 0;
 }
@@ -119,7 +128,7 @@ static void update_fsinfo(const struct fat32_volume *volume,int change,uint32_t 
     if(volume->read_sector(volume->context,lba,sector_buffer))return;
     if(get32(sector_buffer)!=0x41615252||get32(sector_buffer+484)!=0x61417272)return;
     put32(sector_buffer+488,volume->free_clusters);put32(sector_buffer+492,next);
-    if(volume->write_sector(volume->context,lba,sector_buffer))mutable->free_clusters=0xffffffffu;
+    if(put_sector(volume,lba,sector_buffer))mutable->free_clusters=0xffffffffu;
 }
 static int allocate_cluster(const struct fat32_volume *volume, uint32_t *cluster) {
     uint32_t start=valid_cluster(volume,volume->next_free)?volume->next_free:2;
@@ -133,6 +142,7 @@ static int allocate_cluster(const struct fat32_volume *volume, uint32_t *cluster
 }
 
 static int free_chain(const struct fat32_volume *volume, uint32_t cluster) {
+    forget_walk();
     while (valid_cluster(volume, cluster)) {
         uint32_t next;
         if (read_fat_entry(volume, cluster, &next) != 0 ||
@@ -207,35 +217,52 @@ struct directory_entry {
     uint32_t lfn_count;
 };
 
+/* Where the last directory lookup ended, so scans that go entry by entry
+   continue from there instead of walking the cluster chain again. */
+static const struct fat32_volume *walk_volume;
+static uint32_t walk_directory, walk_cluster, walk_first;
+
+static void forget_walk(void) { walk_volume = 0; dir_volume = 0; }
+
 static int directory_entry_at(const struct fat32_volume *volume, uint32_t directory,
                               uint32_t ordinal, struct directory_entry *result) {
-    uint32_t cluster = directory;
-    uint32_t index = 0;
+    uint32_t per_sector = volume->bytes_per_sector / 32, lba, offset;
     if (volume->type != FAT_TYPE_32 && directory == 0) {
-        for (uint32_t sector = 0; sector < volume->root_sectors; ++sector) {
-            if (volume->read_sector(volume->context, volume->root_lba + sector, sector_buffer) != 0) return -1;
-            for (uint32_t offset = 0; offset + 32 <= volume->bytes_per_sector; offset += 32, ++index)
-                if (index == ordinal) {
-                    for (unsigned int i = 0; i < 32; ++i) result->data[i] = sector_buffer[offset + i];
-                    result->lba = volume->root_lba + sector; result->offset = offset;
-                    result->directory_cluster = 0; result->ordinal = ordinal; return 0;
-                }
+        uint32_t sector = ordinal / per_sector;
+        if (sector >= volume->root_sectors) return -1;
+        lba = volume->root_lba + sector;
+    } else {
+        uint32_t per_cluster = per_sector * volume->sectors_per_cluster, cluster = directory, first = 0;
+        if (walk_volume == volume && walk_directory == directory && ordinal >= walk_first) {
+            cluster = walk_cluster;
+            first = walk_first;
         }
-        return -1;
-    }
-    while (valid_cluster(volume, cluster)) {
-        for (uint32_t sector = 0; sector < volume->sectors_per_cluster; ++sector) {
-            if (volume->read_sector(volume->context, cluster_lba(volume, cluster) + sector, sector_buffer) != 0) return -1;
-            for (uint32_t offset = 0; offset + 32 <= volume->bytes_per_sector; offset += 32, ++index)
-                if (index == ordinal) {
-                    for (unsigned int i = 0; i < 32; ++i) result->data[i] = sector_buffer[offset + i];
-                    result->lba = cluster_lba(volume, cluster) + sector; result->offset = offset;
-                    result->directory_cluster = directory; result->ordinal = ordinal; return 0;
-                }
+        while (ordinal >= first + per_cluster) {
+            uint32_t next;
+            if (next_cluster(volume, cluster, &next) != 0) return -1;
+            cluster = next;
+            first += per_cluster;
         }
-        { uint32_t next; int status = next_cluster(volume, cluster, &next); if (status != 0) break; cluster = next; }
+        if (!valid_cluster(volume, cluster)) return -1;
+        walk_volume = volume;
+        walk_directory = directory;
+        walk_cluster = cluster;
+        walk_first = first;
+        lba = cluster_lba(volume, cluster) + (ordinal - first) / per_sector;
     }
-    return -1;
+    offset = (ordinal % per_sector) * 32;
+    if (dir_volume != volume || dir_lba != lba) {
+        dir_volume = 0;
+        if (volume->read_sector(volume->context, lba, dir_buffer) != 0) return -1;
+        dir_volume = volume;
+        dir_lba = lba;
+    }
+    for (unsigned int i = 0; i < 32; ++i) result->data[i] = dir_buffer[offset + i];
+    result->lba = lba;
+    result->offset = offset;
+    result->directory_cluster = directory;
+    result->ordinal = ordinal;
+    return 0;
 }
 
 static int find_in_directory(const struct fat32_volume *volume, uint32_t directory,
@@ -289,6 +316,29 @@ static int find_path(const struct fat32_volume *volume, const char *path, struct
     return status < 0 ? -1 : 0;
 }
 
+/* PATH with every component replaced by its 8.3 alias ("\PROGRA~1\OREGON"),
+   for 16-bit programs.  SIZE is the size of OUT. */
+int fat32_short_path(const struct fat32_volume *volume, const char *path, char *out, uint32_t size) {
+    const char *cursor = path;
+    char component[FAT_MAX_NAME], name[16];
+    uint32_t directory = volume->type == FAT_TYPE_32 ? volume->root_cluster : 0, used = 0;
+    struct directory_entry entry;
+    int status;
+    while ((status = path_component(&cursor, component)) > 0) {
+        if (find_in_directory(volume, directory, component, &entry) != 0) return -1;
+        directory = ((uint32_t)get16(entry.data + 20) << 16) | get16(entry.data + 26);
+        short_name(entry.data, name);
+        uint32_t n = string_length(name);
+        if (used + n + 2 > size) return -1;
+        out[used++] = '\\';
+        for (uint32_t i = 0; i < n; ++i) out[used++] = name[i];
+    }
+    if (status < 0) return -1;
+    if (!used) { if (size < 2) return -1; out[used++] = '\\'; }
+    out[used] = 0;
+    return 0;
+}
+
 static int parent_path(const struct fat32_volume *volume, const char *path,
                        uint32_t *directory, char *leaf) {
     char components[FAT_MAX_NAME];
@@ -311,7 +361,7 @@ static int parent_path(const struct fat32_volume *volume, const char *path,
 static int write_entry(const struct fat32_volume *volume, const struct directory_entry *entry) {
     if (volume->read_sector(volume->context, entry->lba, sector_buffer) != 0) return -1;
     for (unsigned int i = 0; i < 32; ++i) sector_buffer[entry->offset + i] = entry->data[i];
-    return volume->write_sector(volume->context, entry->lba, sector_buffer);
+    return put_sector(volume, entry->lba, sector_buffer);
 }
 
 static int write_cluster(const struct fat32_volume *volume, uint32_t cluster, const unsigned char *data);
@@ -341,8 +391,9 @@ static int find_free_ordinal(const struct fat32_volume *volume, uint32_t directo
         for (uint32_t i = 0; i < needed; ++i) {
             struct directory_entry entry;
             if (directory_entry_at(volume, directory, candidate + i, &entry) != 0) {
-                if (directory == 0 || i != 0 || extend_directory(volume, directory) != 0) return -1;
-                break;
+                /* Past the end: the root of FAT12/16 cannot grow; others get a new cluster. */
+                if (directory == 0 || extend_directory(volume, directory) != 0 ||
+                    directory_entry_at(volume, directory, candidate + i, &entry) != 0) return -1;
             }
             if (entry.data[0] != 0 && entry.data[0] != 0xe5) { free_slots = 0; break; }
         }
@@ -351,24 +402,52 @@ static int find_free_ordinal(const struct fat32_volume *volume, uint32_t directo
     return -1;
 }
 
-static void make_alias(const char *name, unsigned char alias[11]) {
-    unsigned int base = 0, ext = 0;
-    for (unsigned int i = 0; i < 11; ++i) alias[i] = ' ';
-    while (*name && *name != '.' && base < 8) {
-        char c = *name++;
-        if (c >= 'a' && c <= 'z') c -= 'a' - 'A';
-        alias[base++] = (unsigned char)c;
+/* The 8.3 alias of NAME, unique in DIRECTORY: names that do not fit
+   8.3 exactly (or are not upper case) get a numeric tail, BASE~N.EXT. */
+static int alias_taken(const struct fat32_volume *volume, uint32_t directory, const unsigned char alias[11]) {
+    for (uint32_t ordinal = 0; ordinal < 0xffff; ++ordinal) {
+        struct directory_entry entry;
+        if (directory_entry_at(volume, directory, ordinal, &entry) != 0 || !entry.data[0]) return 0;
+        if (entry.data[0] == 0xe5 || entry.data[11] == 0x0f) continue;
+        unsigned int i = 0;
+        while (i < 11 && entry.data[i] == alias[i]) ++i;
+        if (i == 11) return 1;
     }
-    if (*name == '.') {
-        ++name;
-        while (*name && ext < 3) {
-            char c = *name++;
-            if (c >= 'a' && c <= 'z') c -= 'a' - 'A';
-            alias[8 + ext++] = (unsigned char)c;
+    return 0;
+}
+
+static void make_alias(const struct fat32_volume *volume, uint32_t directory, const char *name, unsigned char alias[11]) {
+    unsigned int base = 0, ext = 0, exact = 1, length = string_length(name);
+    const char *dot = 0;
+    for (const char *p = name; *p; ++p) if (*p == '.') dot = p;
+    if (dot == name) dot = 0;
+    for (unsigned int i = 0; i < 11; ++i) alias[i] = ' ';
+    for (const char *p = name; *p && p != dot; ++p) {
+        char c = *p;
+        if (c >= 'a' && c <= 'z') { c -= 'a' - 'A'; exact = 0; }
+        if (c == ' ' || c == '.' || c == '+' || c == ',' || c == ';' || c == '=' || c == '[' || c == ']') { exact = 0; continue; }
+        if (base < 8) alias[base++] = (unsigned char)c; else exact = 0;
+    }
+    if (dot) {
+        for (const char *p = dot + 1; *p; ++p) {
+            char c = *p;
+            if (c >= 'a' && c <= 'z') { c -= 'a' - 'A'; exact = 0; }
+            if (c == ' ' || c == '+' || c == ',' || c == ';' || c == '=' || c == '[' || c == ']') { exact = 0; continue; }
+            if (ext < 3) alias[8 + ext++] = (unsigned char)c; else exact = 0;
         }
     }
-    if (base == 8 && *name) {
-        alias[6] = '~'; alias[7] = '1';
+    if (!base) { alias[0] = '_'; base = 1; exact = 0; }
+    if (length > 12) exact = 0;
+    if (exact && !alias_taken(volume, directory, alias)) return;
+    for (unsigned int n = 1; n < 1000000; ++n) {
+        char digits[8];
+        unsigned int count = 0;
+        for (unsigned int v = n; v; v /= 10) digits[count++] = (char)('0' + v % 10);
+        unsigned int keep = base < 7 - count ? base : 7 - count;
+        alias[keep] = '~';
+        for (unsigned int i = 0; i < count; ++i) alias[keep + 1 + i] = (unsigned char)digits[count - 1 - i];
+        for (unsigned int i = keep + 1 + count; i < 8; ++i) alias[i] = ' ';
+        if (!alias_taken(volume, directory, alias)) return;
     }
 }
 
@@ -398,7 +477,7 @@ static int create_entry(const struct fat32_volume *volume, uint32_t directory,
     unsigned int length = string_length(name);
     uint32_t lfn_count = (length + 12) / 13;
     uint32_t first_ordinal;
-    make_alias(name, alias);
+    make_alias(volume, directory, name, alias);
     if (find_free_ordinal(volume, directory, lfn_count + 1, &first_ordinal) != 0) return -1;
     for (unsigned int i = 0; i < 32; ++i) short_entry[i] = 0;
     for (unsigned int i = 0; i < 11; ++i) short_entry[i] = alias[i];
@@ -429,12 +508,13 @@ static int create_entry(const struct fat32_volume *volume, uint32_t directory,
 
 static int write_cluster(const struct fat32_volume *volume, uint32_t cluster, const unsigned char *data) {
     for (uint32_t sector = 0; sector < volume->sectors_per_cluster; ++sector)
-        if (volume->write_sector(volume->context, cluster_lba(volume, cluster) + sector,
+        if (put_sector(volume, cluster_lba(volume, cluster) + sector,
                                  data + sector * volume->bytes_per_sector) != 0) return -1;
     return 0;
 }
 
 int fat32_mount(struct fat32_volume *volume, uint32_t partition_lba) {
+    forget_walk();
     uint32_t total, sectors_per_fat, data_sectors;
     if (!volume || !volume->read_sector || volume->read_sector(volume->context, partition_lba, sector_buffer) != 0) return -1;
     volume->bytes_per_sector = get16(sector_buffer + 11);
@@ -561,7 +641,7 @@ int fat32_delete(const struct fat32_volume *volume, const char *path) {
                                                      entry.ordinal - i, &old) != 0) return -1;
         if (volume->read_sector(volume->context, old.lba, sector_buffer) != 0) return -1;
         sector_buffer[old.offset] = 0xe5;
-        if (volume->write_sector(volume->context, old.lba, sector_buffer) != 0) return -1;
+        if (put_sector(volume, old.lba, sector_buffer) != 0) return -1;
     }
     return 0;
 }
@@ -689,4 +769,54 @@ int fat32_copy_to(const struct fat32_volume *source,const char *from,const struc
     return 0;
 failed:
     if(first)free_chain(target,first);return -1;
+}
+
+/* Sequential reads: the cursor remembers the cluster reached last time, so
+   reading a file front to back walks its cluster chain once. */
+int fat32_read_cursor(const struct fat32_volume *v, const char *path, struct fat32_cursor *c,
+                      uint32_t offset, void *buffer, uint32_t size) {
+    if (!c->size_known) {
+        struct directory_entry e;
+        if (find_path(v, path, &e) || (e.data[11] & 16)) return -1;
+        c->first = ((uint32_t)get16(e.data + 20) << 16) | get16(e.data + 26);
+        c->size = get32(e.data + 28);
+        c->cluster = c->first;
+        c->cluster_offset = 0;
+        c->size_known = 1;
+    }
+    if (offset > c->size || size > c->size - offset) return -1;
+    if (!size) return 0;
+    uint32_t bytes = v->bytes_per_sector * v->sectors_per_cluster;
+    if (offset < c->cluster_offset || !valid_cluster(v, c->cluster)) { c->cluster = c->first; c->cluster_offset = 0; }
+    while (offset - c->cluster_offset >= bytes) {
+        if (next_cluster(v, c->cluster, &c->cluster)) { c->cluster = c->first; c->cluster_offset = 0; return -1; }
+        c->cluster_offset += bytes;
+    }
+    unsigned char *out = buffer;
+    uint32_t within = offset - c->cluster_offset;
+    while (size) {
+        if (!valid_cluster(v, c->cluster)) return -1;
+        uint32_t sector = within / v->bytes_per_sector, skip = within % v->bytes_per_sector;
+        for (; sector < v->sectors_per_cluster && size; ++sector) {
+            uint32_t lba = cluster_lba(v, c->cluster) + sector;
+            if (!skip && size >= v->bytes_per_sector) {
+                if (v->read_sector(v->context, lba, out)) return -1;
+                out += v->bytes_per_sector;
+                size -= v->bytes_per_sector;
+                continue;
+            }
+            if (v->read_sector(v->context, lba, sector_buffer)) return -1;
+            uint32_t n = v->bytes_per_sector - skip;
+            if (n > size) n = size;
+            for (uint32_t i = 0; i < n; ++i) *out++ = sector_buffer[skip + i];
+            size -= n;
+            skip = 0;
+        }
+        within = 0;
+        if (size) {
+            if (next_cluster(v, c->cluster, &c->cluster)) return -1;
+            c->cluster_offset += bytes;
+        }
+    }
+    return 0;
 }

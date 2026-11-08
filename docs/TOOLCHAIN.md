@@ -6,8 +6,10 @@ cross toolchain for building those programs from macOS or Linux.
 
 ## Using GCC on DOS-XC
 
-The toolchain lives in `\GCC`; `\GCC\BIN` is on the default `PATH` and
-`TMPDIR` points at `\TEMP`.
+The toolchain is the `GCC` package (see [PACKAGES.md](PACKAGES.md)),
+installed in `\Programs\GCC`; its `BIN` folder is on `PATH` and `TMPDIR`
+points at `\TEMP`.  Setup can install it, or `PKG INSTALL X:\Packages\GCC.dsp`
+on the live system.
 
 ```
 C:\> gcc hello.c -o hello
@@ -31,11 +33,18 @@ are C; `.CPP`, `.CC` and `.CXX` are C++; `.S` and `.s` are plain assembly
 preprocessor).
 
 The target name is `x86_64-dosxc` on the x64 edition and `i686-dosxc` on
-the x32 edition.  (The i686 cross compiler is tested; a native `\GCC` for
-the x32 edition is built the same way with `build-toolchain.sh i686` but
-has not been tested yet.)  Code generation defaults to PIE with `-mno-red-zone`
-(64-bit); the predefined macros `__dosxc__` and `__DOSXC__` identify the
-system.  Linking is always static: `-shared` and `-no-pie` are rejected.
+the x86 edition; both editions have a native GCC package.  Code generation
+defaults to PIE with `-mno-red-zone` (64-bit); the predefined macros
+`__dosxc__` and `__DOSXC__` identify the system.  Paths may use drive
+letters and `\` (GCC and binutils are built as for a DOS file system, like
+DJGPP), and search paths such as `LIBRARY_PATH` use `;`.
+
+Programs are linked dynamically by default, against `libc.so` in
+`\SYSTEM\LIB` (libgcc and libstdc++ are still linked in statically);
+`-static` makes a self-contained program.  `-shared` makes a shared library
+(compile it with `-fPIC`); see [PROGRAMS.md](PROGRAMS.md#shared-libraries).
+The compiler and binutils themselves are dynamic programs too.  `-no-pie`
+is rejected.
 Thread-local storage is emulated (`--disable-tls`) and the thread model is
 `single`.
 
@@ -46,7 +55,7 @@ Requirements: a C/C++ compiler (clang), make, curl, Python 3, xz, and about
 
 ```sh
 toolchain/build-toolchain.sh x86_64        # or i686
-./build.sh                                  # images now include \GCC
+scripts/build.sh                            # images now include \GCC
 ```
 
 `build-toolchain.sh ARCH [STAGE...]` runs these stages (all of them when
@@ -60,18 +69,20 @@ none are named):
 | `gcc` | cross GCC, libgcc and libstdc++ |
 | `libc-gcc` | rebuilds the C library with the cross GCC |
 | `native` | Canadian cross: GMP/MPFR/MPC, binutils and GCC that *run on* DOS-XC (`native-binutils` and `native-gcc` run the last two parts alone) |
-| `package` | assembles `toolchain/dist/ARCH/GCC`, the `\GCC` tree |
+| `package` | assembles `toolchain/dist/ARCH/GCC`, the tree of the GCC package |
 
-`build.sh` adds `toolchain/dist/x86_64` to the x64 image and
-`toolchain/dist/i686` to the x32 image when they exist.
+`scripts/build.sh` packs `toolchain/dist/ARCH/GCC` (with the current C
+library) into the GCC package of each edition when it exists.  The native
+compiler is configured with the prefix `/Programs/GCC`.
 
 ### Porting notes
 
 * `toolchain/gcc-config/dosxc.h` is the target description (specs,
   startfiles, link options).  `xm-dosxc.h` sets the host executable suffix.
 * `toolchain/patch-sources.sh` adds `*-dosxc` to `config.sub`, BFD, ld,
-  gas, `config.gcc`, `config.host`, libgcc and libstdc++.  Every edit is
-  idempotent.
+  gas, `config.gcc`, `config.host`, libgcc and libstdc++, and turns on the
+  DOS file-system path handling of libiberty (`filenames.h`,
+  `make-relative-prefix.c`) and ld.  Every edit is idempotent.
 * GCC's driver runs `cc1`, `as` and `collect2`/`ld` through libiberty's
   `pex-unix`, which uses `posix_spawn`.  DOS-XC runs the child to
   completion before `posix_spawn` returns; `waitpid` then reports the saved
@@ -85,5 +96,12 @@ export PATH=$PWD/toolchain/cross/bin:$PATH
 x86_64-dosxc-gcc -O2 prog.c -o PROG.EXE
 ```
 
-Put the program on a disk image with `DOSXC_EXTRA_TREES=dir ./build.sh`
+Put the program on a disk image with `DOSXC_EXTRA_TREES=dir scripts/build.sh`
 (every file and folder in `dir` is copied to the root of the system drive).
+
+## Ports
+
+`ports/build-ports.sh ARCH [xz] [vim]` cross-compiles XZ Utils and Vim
+into `build/ports/ARCH`, which `scripts/build.sh` packs.  Vim uses its
+built-in `ansi` terminal description (there is no terminfo database) and
+`system()` for shell commands, since DOS-XC has no `fork()`.

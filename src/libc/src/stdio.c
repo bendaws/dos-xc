@@ -23,7 +23,7 @@ static FILE *open_files;
 static void probe(FILE *f) {
     if (!(f->flags & F_PROBE)) return;
     f->flags &= ~F_PROBE;
-    if (API->isatty(f->fd) == 1) f->flags |= F_LINE;
+    if (dosxc_sys_isatty(f->fd) == 1) f->flags |= F_LINE;
 }
 
 /* ---- raw transfer: descriptors or memory ---- */
@@ -600,7 +600,7 @@ int remove(const char *path) {
     return S_ISDIR(s.st_mode) ? rmdir(path) : unlink(path);
 }
 
-int rename(const char *from, const char *to) { return (int)__result(API->rename(from, to)); }
+int rename(const char *from, const char *to) { return (int)__result(dosxc_sys_rename(from, to)); }
 
 void perror(const char *prefix) {
     const char *message = strerror(errno);

@@ -2,11 +2,17 @@
 """Drive a DOS-XC session in QEMU and print the console transcript.
 
 The kernel mirrors console text to the QEMU debug port (0xE9); keystrokes
-are typed through the QEMU monitor.  Booting the CD leaves Setup with F3.
+are typed through the QEMU monitor.
 
 Example:
-  tests/qemu_session.py --iso build/DOS-XC-x64.iso -c VER -c "HELLO.EXE a b"
+  tests/qemu_session.py --iso build/iso/DOSXC_0.2_x64.iso -c VER -c "HELLO.EXE a b"
 Exit status is 0 when every command returned to the prompt in time.
+
+A command starting with "!" is a QEMU monitor command instead (for example
+"!device_add usb-storage,bus=xhci.0,drive=stick,id=s1" to plug in a USB
+disk), "~SECONDS" just waits, and "&TEXT" types TEXT (no Enter) without
+waiting for a prompt, for programs that read the keyboard.  --qemu-arg adds QEMU options, e.g.
+  --qemu-arg="-device qemu-xhci,id=xhci" --qemu-arg="-device usb-kbd,bus=xhci.0"
 """
 import argparse
 import os
@@ -43,8 +49,8 @@ class Session:
         self.dir = tempfile.mkdtemp(prefix='dosxc-qemu-')
         self.log = pathlib.Path(self.dir, 'console.txt')
         self.monitor_path = os.path.join(self.dir, 'monitor')
-        media = args.iso or args.hda
-        qemu = args.qemu or ('qemu-system-i386' if 'x32' in pathlib.Path(media).name else 'qemu-system-x86_64')
+        media = args.iso or args.hda or ''
+        qemu = args.qemu or ('qemu-system-i386' if 'x86' in pathlib.Path(media).name else 'qemu-system-x86_64')
         command = [qemu, '-m', str(args.memory), '-display', 'none', '-no-reboot',
                    '-debugcon', f'file:{self.log}', '-monitor', f'unix:{self.monitor_path},server,nowait',
                    ]
@@ -54,6 +60,8 @@ class Session:
             command += ['-drive', f'file={args.hda},format=raw,if=ide,index=0']
         if args.uefi:
             command += ['-drive', f'if=pflash,format=raw,readonly=on,file={args.uefi}', '-machine', 'q35']
+        for extra in args.qemu_arg:
+            command += extra.split()
         self.process = subprocess.Popen(command, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE)
         for _ in range(200):
             if os.path.exists(self.monitor_path) or self.process.poll() is not None:
@@ -118,6 +126,7 @@ def main():
     parser.add_argument('--timeout', type=float, default=300, help='seconds allowed per command')
     parser.add_argument('--boot-timeout', type=float, default=60)
     parser.add_argument('--screendump', help='write a PPM screenshot here when finished')
+    parser.add_argument('--qemu-arg', action='append', default=[], help='extra QEMU options (split at spaces)')
     args = parser.parse_args()
 
     session = Session(args)
@@ -125,13 +134,23 @@ def main():
     try:
         deadline = time.time() + args.boot_timeout
         while time.time() < deadline and not PROMPT.search(session.text().rstrip(' ')):
-            if not PROMPT.search(session.text().rstrip(' ')) and ('Setup' in session.text() or 'DOS-XC' not in session.text()):
-                session.hmp('sendkey f3')        # leave CD Setup
             time.sleep(1.5)
         if not PROMPT.search(session.text().rstrip(' ')):
             print('error: no shell prompt after boot', file=sys.stderr)
             ok = False
         for command in args.command if ok else []:
+            if command.startswith('!'):
+                session.hmp(command[1:])
+                print(f'[ monitor] {command[1:]}', file=sys.stderr)
+                time.sleep(0.5)
+                continue
+            if command.startswith('~'):
+                time.sleep(float(command[1:]))
+                continue
+            if command.startswith('&'):             # type into a running program, no prompt expected
+                session.type(command[1:])
+                time.sleep(0.5)
+                continue
             mark = len(session.text())
             started = time.time()
             session.type(command + '\n')
