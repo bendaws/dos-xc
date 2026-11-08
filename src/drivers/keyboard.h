@@ -1,5 +1,5 @@
 /*
- * BenDOS /drivers/keyboard.h
+ * DOS-XC /drivers/keyboard.h
  * Copyright (c) 2026 Ben Daws - see LICENSE.txt
  */
 

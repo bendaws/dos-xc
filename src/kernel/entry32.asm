@@ -1,5 +1,5 @@
 ;
-; BenDOS /kernel/entry32.asm
+; DOS-XC /kernel/entry32.asm
 ; Copyright (c) 2026 Ben Daws - see LICENSE.txt
 ;
 

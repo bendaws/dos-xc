@@ -1,5 +1,5 @@
 ;
-; BenDOS /boot/fsloader.asm
+; DOS-XC /boot/fsloader.asm
 ; Copyright (c) 2026 Ben Daws - see LICENSE.txt
 ;
 
@@ -134,7 +134,7 @@ validate_module:
     jne error
     cmp dword [es:4], 1
     jne error
-%ifdef BEN_DOS_64
+%ifdef DOS_XC_64
     cmp dword [es:8], 64
 %else
     cmp dword [es:8], 32
@@ -338,7 +338,7 @@ protected_mode:
     mov ss, ax
     mov esp, 0x90000
     xor edi, edi
-%ifdef BEN_DOS_64
+%ifdef DOS_XC_64
     mov eax, cr4
     or eax, 1<<5
     mov cr4, eax
@@ -395,8 +395,8 @@ kernel_name db 'KERNEL  BIN'
 core_name db 'CORE    DLL'
 shell_name db 'SHELL   DLL'
 dos_name db 'DOSAPI  DLL'
-error_text db 13,10,'BenDOS: missing, invalid or unreadable SYSTEM component.',0
-%ifdef BEN_DOS_64
+error_text db 13,10,'DOS-XC: missing, invalid or unreadable SYSTEM component.',0
+%ifdef DOS_XC_64
 align 4096
 pml4: dq 0x10000+pdpt+3
       times 511 dq 0

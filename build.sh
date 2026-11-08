@@ -81,6 +81,28 @@ compile_commands() {
 compile_commands 32 i386-unknown-none elf_i386
 compile_commands 64 x86_64-unknown-none elf_x86_64
 
+# \SYSTEM\ELFAPI.DLL: loader and system services for 32/64-bit ELF programs.
+compile_runtime() {
+    runtime_bits=$1
+    runtime_target=$2
+    runtime_emulation=$3
+    mkdir -p "$BUILD/runtime$runtime_bits"
+    objects=
+    for unit in system loader files cache memory cpu support; do
+        "$CC" --target="$runtime_target" -ffreestanding -fno-stack-protector -fno-pic -mno-red-zone -mno-sse -mno-sse2 \
+            -nostdinc -O2 -Wall -Wextra -Wno-unused-parameter -I"$ROOT/src" \
+            -c "$ROOT/src/runtime/$unit.c" -o "$BUILD/runtime$runtime_bits/$unit.o"
+        objects="$objects $BUILD/runtime$runtime_bits/$unit.o"
+    done
+    "$NASM" -f elf"$runtime_bits" "$ROOT/src/runtime/switch$runtime_bits.asm" -o "$BUILD/runtime$runtime_bits/switch.o"
+    "$LD" -m "$runtime_emulation" -T "$ROOT/src/runtime/runtime.ld" --defsym=RUNTIME_ADDRESS=0x4400000 \
+        --defsym=RUNTIME_BITS="$runtime_bits" -o "$BUILD/runtime$runtime_bits/elfapi.elf" \
+        $objects "$BUILD/runtime$runtime_bits/switch.o"
+    "$OBJCOPY" -O binary "$BUILD/runtime$runtime_bits/elfapi.elf" "$BUILD/elfapi$runtime_bits.dll"
+}
+compile_runtime 32 i386-unknown-none elf_i386
+compile_runtime 64 x86_64-unknown-none elf_x86_64
+
 compile_installer() {
     installer_bits=$1
     installer_target=$2
@@ -113,9 +135,13 @@ python3 "$ROOT/tools/pack_dos.py" "$BUILD"
 "$NASM" -f bin -dFAT32 "$ROOT/src/boot/volume.asm" -o "$BUILD/volume32.bin"
 "$NASM" -f bin -I"$BUILD/" "$ROOT/src/setup/setup.asm" -o "$BUILD/setup.bin"
 "$NASM" -f bin "$ROOT/src/boot/fsloader.asm" -o "$BUILD/loader32.bin"
-"$NASM" -f bin -dBEN_DOS_64 "$ROOT/src/boot/fsloader.asm" -o "$BUILD/loader64.bin"
-python3 "$ROOT/tools/make_disk.py" "$BUILD" 32
-python3 "$ROOT/tools/make_disk.py" "$BUILD" 64
+"$NASM" -f bin -dDOS_XC_64 "$ROOT/src/boot/fsloader.asm" -o "$BUILD/loader64.bin"
+# The GNU toolchain (toolchain/build-toolchain.sh) becomes \GCC when built.
+for bits_arch in 32:i686 64:x86_64; do
+    dist="$ROOT/toolchain/dist/${bits_arch#*:}"
+    [ -d "$dist" ] || dist=
+    DOSXC_DIST_TREE="$dist" python3 "$ROOT/tools/make_disk.py" "$BUILD" "${bits_arch%%:*}"
+done
 "$NASM" -f bin "$ROOT/src/boot/boot.asm" -o "$BUILD/boot.bin"
 build_payload() {
     bits=$1
@@ -135,7 +161,7 @@ build_payload() {
     shell_lba=$((core_lba + core_sectors))
     dos_sectors=$((($(wc -c < "$BUILD/dos-runtime.bin") + 2047) / 2048))
     stage2_flags="-dDOS_SECTORS=$dos_sectors -dKERNEL_SECTORS=$kernel_sectors -dCORE_LBA=$core_lba -dCORE_SECTORS=$core_sectors -dSHELL_LBA=$shell_lba -dSHELL_SECTORS=$shell_sectors"
-    [ "$bits" = 64 ] && stage2_flags="$stage2_flags -dBEN_DOS_64"
+    [ "$bits" = 64 ] && stage2_flags="$stage2_flags -dDOS_XC_64"
     stage2_flags="$stage2_flags -dKERNEL_LBA=33"
     "$NASM" -f bin $stage2_flags "$stage2" -o "$BUILD/stage2$bits.bin"
     stage2_size=$(wc -c < "$BUILD/stage2$bits.bin")
@@ -161,16 +187,16 @@ build_payload() {
 }
 build_payload 32 "$BUILD/kernel32.bin" "$ROOT/src/boot/stage2.asm" "$BUILD/32/payload.bin"
 build_payload 64 "$BUILD/kernel64.bin" "$ROOT/src/boot/stage2.asm" "$BUILD/64/payload.bin"
-cat "$BUILD/boot.bin" "$BUILD/32/payload.bin" > "$BUILD/iso32/boot/bendos.img"
-cat "$BUILD/boot.bin" "$BUILD/64/payload.bin" > "$BUILD/iso64/boot/bendos.img"
+cat "$BUILD/boot.bin" "$BUILD/32/payload.bin" > "$BUILD/iso32/boot/dosxc.img"
+cat "$BUILD/boot.bin" "$BUILD/64/payload.bin" > "$BUILD/iso64/boot/dosxc.img"
 
-"$XORRISO" -as mkisofs -b boot/bendos.img -no-emul-boot -boot-info-table -boot-load-size 4 \
-    -o "$BUILD/BenDOS-x32.iso" "$BUILD/iso32"
-"$XORRISO" -as mkisofs -b boot/bendos.img -no-emul-boot -boot-info-table -boot-load-size 4 \
+"$XORRISO" -as mkisofs -b boot/dosxc.img -no-emul-boot -boot-info-table -boot-load-size 4 \
+    -o "$BUILD/DOS-XC-x32.iso" "$BUILD/iso32"
+"$XORRISO" -as mkisofs -b boot/dosxc.img -no-emul-boot -boot-info-table -boot-load-size 4 \
     -eltorito-alt-boot -e boot/efi.img -no-emul-boot \
-    -o "$BUILD/BenDOS-x64.iso" "$BUILD/iso64"
-printf 'Built %s and %s\n' "$BUILD/BenDOS-x32.iso" "$BUILD/BenDOS-x64.iso"
+    -o "$BUILD/DOS-XC-x64.iso" "$BUILD/iso64"
+printf 'Built %s and %s\n' "$BUILD/DOS-XC-x32.iso" "$BUILD/DOS-XC-x64.iso"
 
 
-python3 "$ROOT/tools/finalize_iso.py" "$BUILD/BenDOS-x32.iso"
-python3 "$ROOT/tools/finalize_iso.py" "$BUILD/BenDOS-x64.iso"
+python3 "$ROOT/tools/finalize_iso.py" "$BUILD/DOS-XC-x32.iso"
+python3 "$ROOT/tools/finalize_iso.py" "$BUILD/DOS-XC-x64.iso"

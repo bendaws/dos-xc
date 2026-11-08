@@ -1,5 +1,5 @@
 ;
-; BenDOS /boot/stage2.asm
+; DOS-XC /boot/stage2.asm
 ; Copyright (c) 2026 Ben Daws - see LICENSE.txt
 ;
 
@@ -140,7 +140,7 @@ protected_mode:
     mov ss, ax
     mov esp, 0x90000
     xor edi, edi               ; BIOS has no firmware boot_info pointer
-%ifdef BEN_DOS_64
+%ifdef DOS_XC_64
     call enable_long_mode
     jmp 0x18:0x20000
 %else
@@ -148,7 +148,7 @@ protected_mode:
     jmp eax
 %endif
 
-%ifdef BEN_DOS_64
+%ifdef DOS_XC_64
 enable_long_mode:
     mov eax, cr4
     or eax, 1 << 5
@@ -228,4 +228,4 @@ setup_dap:
 filesystem_lba dd 0
 
 disk_status db 0
-disk_message db 13,10,'BenDOS: BIOS media read failed, status ',0
+disk_message db 13,10,'DOS-XC: BIOS media read failed, status ',0

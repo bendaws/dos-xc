@@ -1,5 +1,5 @@
 ;
-; BenDOS /dos/runtime.asm
+; DOS-XC /dos/runtime.asm
 ; Copyright (c) 2026 Ben Daws - see LICENSE.txt
 ;
 
@@ -739,7 +739,7 @@ int21:
     pop bp
     iret
 .version:
-    mov ax, (BENDOS_DOS_COMPAT_MINOR << 8) | BENDOS_DOS_COMPAT_MAJOR
+    mov ax, (DOSXC_DOS_COMPAT_MINOR << 8) | DOSXC_DOS_COMPAT_MAJOR
     xor bx, bx
     xor cx, cx
     jmp .done

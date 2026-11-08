@@ -1,5 +1,5 @@
 ;
-; BenDOS /setup/setup.asm
+; DOS-XC /setup/setup.asm
 ; Copyright (c) 2026 Ben Daws - see LICENSE.txt
 ;
 
@@ -391,10 +391,10 @@ edd times 30 db 0
 dap: db 16,0
      dw 0,0,0
      dq 0
-title db "Ben's DOS v", BENDOS_VERSION, " Setup",0
+title db "DOS-XC v", DOSXC_VERSION, " Setup",0
 underline db '================',0
 footer db 'ENTER=Continue  F1=Help  F3=Exit',0
-welcome_text db 'Welcome to Setup.',10,10,"Setup will help you install Ben's DOS onto your system.",10,10,10,'For help, press F1.',10,10,'To begin Setup, press ENTER.',10,10,'To leave Setup without installing, press F3.',0
+welcome_text db 'Welcome to Setup.',10,10,"Setup will help you install DOS-XC onto your system.",10,10,10,'For help, press F1.',10,10,'To begin Setup, press ENTER.',10,10,'To leave Setup without installing, press F3.',0
 selection_text db 'Choose the internal drive for your installation.',10,10,'Use the arrow keys or a number, then press ENTER.',10,'The external setup drive is excluded.',0
 disk_label db '. BIOS drive ',0
 size_label db 'h    ',0
@@ -402,8 +402,8 @@ mib_text db ' MiB',0
 no_disk_text db 10,10,'No eligible internal disk was found.',10,'Attach a writable 512-byte-sector disk of at least 64 MiB.',10,10,'Press F3 to leave Setup.',0
 confirm_text db 'Confirm installation',10,10,'Selected destination: BIOS drive ',0
 confirm_tail db 'h',10,10,'WARNING: All existing partitions on this drive will be lost.',10,'Setup replaces its partition table and creates a',10,'FAT32 system partition using the full disk.',10,10,'Type ERASE and press ENTER to install.',10,'Press ESC to choose another drive, or F3 to exit.',10,10,'Confirmation: ',0
-installing_text db "Installing Ben's DOS",10,10,"Setup is copying Ben's DOS to your computer's storage.",10,10,'Do not turn off your computer.',0
+installing_text db "Installing DOS-XC",10,10,"Setup is copying DOS-XC to your computer's storage.",10,10,'Do not turn off your computer.',0
 percent_text db '% complete   ',0
-complete_text db "Setup has finished installing Ben's DOS.",10,10,'Remove the external setup drive, then press ENTER',10,'to restart your computer from the internal drive.',0
+complete_text db "Setup has finished installing DOS-XC.",10,10,'Remove the external setup drive, then press ENTER',10,'to restart your computer from the internal drive.',0
 failure_text db 'Setup could not read, write, or verify the selected drive.',10,10,'Installation is incomplete. Do not boot this disk.',10,'Check the drive and connections, then try again.',10,10,'Press any key to return to Setup.',0
 help_text db 'Setup Help',10,10,'ENTER continues to the next screen.',10,'F3 leaves Setup without starting an installation.',10,'On the drive screen, use arrows or a number to choose.',10,10,'Setup supports BIOS and x64 UEFI boot on 512-byte disks.',10,'The selected disk needs at least 64 MiB of space.',10,'Installation replaces all its existing partitions.',10,10,'Press any key to return to the welcome screen.',0

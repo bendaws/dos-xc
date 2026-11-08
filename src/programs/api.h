@@ -1,5 +1,5 @@
 /*
- * BenDOS /programs/api.h
+ * DOS-XC /programs/api.h
  * Copyright (c) 2026 Ben Daws - see LICENSE.txt
  */
 
@@ -7,6 +7,8 @@
 #include "../drivers/fat32.h"
 #define PROGRAM_BASE 0x4000000u
 #define BATCH_BASE 0x4100000u
+#define RUNTIME_BASE 0x4400000u
+#define RUNTIME_LIMIT 0xc00000u
 #define PROGRAM_LIMIT 0x20000u
 #define PATH_LIMIT 260
 #define KEY_UP 0x101
@@ -49,5 +51,15 @@ struct command_context {
     int (*copy_file)(const struct fat32_volume *,const char *,const char *);
     uint64_t (*free_bytes)(const struct fat32_volume *);
     void (*text_color)(unsigned char);
+    /* Appended in v0.2 for the 32/64-bit program runtime. */
+    int (*read_at)(const struct fat32_volume *,const char *,uint32_t,void *,uint32_t);
+    uint64_t memory_base, memory_size;   /* firmware-reserved RAM (UEFI), or 0 */
 };
 typedef int (*program_entry)(const char *,struct command_context *);
+/* \SYSTEM\ELFAPI.DLL: the 32/64-bit ELF program runtime. */
+#define RUNTIME_MAGIC 0x46454442u   /* "BDEF" */
+struct runtime_header {
+    unsigned magic, version, bits, base, init, run, bss_start, bss_end;
+};
+typedef int (*runtime_init_fn)(struct command_context *);
+typedef int (*runtime_run_fn)(const char *path,const char *arguments,const char *output,int append);

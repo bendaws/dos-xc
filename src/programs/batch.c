@@ -1,5 +1,5 @@
 /*
- * BenDOS /programs/batch.c
+ * DOS-XC /programs/batch.c
  * Copyright (c) 2026 Ben Daws - see LICENSE.txt
  */
 

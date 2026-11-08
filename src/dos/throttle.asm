@@ -1,5 +1,5 @@
 ;
-; BenDOS /dos/throttle.asm
+; DOS-XC /dos/throttle.asm
 ; Copyright (c) 2026 Ben Daws - see LICENSE.txt
 ;
 

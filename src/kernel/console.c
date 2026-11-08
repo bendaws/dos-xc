@@ -1,5 +1,5 @@
 /*
- * BenDOS /kernel/console.c
+ * DOS-XC /kernel/console.c
  * Copyright (c) 2026 Ben Daws - see LICENSE.txt
  */
 
@@ -66,6 +66,8 @@ void console_putc(char c) {
         output_char(output_context, c);
         return;
     }
+    /* Mirror text to the Bochs/QEMU debug console (port 0xE9). */
+    outb(0xe9, (unsigned char)c);
     switch (c) {
     case '\r': cursor -= cursor % WIDTH; break;
     case '\n': cursor += WIDTH - cursor % WIDTH; break;

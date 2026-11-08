@@ -1,5 +1,5 @@
 /*
- * BenDOS /kernel/main.c
+ * DOS-XC /kernel/main.c
  * Copyright (c) 2026 Ben Daws - see LICENSE.txt
  */
 
@@ -27,7 +27,8 @@ void kmain(struct boot_info *boot_info) {
     pcspeaker_beep(440, 100);
     char drive = boot_info ? boot_info->drive_letter :
         (*(volatile unsigned int *)0x7000 == 0x53464442 && !*(volatile unsigned char *)0x7008 ? 'C' : 'X');
-    shell_run(boot_info ? boot_info->volume : storage_system_volume(), !boot_info, drive);
+    shell_run(boot_info ? boot_info->volume : storage_system_volume(), !boot_info, drive,
+              boot_info ? boot_info->memory_base : 0, boot_info ? boot_info->memory_size : 0);
     
     for (;;) {
         __asm__ volatile ("hlt");

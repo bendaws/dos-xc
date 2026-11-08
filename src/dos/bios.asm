@@ -1,14 +1,26 @@
 ;
-; BenDOS /dos/bios.asm
+; DOS-XC /dos/bios.asm
 ; Copyright (c) 2026 Ben Daws - see LICENSE.txt
 ;
 
 bits 16
+; Protected-mode request block at 0:0x7040:
+;   +1 function: 0x42 read, 0x43 write (one sector), 0xC2 read [0x704C] sectors
+;      (2048-byte blocks on the boot CD), 0xE8 E820 memory map to 0x78000
+;   +2 drive, +4 LBA, +8 result (0 or -1; E820 entry count)
 bios_service:
     xor ax, ax
     mov es, ax
+    cmp byte [es:0x7041], 0xe8
+    je memory_map
     mov eax, [es:0x7044]
     mov word [bios_dap+2], 1
+    cmp byte [es:0x7041], 0xc2
+    jne .single
+    mov cx, [es:0x704c]
+    mov [bios_dap+2], cx
+    mov byte [es:0x7041], 0x42
+.single:
     mov dl, [es:0x7042]
     cmp dl, [es:0x7014]
     jne .physical
@@ -65,6 +77,30 @@ bios_protected:
     lidt [0x70c0]
     jmp far [0x70b0]
 bits 16
+memory_map:
+    mov ax, 0x7800
+    mov es, ax
+    xor di, di
+    xor ebx, ebx
+    xor bp, bp
+.next:
+    mov eax, 0xe820
+    mov edx, 0x534d4150
+    mov ecx, 24
+    mov dword [es:di+20], 1
+    int 0x15
+    jc .done
+    cmp eax, 0x534d4150
+    jne .done
+    inc bp
+    add di, 24
+    test ebx, ebx
+    jz .done
+    cmp bp, 1024
+    jb .next
+.done:
+    movzx eax, bp
+    jmp bios_service.result
 align 4
 bios_dap: db 16,0
           dw 1,0,0x7800

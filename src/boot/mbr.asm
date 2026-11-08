@@ -1,5 +1,5 @@
 ;
-; BenDOS /boot/mbr.asm
+; DOS-XC /boot/mbr.asm
 ; Copyright (c) 2026 Ben Daws - see LICENSE.txt
 ;
 
@@ -35,7 +35,7 @@ error:
     mov ah, 0x0e
     int 0x10
     jmp .next
-message db 'BenDOS: cannot read system partition',0
+message db 'DOS-XC: cannot read system partition',0
 drive db 0
 align 4
 dap: db 16,0

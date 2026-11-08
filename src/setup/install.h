@@ -1,5 +1,5 @@
 /*
- * BenDOS /setup/install.h
+ * DOS-XC /setup/install.h
  * Copyright (c) 2026 Ben Daws - see LICENSE.txt
  */
 

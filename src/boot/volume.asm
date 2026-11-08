@@ -1,5 +1,5 @@
 ;
-; BenDOS /boot/volume.asm
+; DOS-XC /boot/volume.asm
 ; Copyright (c) 2026 Ben Daws - see LICENSE.txt
 ;
 
@@ -7,7 +7,7 @@ bits 16
 org 0x7c00
     jmp short start
     nop
-    db 'BENDOS  '
+    db 'DOS-XC  '
     dw 512
     db 4
     dw 4
@@ -34,12 +34,12 @@ org 0x7c00
     times 12 db 0
     db 0x80,0,0x29
     dd 0
-    db 'BENDOS     '
+    db 'DOS-XC     '
     db 'FAT32   '
 %else
     db 0x80,0,0x29
     dd 0
-    db 'BENDOS     '
+    db 'DOS-XC     '
     db 'FAT16   '
 %endif
 start:
@@ -71,7 +71,7 @@ error:
     mov ah, 0x0e
     int 0x10
     jmp .next
-message db 'BenDOS: LOADER.BIN read failed',0
+message db 'DOS-XC: LOADER.BIN read failed',0
 drive db 0
 align 4
 dap: db 16,0

@@ -1,5 +1,5 @@
 ;
-; BenDOS /boot/boot.asm
+; DOS-XC /boot/boot.asm
 ; Copyright (c) 2026 Ben Daws - see LICENSE.txt
 ;
 
@@ -47,7 +47,7 @@ disk_error:
     jmp .print
 
 boot_drive db 0
-error_message db "BenDOS: disk read error", 0
+error_message db "DOS-XC: disk read error", 0
 align 4
 dap:
     db 0x10, 0

@@ -1,5 +1,5 @@
 /*
- * BenDOS /boot/efi.h
+ * DOS-XC /boot/efi.h
  * Copyright (c) 2026 Ben Daws - see LICENSE.txt
  */
 

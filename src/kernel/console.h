@@ -1,5 +1,5 @@
 /*
- * BenDOS /kernel/console.h
+ * DOS-XC /kernel/console.h
  * Copyright (c) 2026 Ben Daws - see LICENSE.txt
  */
 

@@ -1,5 +1,5 @@
 /*
- * BenDOS /programs/commands.c
+ * DOS-XC /programs/commands.c
  * Copyright (c) 2026 Ben Daws - see LICENSE.txt
  */
 
@@ -79,7 +79,7 @@ int program_main(const char *args,struct command_context *ctx){c=ctx;if(*args)re
 static int digit(char n){n=upper(n);if(n>='0'&&n<='9')return n-'0';if(n>='A'&&n<='F')return n-'A'+10;return -1;}
 int program_main(const char *args,struct command_context *ctx){c=ctx;if(!*args){c->color(7);return 0;}if(length(args)!=2||digit(args[0])<0||digit(args[1])<0)return error("COLOR [background foreground]     Example: COLOR 1F");c->color((digit(args[0])<<4)|digit(args[1]));return 0;}
 #elif COMMAND_ID == 7
-int program_main(const char *args,struct command_context *ctx){c=ctx;(void)args;c->write(BENDOS_LABEL "\r\nSystem directory: ");c->putc(c->drive);c->write(":\\SYSTEM\r\n");return 0;}
+int program_main(const char *args,struct command_context *ctx){c=ctx;(void)args;c->write(DOSXC_LABEL "\r\nSystem directory: ");c->putc(c->drive);c->write(":\\SYSTEM\r\n");return 0;}
 #elif COMMAND_ID == 8
 static unsigned integer(const char *s){unsigned n=0;while(*s>='0'&&*s<='9')n=n*10+(*s++-'0');return n;}
 int program_main(const char *args,struct command_context *ctx){c=ctx;args=token(args,first,260);token(args,second,260);if(equal(first,"/?"))return error("BEEP [frequency-hz] [duration-ms]");unsigned hz=*first?integer(first):880,ms=*second?integer(second):100;if(hz<20||hz>20000||ms>3000)return error("BEEP: frequency 20..20000 Hz; duration 0..3000 ms.");c->beep(hz,ms);return 0;}

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Write the public ABI addresses of a fixed-address BenDOS module."""
+"""Write the public ABI addresses of a fixed-address DOS-XC module."""
 import re
 import struct
 import sys

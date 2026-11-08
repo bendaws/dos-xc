@@ -22,7 +22,7 @@ with path.open('r+b')as f:
             extent,size=matches[0]
         return extent,size
     filesystem,_=find(['BOOT','SYSTEM.IMG'])
-    boot,size=find(['BOOT','BENDOS.IMG'])
+    boot,size=find(['BOOT','DOSXC.IMG'])
     f.seek(boot*2048);data=bytearray(f.read(size))
     marker=data.find(b'FSIM',2048,2048+65536)
     assert marker>=0 and data.find(b'FSIM',marker+1,2048+65536)<0

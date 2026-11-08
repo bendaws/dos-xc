@@ -1,4 +1,4 @@
-/* BenDOS fixed-address module ABI 1. Each architecture is linked separately. */
+/* DOS-XC fixed-address module ABI 1. Each architecture is linked separately. */
 SECTIONS {
   . = MODULE_BASE;
   .module : {

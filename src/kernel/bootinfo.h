@@ -1,15 +1,15 @@
 /*
- * BenDOS /kernel/bootinfo.h
+ * DOS-XC /kernel/bootinfo.h
  * Copyright (c) 2026 Ben Daws - see LICENSE.txt
  */
 
 #pragma once
 
-#define BENDOS_NAME "Ben's DOS"
-#define BENDOS_VERSION "0.1"
-#define BENDOS_DOS_COMPAT_MAJOR 5
-#define BENDOS_DOS_COMPAT_MINOR 0
-#define BENDOS_LABEL BENDOS_NAME " v" BENDOS_VERSION
+#define DOSXC_NAME "DOS-XC"
+#define DOSXC_VERSION "0.2"
+#define DOSXC_DOS_COMPAT_MAJOR 5
+#define DOSXC_DOS_COMPAT_MINOR 0
+#define DOSXC_LABEL DOSXC_NAME " v" DOSXC_VERSION
 
 #include "../drivers/fat32.h"
 
@@ -29,4 +29,5 @@ struct boot_info {
     boot_color_fn set_color;
     char drive_letter;
     void (__attribute__((sysv_abi)) *set_cursor)(void *, unsigned, unsigned);
+    uint64_t memory_base, memory_size;   /* RAM reserved for programs */
 };

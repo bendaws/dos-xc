@@ -1,5 +1,5 @@
 /*
- * BenDOS /boot/uefi.c
+ * DOS-XC /boot/uefi.c
  * Copyright (c) 2026 Ben Daws - see LICENSE.txt
  */
 
@@ -31,7 +31,7 @@ static struct KEY key(void) {
 }
 static void screen(const char *body) {
  st->out->attribute(st->out,0x17);st->out->clear(st->out);
- at(1,1,BENDOS_LABEL " Setup");at(0,2,"================");
+ at(1,1,DOSXC_LABEL " Setup");at(0,2,"================");
  st->out->attribute(st->out,0x70);at(0,24,"                                                                               ");
  at(2,24,"ENTER=Continue  F1=Help  F3=Exit");st->out->attribute(st->out,0x1f);
  at(6,4,body);
@@ -92,7 +92,7 @@ static int install(struct BLOCK *disk) {
 static void setup(void) {
 welcome:
  for(;;) {
-  screen("Welcome to Setup.\n\nSetup installs Ben's DOS on an internal drive.\nSystem files will be stored in C:\\SYSTEM.\n\nFor more information, press F1.\n\nTo choose an installation drive, press ENTER.\n\nTo leave Setup without installing, press F3.");
+  screen("Welcome to Setup.\n\nSetup installs DOS-XC on an internal drive.\nSystem files will be stored in C:\\SYSTEM.\n\nFor more information, press F1.\n\nTo choose an installation drive, press ENTER.\n\nTo leave Setup without installing, press F3.");
   struct KEY k=key();if(k.scan==11){help();continue;}if(k.scan==13)return;if(k.unicode==13)break;
  }
  if(discover()) {screen("The physical setup drive could not be identified.\n\nSetup has not written any disk.\nPress any key to return.");key();goto welcome;}
@@ -116,7 +116,7 @@ welcome:
   }
   if(!confirmed)continue;
   if(install(targets[selected])){screen("Setup could not read, write, or verify the selected drive.\nInstallation is incomplete. Do not boot this disk.\n\nPress any key to return.");key();goto welcome;}
-  screen("Setup has finished installing Ben's DOS.\n\nSystem directory: C:\\SYSTEM\n\nRemove the external setup drive, then press ENTER\nto restart from the internal drive.");
+  screen("Setup has finished installing DOS-XC.\n\nSystem directory: C:\\SYSTEM\n\nRemove the external setup drive, then press ENTER\nto restart from the internal drive.");
   while(key().unicode!=13){}
   typedef void (*RESET)(U32,EFI_STATUS,UINTN,void *);
   RESET reset=*(RESET *)((U8 *)st->runtime+104);reset(0,0,0,0);
@@ -137,7 +137,14 @@ static void boot_kernel(void) {
  indent=0;st->out->visible(st->out,1);
  U64 address=0x2000000;
  if(st->services->pages(2,2,768,&address))fatal("Cannot reserve memory for the system components.");
- U64 programs=0x4000000;if(st->services->pages(2,2,768,&programs))fatal("Cannot reserve command program memory.");
+ /* 0x4000000..0x5000000: command programs, batch processor and ELFAPI.DLL. */
+ U64 programs=0x4000000;if(st->services->pages(2,2,4096,&programs))fatal("Cannot reserve command program memory.");
+ /* The largest block the firmware will spare becomes the 32/64-bit program
+    arena; the rest stays available to the firmware's own drivers. */
+ static const U32 arena_mib[]={3072,2048,1536,1024,768,512,384,256,192,128,96,64,48,32};
+ U64 arena=0,arena_size=0;
+ for(UINTN i=0;i<sizeof(arena_mib)/sizeof(arena_mib[0]);++i){U64 at=0;
+  if(!st->services->pages(0,2,(UINTN)arena_mib[i]*256,&at)){arena=at;arena_size=(U64)arena_mib[i]<<20;break;}}
  UINTN size=65536;
  if(file_read("\\SYSTEM\\KERNELU.BIN",(void *)0x2000000,&size))fatal("Cannot load SYSTEM\\KERNELU.BIN.");
  size=65536;if(file_read("\\SYSTEM\\COREU.DLL",(void *)0x2100000,&size))fatal("Cannot load SYSTEM\\COREU.DLL.");
@@ -149,6 +156,7 @@ static void boot_kernel(void) {
  struct boot_info info;
  info.read_key=input;info.keyboard_context=0;info.write_char=output;info.console_context=0;
  info.volume=&filesystem;info.clear_screen=clear;info.set_color=color;info.drive_letter=external?'X':'C';info.set_cursor=cursor;
+ info.memory_base=arena;info.memory_size=arena_size;
  st->out->attribute(st->out,7);st->out->clear(st->out);
  typedef void (__attribute__((sysv_abi)) *ENTRY)(struct boot_info *);
  ((ENTRY)0x2000000)(&info);
@@ -158,7 +166,7 @@ EFI_STATUS efi_main(HANDLE image,struct TABLE *table) {
  if(st->services->protocol(image,&loaded_guid,(void **)&loaded)||st->services->protocol(loaded->device,&fs_guid,(void **)&fs)||fs->open(fs,&root)||st->services->protocol(loaded->device,&block_guid,(void **)&volume))return 1;
  for(UINTN i=0;i<(UINTN)st->out->state->max;++i){UINTN w,h;if(!st->out->query(st->out,i,&w,&h)&&w==80&&h==25){st->out->mode(st->out,i);break;}}
  U64 work=0;if(st->services->pages(0,2,16,&work))return 1;buffer=(U8 *)work;verify_buffer=buffer+32768;
- if(read_block(volume,0,512,buffer)||get32(buffer+0x1a0)!=0x53464442)fatal("Invalid BenDOS system volume.");
+ if(read_block(volume,0,512,buffer)||get32(buffer+0x1a0)!=0x53464442)fatal("Invalid DOS-XC system volume.");
  source_serial=get32(buffer+((buffer[22]||buffer[23])?39:67));copy_end=get32(buffer+0x1ac);config_lba=get32(buffer+0x1b4);external=buffer[0x1aa]!=0;
  if(buffer[0x1ab]!=64)fatal("Use the x64 setup image for UEFI installation.");
  if(external)setup();boot_kernel();return 0;

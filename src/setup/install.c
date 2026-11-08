@@ -1,5 +1,5 @@
 /*
- * BenDOS /setup/install.c
+ * DOS-XC /setup/install.c
  * Copyright (c) 2026 Ben Daws - see LICENSE.txt
  */
 
@@ -65,7 +65,7 @@ int install_system(const struct fat32_volume *source,void *disk,uint32_t sectors
     put16(boot+24,63);put16(boot+26,255);put32(boot+28,PARTITION_START);put32(boot+32,total);
     put32(boot+36,fat);put32(boot+44,2);put16(boot+48,1);put16(boot+50,6);boot[64]=0x80;boot[66]=0x29;
     uint32_t serial=get32(mbr+440)^sectors^0x13579bdf;put32(boot+67,serial);
-    const char *label="BENDOS     FAT32   ";for(unsigned i=0;i<19;++i)boot[71+i]=label[i];
+    const char *label="DOS-XC     FAT32   ";for(unsigned i=0;i<19;++i)boot[71+i]=label[i];
     boot[0x1aa]=0;put32(boot+0x1b0,PARTITION_START);
     progress("Formatting full-drive FAT32 filesystem",0);
     zero(sector,512);

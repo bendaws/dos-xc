@@ -1,2 +1,9 @@
 build/
 __pycache__/
+toolchain/downloads/
+toolchain/work/
+toolchain/cross/
+toolchain/dist
+toolchain/*.log
+.vscode/
+.DS_Store

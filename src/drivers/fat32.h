@@ -1,5 +1,5 @@
 /*
- * BenDOS /drivers/fat32.h
+ * DOS-XC /drivers/fat32.h
  * Copyright (c) 2026 Ben Daws - see LICENSE.txt
  */
 

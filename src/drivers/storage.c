@@ -1,5 +1,5 @@
 /*
- * BenDOS /drivers/storage.c
+ * DOS-XC /drivers/storage.c
  * Copyright (c) 2026 Ben Daws - see LICENSE.txt
  */
 

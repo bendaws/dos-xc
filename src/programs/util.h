@@ -1,5 +1,5 @@
 /*
- * BenDOS /programs/util.h
+ * DOS-XC /programs/util.h
  * Copyright (c) 2026 Ben Daws - see LICENSE.txt
  */
 

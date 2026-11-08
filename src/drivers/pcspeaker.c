@@ -1,5 +1,5 @@
 /*
- * BenDOS /drivers/pcspeaker.c
+ * DOS-XC /drivers/pcspeaker.c
  * Copyright (c) 2026 Ben Daws - see LICENSE.txt
  */
 

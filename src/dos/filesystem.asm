@@ -1,5 +1,5 @@
 ;
-; BenDOS /dos/filesystem.asm
+; DOS-XC /dos/filesystem.asm
 ; Copyright (c) 2026 Ben Daws - see LICENSE.txt
 ;
 
