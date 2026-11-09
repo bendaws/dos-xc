@@ -27,7 +27,7 @@ void kmain(struct boot_info *boot_info) {
     pcspeaker_beep(440, 100);
     if (boot_info && boot_info->disk_count)
         shell_firmware(boot_info->disk_count, boot_info->disk_info, boot_info->disk_io, boot_info->reboot,
-                       boot_info->disk_rescan, boot_info->pointer, boot_info->poweroff, boot_info->acpi_rsdp);
+                       boot_info->disk_rescan, boot_info->pointer, boot_info->poweroff, boot_info->acpi_rsdp, boot_info->display);
     char drive = boot_info ? boot_info->drive_letter :
         (*(volatile unsigned int *)0x7000 == 0x53464442 && !*(volatile unsigned char *)0x7008 ? 'C' : 'X');
     shell_run(boot_info ? boot_info->volume : storage_system_volume(), !boot_info, drive,

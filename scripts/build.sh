@@ -74,7 +74,7 @@ compile_runtime() {
     mkdir -p "$PART/runtime$runtime_bits"
     objects=
     for unit in system loader dynamic paging files terminal volumes cache memory cpu support \
-                usb pci xhci ehci ohci uhci bridge power drivers net tcp socket; do
+                usb pci xhci ehci ohci uhci bridge power drivers net tcp socket display sched; do
         "$CC" --target="$runtime_target" -ffreestanding -fno-stack-protector -fno-pic -mno-red-zone -mno-sse -mno-sse2 \
             -nostdinc -O2 -Wall -Wextra -Wno-unused-parameter -I"$ROOT/src" \
             -c "$ROOT/src/runtime/$unit.c" -o "$PART/runtime$runtime_bits/$unit.o"
@@ -110,7 +110,7 @@ compile_userland() {
     "$cc" $flags -I"$ROOT/src/shell" "$ROOT/src/shell/command.c" -o "$out/system/COMMAND.EXE"
     "$cc" $flags "$ROOT/src/pkg/pkg.c" "$ROOT/src/pkg/dsp.c" "$ROOT/src/pkg/inflate.c" "$ROOT/src/pkg/deflate.c" \
         -o "$out/system/PKG.EXE"
-    "$cc" $flags -I"$ROOT/src" "$ROOT/src/setup/setup.c" "$ROOT/src/setup/target.c" "$ROOT/src/drivers/fat32.c" \
+    "$cc" $flags -I"$ROOT/src" "$ROOT/src/setup/setup.c" "$ROOT/src/setup/install.c" "$ROOT/src/setup/target.c" "$ROOT/src/drivers/fat32.c" \
         "$ROOT/src/pkg/dsp.c" "$ROOT/src/pkg/inflate.c" "$ROOT/src/pkg/deflate.c" -o "$out/system/SETUP.EXE"
     for command in $COREUTILS; do
         source=$(echo "$command" | tr A-Z a-z)
@@ -121,6 +121,28 @@ compile_userland() {
         cp "$out/coreutils/${alias#*:}.EXE" "$out/coreutils/${alias%%:*}.EXE"
     done
     "$cc" $flags "$ROOT/src/batch/batch.c" -o "$out/batch/BATCH.EXE"
+    # The desktop package: DESKTOP.EXE and, in Apps, a process per program.
+    desktop=$ROOT/src/desktop
+    desktop_out=$out/desktop
+    rm -rf "$desktop_out"
+    mkdir -p "$desktop_out/Apps" "$desktop_out/Wallpapers"
+    cp "$desktop"/wallpapers/*.jpg "$desktop_out/Wallpapers/"
+    flags="$flags -Wno-missing-field-initializers"
+    "$cc" $flags -I"$desktop" "$desktop/desktop.c" "$desktop/gfx.c" "$desktop/apps.c" "$desktop/widgets.c" "$desktop/dialogs.c" \
+        "$desktop/image.c" "$ROOT/src/pkg/inflate.c" -I"$ROOT/src/pkg" -o "$desktop_out/DESKTOP.EXE"
+    gui="$desktop/gfx.c $desktop/gui.c $desktop/widgets.c $desktop/dialogs.c $desktop/image.c $ROOT/src/pkg/inflate.c"
+    for app in explorer:EXPLORER taskmgr:TASKMGR calc:CALC editor:EDITOR paint:PAINT solitaire:SOLITAIRE mines:MINES chess:CHESS terminal:TERMINAL; do
+        [ -f "$desktop/${app%%:*}.c" ] || continue
+        "$cc" $flags -I"$desktop" "$desktop/${app%%:*}.c" $gui -I"$ROOT/src/pkg" -lm -o "$desktop_out/Apps/${app#*:}.EXE"
+    done
+    "$cc" $flags -I"$desktop" -I"$ROOT/src" "$desktop/pkgmgr.c" $gui "$ROOT/src/pkg/dsp.c" "$ROOT/src/pkg/deflate.c" -I"$ROOT/src/pkg" -lm \
+        -o "$desktop_out/Apps/PKGMGR.EXE"
+    "$cc" $flags -I"$desktop" -I"$ROOT/src" "$desktop/setupgui.c" $gui "$ROOT/src/setup/install.c" "$ROOT/src/setup/target.c" \
+        "$ROOT/src/drivers/fat32.c" "$ROOT/src/pkg/dsp.c" "$ROOT/src/pkg/deflate.c" -I"$ROOT/src/pkg" -lm -o "$desktop_out/Apps/SETUPGUI.EXE"
+    "$cc" $flags -I"$ROOT/src" "$ROOT/src/vdm/cpu.c" "$ROOT/src/vdm/bios.c" "$ROOT/src/vdm/video.c" "$ROOT/src/vdm/dos.c" "$ROOT/src/vdm/host.c" \
+        -o "$desktop_out/Apps/DOSVM.EXE"
+    python3 "$ROOT/tools/dsp.py" pack "$desktop_out" "$PACKAGES/desktop-$bits.dsp" Name="DOS-XC Desktop" Version="$VERSION" \
+        Author="Ben Daws" Description="Graphical desktop and its programs" Arch="$bits" Path=. >/dev/null
     # Packages: coreutils and batch every build; the larger ones when their
     # files exist and have changed (toolchain/dist, build/ports).
     python3 "$ROOT/tools/dsp.py" pack "$out/coreutils" "$PACKAGES/coreutils-$bits.dsp" Name=coreutils Version="$VERSION" \
@@ -185,6 +207,8 @@ for bits_arch in 32:i686 64:x86_64; do
         Description="HTTP transfer tool (no TLS)" Path=BIN
     package_port "${bits_arch%%:*}" "${bits_arch#*:}" Vim Version=9.1.1000 Author="Bram Moolenaar and the Vim community" \
         Description="Fast, keyboard-only terminal text editor" Path=BIN Env=VIM=%PACKAGE%/share/vim
+    package_port "${bits_arch%%:*}" "${bits_arch#*:}" python3 Version=3.14.6 Author="Python Software Foundation" \
+        Description="Python programming language" Path=BIN Env=PYTHONHOME=%PACKAGE%
 done
 
 # The Oregon Trail, a 16-bit DOS game, from OREGON.ZIP when it is present.

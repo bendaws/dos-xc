@@ -10,7 +10,8 @@ section .text
 
 global runtime_enter, runtime_leave, runtime_spurious, bios_call, runtime_save, runtime_switch
 global runtime_exception_stubs, runtime_syscall_entry
-extern runtime_exception, runtime_syscall, runtime_fxsr
+global runtime_timer_gate
+extern runtime_exception, runtime_syscall, runtime_fxsr, sched_tick, sched_preempted
 
 ; int runtime_enter(uptr entry, uptr stack, struct saved_context *save, int sse)
 runtime_enter:
@@ -180,6 +181,51 @@ exception_common:
     cli
     hlt
     jmp .halt
+
+; Vector 8 is where the BIOS keeps IRQ 0 and also the double fault; only the
+; timer sets its bit in the interrupt controller.
+runtime_timer_gate:
+    push eax
+    mov al, 0x0b
+    out 0x20, al
+    in al, 0x20
+    test al, 1
+    pop eax
+    jz stub_8
+    pushad
+    mov al, 0x20
+    out 0x20, al
+    mov eax, [esp+32]           ; eip
+    cld
+    mov ebx, esp
+    and esp, -16
+    sub esp, 12
+    push eax
+    call sched_tick
+    mov esp, ebx
+    test eax, eax
+    jz .return
+    sub esp, 512
+    and esp, -16
+    cmp dword [runtime_fxsr], 0
+    je .fnsave
+    fxsave [esp]
+    jmp .saved
+.fnsave:
+    fnsave [esp]
+.saved:
+    call sched_preempted
+    cmp dword [runtime_fxsr], 0
+    je .frstor
+    fxrstor [esp]
+    jmp .restored
+.frstor:
+    frstor [esp]
+.restored:
+    mov esp, ebx
+.return:
+    popad
+    iretd
 
 section .data
 align 4

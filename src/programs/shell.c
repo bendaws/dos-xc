@@ -102,7 +102,8 @@ void shell_run(struct fat32_volume *volume,int native_dos_available,char drive,u
 void shell_firmware(disk_count_fn count,disk_info_fn info,disk_io_fn io,void (__attribute__((sysv_abi)) *reset)(void),
                     unsigned (__attribute__((sysv_abi)) *rescan)(void),
                     int (__attribute__((sysv_abi)) *pointer)(int *,int *,int *,unsigned *),
-                    void (__attribute__((sysv_abi)) *poweroff)(void),uint64_t rsdp){
+                    void (__attribute__((sysv_abi)) *poweroff)(void),uint64_t rsdp,
+                    int (__attribute__((sysv_abi)) *display)(int,unsigned,unsigned *,unsigned *,unsigned *,uint64_t *)){
  context.disk_count=count;context.disk_info=info;context.disk_io=io;firmware_reboot=reset;
- context.disk_rescan=rescan;context.pointer=pointer;context.poweroff=poweroff;context.acpi_rsdp=rsdp;
+ context.disk_rescan=rescan;context.pointer=pointer;context.poweroff=poweroff;context.acpi_rsdp=rsdp;context.display=display;
 }

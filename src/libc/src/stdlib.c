@@ -572,6 +572,14 @@ void freelocale(locale_t l) { (void)l; }
 locale_t uselocale(locale_t l) { (void)l; return &c_locale_object; }
 
 char *nl_langinfo(nl_item item) {
+    static char *const names[] = {
+        "Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat",
+        "Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday",
+        "Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec",
+        "January", "February", "March", "April", "May", "June", "July", "August", "September", "October",
+        "November", "December",
+    };
+    if (item >= ABDAY_1 && item <= MON_12) return names[item - ABDAY_1];
     switch (item) {
     case CODESET: return "ANSI_X3.4-1968";
     case RADIXCHAR: return ".";

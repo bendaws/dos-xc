@@ -205,6 +205,22 @@ static int __attribute__((sysv_abi)) input(void *ctx) {
  (void)ctx;struct KEY k;if(st->in->read(st->in,&k))return -1;
  if(k.unicode==13)return '\n';if(k.scan==0x17)return 27;if(k.scan)return 0x100+k.scan;return k.unicode?k.unicode:-1;
 }
+/* The Graphics Output Protocol, for the desktop: 32-bit BGRX modes only. */
+struct GOP_INFO { U32 version,width,height,format; U32 masks[4]; U32 pitch; };
+struct GOP_MODE { U32 max,mode; struct GOP_INFO *info; UINTN size; U64 base; UINTN base_size; };
+struct GOP { EFI_STATUS (*query)(struct GOP *,U32,UINTN *,struct GOP_INFO **); EFI_STATUS (*set)(struct GOP *,U32); void *blt; struct GOP_MODE *mode; };
+static struct GUID gop_guid={0x9042a9de,0x23dc,0x4a38,{0x96,0xfb,0x7a,0xde,0xd0,0x80,0x51,0x6a}};
+static struct GOP *gop;
+static int __attribute__((sysv_abi)) firmware_display(int op,unsigned index,unsigned *w,unsigned *h,unsigned *pitch,U64 *base){
+ if(op==3){st->out->mode(st->out,st->out->state->mode);st->out->clear(st->out);return 0;}
+ if(!gop){HANDLE *handles;UINTN count;
+  if(st->services->handles(2,&gop_guid,0,&count,&handles)||!count||st->services->protocol(handles[0],&gop_guid,(void **)&gop)){gop=0;return op?-1:0;}}
+ if(op==0)return (int)gop->mode->max;
+ if(op==2){if(gop->set(gop,index))return -1;}
+ UINTN size;struct GOP_INFO *info;
+ if(gop->query(gop,index,&size,&info)||info->format!=1)return -1;
+ *w=info->width;*h=info->height;*pitch=info->pitch*4;*base=gop->mode->base;return 0;
+}
 static void boot_kernel(void) {
  indent=0;st->out->visible(st->out,1);
  U64 address=0x2000000;
@@ -232,7 +248,7 @@ static void boot_kernel(void) {
  collect_disks();
  info.disk_count=firmware_disk_count;info.disk_info=firmware_disk_info;info.disk_io=firmware_disk_io;info.reboot=firmware_reset;
  info.disk_rescan=firmware_disk_rescan;info.pointer=firmware_pointer;
- info.poweroff=firmware_poweroff;info.acpi_rsdp=acpi_rsdp();
+ info.poweroff=firmware_poweroff;info.acpi_rsdp=acpi_rsdp();info.display=firmware_display;
  st->out->attribute(st->out,7);st->out->clear(st->out);
  typedef void (__attribute__((sysv_abi)) *ENTRY)(struct boot_info *);
  ((ENTRY)0x2000000)(&info);

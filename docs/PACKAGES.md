@@ -36,15 +36,19 @@ installs one into the live system (in memory until restart).
 |---------|--------|----------|
 | `coreutils` | `\Programs\coreutils` | DIR, TYPE, MORE, COPY, MOVE, REN, DEL, MD, RD, EDIT, WRITE, CLS, COLOR, VER, BEEP, SPEED, EJECT, SHUTDOWN, RESTART (REBOOT), HELP |
 | `batch` | `\Programs\batch` | `BATCH.EXE`, which runs `.BAT` files |
+| `DOS-XC Desktop` | `\Programs\DOS-XC Desktop` | The graphical desktop and its programs ([DESKTOP.md](DESKTOP.md)) |
 | `GCC` | `\Programs\GCC` | GCC 15.2 (C, C++) and binutils 2.45 ([TOOLCHAIN.md](TOOLCHAIN.md)) |
 | `ethernet` | `\SYSTEM\DRIVERS` | Ethernet drivers: Intel, Broadcom, virtio ([NETWORK.md](NETWORK.md)) |
 | `curl` | `\Programs\curl` | curl 8.11 (`CURL`, HTTP only) |
 | `Vim` | `\Programs\Vim` | Vim 9.1 (`VIM`, `VI`, `VIEW`, `EX`, `VIMDIFF`) |
 | `xz` | `\Programs\xz` | XZ Utils 5.8 (`XZ`, `UNXZ`, `XZCAT`) |
+| `python3` | `\Programs\python3` | Python 3.14 (`PYTHON`, `PYTHON3`); see [TOOLCHAIN.md](TOOLCHAIN.md#python) |
 | `Oregon` | `\Programs\Oregon` | The Oregon Trail (16-bit; from `OREGON.ZIP`) |
 
-The live system comes with `coreutils` and `batch` installed; Setup always
-installs `coreutils` and selects `batch` and `ethernet` by default.
+The live system comes with `coreutils`, `batch` and `DOS-XC Desktop` installed;
+Setup always installs `coreutils` and selects `batch`, `ethernet` and
+`DOS-XC Desktop` by default.  A name with spaces needs quotes:
+`PKG REMOVE "DOS-XC Desktop"`.
 
 ## The .dsp format
 
@@ -62,7 +66,7 @@ also a valid (self-extracting style) ZIP:
 
 | Key | Meaning |
 |-----|---------|
-| `Name` | required; letters, digits, `-`, `_`, `.`; the folder name |
+| `Name` | required; letters, digits, inner spaces, `-`, `_`, `.`; the folder name |
 | `Version` | required; numeric parts compare as numbers (1.10 > 1.9) |
 | `Author`, `Description` | shown by `PKG` and Setup |
 | `Arch` | required: `16` (DOS), `32` or `64` |
@@ -84,9 +88,10 @@ its own inflate and deflate) and, for the build machine, in
 `scripts/build.sh` makes `build/packages/<Name>-<bits>.dsp`:
 
 * `coreutils` and `batch` from `src/coreutils` and `src/batch` (every build);
+* `DOS-XC Desktop`, as `desktop-<bits>.dsp`, from `src/desktop` and `src/vdm` (every build);
 * `GCC` from `toolchain/dist/ARCH/GCC` (`toolchain/build-toolchain.sh ARCH`);
 * `ethernet` from `src/netdrivers` (every build);
-* `Vim`, `xz` and `curl` from `build/ports/ARCH` (`ports/build-ports.sh ARCH`);
+* `Vim`, `xz`, `curl` and `python3` from `build/ports/ARCH` (`ports/build-ports.sh ARCH`);
 * `Oregon` from `OREGON.ZIP` in the repository root.
 
 Missing inputs are skipped, so a plain checkout builds without the larger

@@ -40,4 +40,5 @@ struct boot_info {
     int (__attribute__((sysv_abi)) *pointer)(int *, int *, int *, unsigned *);
     void (__attribute__((sysv_abi)) *poweroff)(void);
     uint64_t acpi_rsdp;
+    int (__attribute__((sysv_abi)) *display)(int, unsigned, unsigned *, unsigned *, unsigned *, uint64_t *);
 };

@@ -111,6 +111,8 @@
 #define DOSXC_SYS_SETFL 81         /* fd, DOSXC_O_NONBLOCK | DOSXC_O_APPEND */
 #define DOSXC_SYS_NET 82           /* op, a, b */
 #define DOSXC_SYS_DRIVER 83        /* op, a, buffer, size */
+#define DOSXC_SYS_DISPLAY 84       /* op, a, buffer, size */
+#define DOSXC_SYS_TASK 85          /* op, a, b, c */
 
 typedef __INT32_TYPE__ dosxc_i32;
 typedef __UINT32_TYPE__ dosxc_u32;
@@ -235,12 +237,69 @@ struct dosxc_disk {
 #define DOSXC_CONSOLE_SIZE    8   /* returns rows << 16 | columns */
 #define DOSXC_CONSOLE_GETCOLOR 9  /* returns the current attribute */
 #define DOSXC_CONSOLE_MOUSE   10  /* a = struct dosxc_mouse *; returns 1 when a mouse is there */
+#define DOSXC_CONSOLE_POINTER 11  /* a = struct dosxc_pointer *; returns 1 when a mouse is there */
+#define DOSXC_CONSOLE_VIRTUAL 12  /* returns 1 in a terminal window */
+#define DOSXC_CONSOLE_SPEAKER 13  /* a = PC speaker PIT divisor, 0 silences it */
+#define DOSXC_CONSOLE_VOLUME  14  /* a = 0..100 sets the sound volume, a < 0 reads it */
 #define DOSXC_CONSOLE_RAW     1
 
 struct dosxc_mouse {
     dosxc_i32 row, column;     /* text cell under the mouse cursor */
     dosxc_u32 buttons;         /* bit 0 left, 1 right, 2 middle */
     dosxc_i32 wheel;           /* wheel movement since the last call */
+};
+
+/* Raw mouse movement since the last call, for graphical programs. */
+struct dosxc_pointer {
+    dosxc_i32 dx, dy;
+    dosxc_i32 wheel;
+    dosxc_u32 buttons;         /* bit 0 left, 1 right, 2 middle */
+};
+
+/* display(op, a, buffer, size): graphics displays, one per monitor.  Modes
+   are 32 bits per pixel, 0x00RRGGBB in memory; the framebuffer address can
+   be used directly.  The console is not visible while a display is in
+   graphics mode, and every display returns to text mode when the program
+   that set a mode ends. */
+#define DOSXC_DISPLAY_INFO  1  /* a = index, buffer = struct dosxc_display (or 0); returns the display count */
+#define DOSXC_DISPLAY_MODES 2  /* a = index, buffer = struct dosxc_display_mode[size] (or 0); returns the mode count */
+#define DOSXC_DISPLAY_SET   3  /* a = index, buffer = struct dosxc_display_mode */
+#define DOSXC_DISPLAY_TEXT  4  /* every display back to the text console */
+
+/* DOSXC_SYS_TASK: programs that run side by side. */
+#define DOSXC_TASK_START 1     /* a = path, b = argv: returns the pid */
+#define DOSXC_TASK_YIELD 2
+#define DOSXC_TASK_LIST 3      /* a = struct dosxc_task_info[b]: returns the count */
+#define DOSXC_TASK_KILL 4      /* b = pid */
+#define DOSXC_TASK_ALIVE 5     /* b = pid: 1 or 0 */
+#define DOSXC_TASK_STATS 6     /* a = struct dosxc_task_stats * */
+#define DOSXC_TASK_SHARE_SET 7 /* a = memory published to other programs (the desktop's) */
+#define DOSXC_TASK_SHARE_GET 8 /* returns it, or 0 */
+/* Terminal windows: DOSXC_TASK_START with c = console + 1 runs a program in one. */
+#define DOSXC_TASK_CONSOLE_OPEN 9   /* returns the console number */
+#define DOSXC_TASK_CONSOLE_READ 10  /* a = bytes, b = console, c = size: what programs wrote */
+#define DOSXC_TASK_CONSOLE_KEYS 11  /* a = int keys, b = console, c = count */
+#define DOSXC_TASK_CONSOLE_CLOSE 12 /* b = console: ends what runs in it */
+struct dosxc_task_info {
+    int pid, parent;
+    dosxc_u32 background, reserved;
+    dosxc_u64 memory, cpu_ns;
+    char path[260];
+};
+struct dosxc_task_stats {
+    dosxc_u64 idle_ns, now_ns, memory_total, memory_free;
+    dosxc_u32 tasks, reserved;
+};
+struct dosxc_display_mode {
+    dosxc_u32 width, height;
+};
+struct dosxc_display {
+    char name[32];
+    dosxc_u32 width, height;   /* the current mode; 0 while in text mode */
+    dosxc_u32 pitch;           /* bytes per scan line */
+    dosxc_u32 reserved;
+    dosxc_u64 framebuffer;     /* physical (and virtual) address */
+    dosxc_u32 preferred_width, preferred_height;   /* from the monitor, 0 when unknown */
 };
 
 /* drive(op, a, buffer, size): drives coming and going. */

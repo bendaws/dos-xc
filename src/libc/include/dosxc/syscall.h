@@ -247,6 +247,12 @@ static __inline__ int dosxc_sys_net(int operation, long a, void *b) {
 static __inline__ int dosxc_sys_driver(int operation, long a, void *buffer, dosxc_size size) {
     return (int)__dosxc_syscall4(DOSXC_SYS_DRIVER, operation, a, (__dosxc_word)buffer, (__dosxc_word)size);
 }
+static __inline__ int dosxc_sys_display(int operation, long a, void *buffer, dosxc_size size) {
+    return (int)__dosxc_syscall4(DOSXC_SYS_DISPLAY, operation, a, (__dosxc_word)buffer, (__dosxc_word)size);
+}
+static __inline__ long dosxc_sys_task(int operation, void *a, long b, long c) {
+    return (long)__dosxc_syscall4(DOSXC_SYS_TASK, operation, (__dosxc_word)a, b, c);
+}
 static __inline__ int dosxc_sys_fdpoll(int fd, int events) {
     return (int)__dosxc_syscall2(DOSXC_SYS_FDPOLL, fd, events);
 }

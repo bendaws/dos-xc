@@ -188,6 +188,57 @@ and positioning (`CUU` ... `CUP`, `HVP`, `CHA`, `VPA`), erase (`ED`,
 `SU`/`SD`, save/restore cursor and the cursor position report (`DSR 6`).
 The last column wraps lazily, as on a VT100.  `TERM` is `ansi`.
 
+## Multitasking
+
+`spawn` still suspends the parent until the child exits.  `DOSXC_SYS_TASK`
+(`dosxc_sys_task(op, a, b, c)`) also runs programs side by side:
+
+| Operation | Effect |
+| --- | --- |
+| `DOSXC_TASK_START` | Starts program `a` with argv `b` beside the caller and returns its pid; `c` = console + 1 runs it in a terminal window |
+| `DOSXC_TASK_YIELD` | Gives other tasks a turn |
+| `DOSXC_TASK_LIST` | Fills `struct dosxc_task_info` `a[b]`, returns the process count |
+| `DOSXC_TASK_KILL` | Ends process `b` (not the first shell or the desktop) |
+| `DOSXC_TASK_ALIVE` | 1 if process `b` is running |
+| `DOSXC_TASK_STATS` | Fills `struct dosxc_task_stats` `a` |
+| `DOSXC_TASK_CONSOLE_OPEN` | Creates a virtual console and returns its number |
+| `DOSXC_TASK_CONSOLE_READ` | Copies up to `c` bytes that programs wrote on console `b` to `a` |
+| `DOSXC_TASK_CONSOLE_KEYS` | Queues the `c` keys in int array `a` on console `b` |
+| `DOSXC_TASK_CONSOLE_CLOSE` | Closes console `b` and ends what runs in it |
+
+Tasks switch at system calls and while one sleeps or waits for input.  On a BIOS
+boot, a 100 Hz timer also preempts program code, so a program stuck in a loop
+cannot hold up the others.  Under UEFI the firmware owns the timer, so a program
+that never makes a system call keeps the processor until it does.  The kernel
+itself is not preempted, and programs share one address space without protection
+from each other.
+
+## Graphics
+
+`DOSXC_SYS_DISPLAY` (`dosxc_sys_display(op, index, buffer, size)`) gives a
+program the displays.  Each is a linear 32-bit XRGB framebuffer that the program
+writes to directly.
+
+| Operation | Effect |
+| --- | --- |
+| `DOSXC_DISPLAY_INFO` | Returns the number of displays; fills `struct dosxc_display` for `index` if `buffer` is set |
+| `DOSXC_DISPLAY_MODES` | Returns the mode count; copies up to `size` `struct dosxc_display_mode` |
+| `DOSXC_DISPLAY_SET` | Sets the mode in `buffer` on display `index` |
+| `DOSXC_DISPLAY_TEXT` | Returns every display to the text console |
+
+The console is restored when the program that set a mode exits.  While a
+graphics mode is set the text console is not visible, so call `TEXT` before
+printing or running a text program.
+
+`DOSXC_CONSOLE_VIRTUAL` returns 1 in a terminal window, `DOSXC_CONSOLE_SPEAKER`
+sets the PC speaker's PIT divisor (0 silences it, and it is silenced when the
+caller ends), and `DOSXC_CONSOLE_VOLUME` sets the sound volume, or reads it when
+`a` is negative.
+
+`dosxc_sys_console(DOSXC_CONSOLE_POINTER, (long)&pointer, 0)` reads the mouse
+movement since the last call into `struct dosxc_pointer` and returns 1, or 0 if
+there is no mouse.  See [DESKTOP.md](DESKTOP.md).
+
 Input is cooked (a line editor with echo) until a program clears `ICANON`
 with `tcsetattr`; then reads return one byte per key, Enter as CR, and the
 cursor and function keys as VT220 sequences (`ESC [ A`, `ESC [ 3 ~`,

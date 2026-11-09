@@ -20,7 +20,7 @@ typedef unsigned char u8;
 
 #define PATH_MAX_RT 260
 #define MAX_FDS 64
-#define MAX_DEPTH 16
+#define MAX_DEPTH 32
 #define OWNER_KERNEL 0
 #define PAGE 4096u
 
@@ -64,6 +64,8 @@ void cpu_sleep(u64 nanoseconds);
 i64 cpu_rtc_time(void);
 void cpu_resume(void);
 void cpu_kernel_idt(void);
+void cpu_preempt_start(void);
+void cpu_preempt_stop(void);
 int runtime_enter(uptr entry, uptr stack, struct saved_context *save, int sse);
 void runtime_leave(struct saved_context *save, int value) __attribute__((noreturn));
 /* setjmp: 0 now, later the value given to runtime_leave(save, value). */
@@ -79,6 +81,7 @@ int memory_free(void *block, int owner);
 void memory_free_owner(int owner);
 u64 memory_total(void);
 u64 memory_available(void);
+u64 memory_owned(int owner);
 void *memory_reserve_front(uptr size);  /* before the allocator starts */
 
 /* cache.c */
@@ -114,6 +117,7 @@ int volume_notice(char *buffer, uptr size);
 void volume_post_notice(const char *text);
 
 /* terminal.c */
+struct process;
 dosxc_ssize terminal_write(const u8 *buffer, uptr size);
 dosxc_ssize terminal_read(u8 *buffer, uptr size);
 int terminal_poll(void);
@@ -124,6 +128,27 @@ void terminal_input_reset(void);
 int terminal_mouse(struct dosxc_mouse *out);
 void terminal_mouse_hide(void);
 int terminal_interrupted(void);         /* Ctrl+C typed while a program waits */
+int terminal_pointer(struct dosxc_pointer *out);
+struct vconsole;
+int vc_open(int owner);
+struct vconsole *vc_get(int id);
+void vc_attach(struct process *p, struct vconsole *v);
+void vc_detach(struct process *p);
+void vc_close(struct vconsole *v);
+void vc_owner_died(int pid);
+int vc_read(struct vconsole *v, u8 *buffer, uptr size);
+int vc_push_keys(struct vconsole *v, const int *keys, uptr count);
+int vc_clear(struct vconsole *v);
+int vc_cursor(struct vconsole *v, unsigned row, unsigned column);
+int vc_color(struct vconsole *v, unsigned attribute, int whole);
+int vc_get_color(struct vconsole *v);
+
+/* display.c */
+int display_syscall(int operation, long index, void *buffer, dosxc_size size);
+int display_graphics(void);             /* a display is in graphics mode */
+void display_text(void);                /* every display back to the console */
+int display_owner(void);                /* pid of the program using the graphics modes */
+void display_process_finished(int pid);
 
 /* files.c */
 struct open_file;
@@ -141,6 +166,9 @@ struct process {
     struct library *libraries[MAX_PROCESS_LIBRARIES];   /* dependencies first */
     u8 *library_data[MAX_PROCESS_LIBRARIES];             /* this process's copies */
     int library_count;
+    int background, killed;      /* a task of its own; End Task was asked for */
+    u64 cpu_ns;
+    struct vconsole *vc;         /* its terminal window, if any */
 };
 extern struct process *current;
 int path_resolve(const struct process *, const char *input, char *out);
@@ -167,13 +195,32 @@ const char *library_at(uptr address, uptr *offset);
 
 /* system.c */
 char **environment_master(void);
+void speaker_process_finished(int pid);
 
 /* power.c */
 void power_init(void);
 void power_poll(void);
 void power_off(void);
 
+/* sched.c */
+void sched_set_leaf(struct process *p);
+void sched_yield(void);
+void sched_sleep(u64 nanoseconds);
+void sched_syscall_end(uptr *iret_frame);
+int sched_tick(uptr ip);
+void sched_preempted(void);
+int sched_start(struct process *p, uptr entry, uptr sp);
+void sched_pause(void);
+void sched_resume(void);
+long sched_syscall(int operation, void *a, long b, long c);
+void sched_process_died(struct process *p);
+
 /* loader.c */
+int process_background(struct process *parent, const char *path, char *const argv[], struct vconsole *console);
+void process_kill_console(struct vconsole *console);
+int process_list(struct dosxc_task_info *out, unsigned capacity);
+int process_kill(int pid);
+int process_alive(int pid);
 int process_spawn(struct process *parent, const char *path, char *const argv[],
                   char *const envp[], const char *output, int append);
 void process_exit(int wait_status) __attribute__((noreturn));

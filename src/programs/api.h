@@ -93,6 +93,10 @@ struct command_context {
        BIOS boot: 0 (the runtime finds the RSDP itself). */
     void (__attribute__((sysv_abi)) *poweroff)(void);
     uint64_t acpi_rsdp;
+    /* UEFI: the firmware's graphics modes; 0 on BIOS boot.  OP 0: mode
+       count; 1: describe mode INDEX; 2: set it; 3: back to the console. */
+    int (__attribute__((sysv_abi)) *display)(int op, unsigned index, unsigned *width, unsigned *height,
+                                             unsigned *pitch, uint64_t *framebuffer);
 };
 
 /* \SYSTEM\ELFAPI.DLL: the 32/64-bit ELF program runtime. */

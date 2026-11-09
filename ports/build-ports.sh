@@ -3,7 +3,7 @@
 #
 #   ports/build-ports.sh ARCH [PORT...]
 #
-# ARCH is x86_64 or i686; PORTs are xz, vim and curl (all when none are named).
+# ARCH is x86_64 or i686; PORTs are xz, vim, curl and python (all when none are named).
 # Sources are downloaded to toolchain/downloads.  Each port is installed
 # into build/ports/ARCH/<Name>, the folder layout of its package
 # (\Programs\<Name> on DOS-XC); scripts/build.sh packs those folders.
@@ -13,7 +13,7 @@ HERE=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
 ROOT=$(dirname "$HERE")
 ARCH=${1:-x86_64}
 [ $# -gt 0 ] && shift
-PORTS=${*:-xz vim curl}
+PORTS=${*:-xz vim curl python}
 case "$ARCH" in
 x86_64) TARGET=x86_64-dosxc ;;
 i686) TARGET=i686-dosxc ;;
@@ -22,6 +22,8 @@ esac
 XZ_VERSION=5.8.1
 VIM_VERSION=9.1.1000
 CURL_VERSION=8.11.1
+PYTHON_VERSION=3.14.6
+ZLIB_VERSION=1.3.1
 DOWNLOADS=$ROOT/toolchain/downloads
 WORK=$ROOT/toolchain/work/ports-$ARCH
 OUT=${BUILD:-"$ROOT/build"}/ports/$ARCH
@@ -158,12 +160,77 @@ port_curl() {
     echo "curl $CURL_VERSION -> $OUT/curl"
 }
 
+port_python() {
+    minor=${PYTHON_VERSION%.*}
+    # A cross build runs a host Python of the same minor version.
+    build_python=$(command -v "python$minor") || { echo "error: python$minor is needed on the build machine" >&2; exit 1; }
+    fetch zlib-$ZLIB_VERSION.tar.gz https://zlib.net/fossils/zlib-$ZLIB_VERSION.tar.gz
+    fetch Python-$PYTHON_VERSION.tar.xz https://www.python.org/ftp/python/$PYTHON_VERSION/Python-$PYTHON_VERSION.tar.xz
+
+    # zlib, linked statically into the interpreter, goes into the sysroot.
+    unpack zlib-$ZLIB_VERSION.tar.gz zlib
+    cd "$WORK/zlib"
+    run_logged zlib-configure env CC="$CC_PORT" CHOST=$TARGET CFLAGS="-O2" ./configure --static --prefix="$SYSROOT"
+    run_logged zlib-make make -j"$JOBS" libz.a
+    cp libz.a "$SYSROOT/lib/"
+    cp zlib.h zconf.h "$SYSROOT/include/"
+
+    unpack Python-$PYTHON_VERSION.tar.xz python
+    cd "$WORK/python"
+    # Teach configure the platform; threads use CPython's own stubs (as on WASI).
+    perl -0pi -e 's/(\t\*-\*-wasi\*\)\n\s+ac_sys_system=WASI\n\s+;;\n)/$1\t*-*-dosxc*)\n\t    ac_sys_system=DOSXC\n\t    ;;\n/;
+                  s/(\t\*-\*-vxworks\*\)\n\t\t_host_ident=\$host_cpu\n\t\t;;\n)/$1\t*-*-dosxc*)\n\t\t_host_ident=\$host_cpu\n\t\t;;\n/;
+                  s/  WASI\) :\n    posix_threads=stub/  WASI|DOSXC) :\n    posix_threads=stub/' configure
+    # Search paths are separated by ";" because paths contain "C:".
+    perl -0pi -e 's/#ifndef DELIM\n/#ifdef __dosxc__\n#  define DELIM L\x27;\x27\n#endif\n#ifndef DELIM\n/' Include/osdefs.h
+    "$build_python" "$HERE/python-dosxc.py" .
+    site=$WORK/python.site
+    cat > "$site" <<'EOF'
+ac_cv_file__dev_ptmx=no
+ac_cv_file__dev_ptc=no
+ac_cv_buggy_getaddrinfo=no
+ax_cv_c_float_words_bigendian=no
+ac_cv_sizeof_pthread_t=4
+ac_cv_sizeof_pthread_key_t=4
+ac_cv_enable_visibility=no
+py_cv_module__ctypes=n/a
+py_cv_module__ctypes_test=n/a
+py_cv_module__remote_debugging=n/a
+EOF
+    # The 32-bit edition computes doubles on the x87.
+    [ "$ARCH" = i686 ] && printf 'ac_cv_gcc_asm_for_x87=yes\nac_cv_x87_double_rounding=yes\n' >> "$site"
+    # No dlopen: every extension module is linked into the interpreter.
+    run_logged python-configure env CONFIG_SITE="$site" PKG_CONFIG=false MODULE_BUILDTYPE=static \
+        ./configure --build="$BUILD_TRIPLE" --host=$TARGET --prefix=/Programs/python3 \
+        --with-build-python="$build_python" --with-suffix=.exe --disable-shared --disable-ipv6 \
+        --without-ensurepip --without-mimalloc --disable-test-modules \
+        CC="$CC_PORT" CFLAGS="-O2 -DSIZEOF_PTHREAD_T=4"
+    run_logged python-make make -j"$JOBS"
+    rm -rf "$WORK/python-staging"
+    run_logged python-install make install DESTDIR="$WORK/python-staging"
+
+    rm -rf "$OUT/python3"
+    mkdir -p "$OUT/python3/BIN" "$OUT/python3/lib"
+    "$TARGET-strip" -o "$OUT/python3/BIN/PYTHON3.EXE" "$WORK/python/python.exe"
+    cp "$OUT/python3/BIN/PYTHON3.EXE" "$OUT/python3/BIN/PYTHON.EXE"
+    cp -R "$WORK/python-staging/Programs/python3/lib/python$minor" "$OUT/python3/lib/python$minor"
+    # Trim what cannot run here (GUI toolkits, the C test suite) and the
+    # optimised bytecode that is never used by default.
+    lib=$OUT/python3/lib/python$minor
+    rm -rf "$lib/test" "$lib/idlelib" "$lib/tkinter" "$lib/turtledemo" "$lib/ensurepip" "$lib/turtle.py" \
+           "$lib"/config-*
+    find "$lib" -name '*.opt-[12].pyc' -delete
+    cp "$WORK/python/LICENSE" "$OUT/python3/LICENSE.TXT"
+    echo "python $PYTHON_VERSION -> $OUT/python3"
+}
+
 mkdir -p "$WORK" "$OUT"
 for port in $PORTS; do
     case "$port" in
     xz) port_xz ;;
     vim) port_vim ;;
     curl) port_curl ;;
+    python) port_python ;;
     *) echo "error: unknown port $port" >&2; exit 1 ;;
     esac
 done

@@ -12,6 +12,7 @@
 extern uptr runtime_exception_stubs[32];
 extern char runtime_spurious[];
 extern char runtime_syscall_entry[];
+extern char runtime_timer_gate[];
 int runtime_fxsr;
 
 static int sse;
@@ -75,7 +76,7 @@ static void extend_paging(void) {
 }
 #endif
 
-/* type 0x8e: interrupt gate (IF cleared); 0xef: trap gate, DPL 3 (IF kept). */
+/* type 0x8e/0xee: interrupt gate (IF cleared); 0xef: trap gate, DPL 3 (IF kept). */
 static void set_gate(int vector, uptr handler, u16 selector, u8 type) {
     struct gate *g = &idt[vector];
     g->low = (u16)handler;
@@ -106,11 +107,81 @@ static void build_idt(void) {
     }
     for (int v = 0; v < 32; ++v)
         if (v != 2) set_gate(v, runtime_exception_stubs[v], cs, 0x8e);
-    /* System calls run with the caller's interrupt flag, as direct ABI 1
-       calls did (UEFI firmware drivers depend on its timer interrupt). */
-    set_gate(DOSXC_SYSCALL_VECTOR, (uptr)runtime_syscall_entry, cs, 0xef);
+    /* Under UEFI, system calls keep the caller's interrupt flag (firmware
+       drivers depend on its timer).  On a BIOS boot the kernel runs with
+       interrupts off even when programs have them on for multitasking. */
+    set_gate(DOSXC_SYSCALL_VECTOR, (uptr)runtime_syscall_entry, cs, ctx->bios_available ? 0xee : 0xef);
+    /* BIOS boot: the timer for multitasking comes in here, see sched.c. */
+    if (ctx->bios_available) {
+        set_gate(8, (uptr)runtime_timer_gate, cs, 0x8e);
+        set_gate(15, (uptr)runtime_spurious, cs, 0x8e);   /* the PIC's spurious IRQ 7 */
+#if __SIZEOF_POINTER__ == 8
+        idt[8].ist = 1;
+#endif
+    }
     idt_pointer.limit = sizeof(idt) - 1;
     idt_pointer.base = (uptr)idt;
+}
+
+/* ---- the timer for multitasking (BIOS boot) ----------------------------- */
+
+#if __SIZEOF_POINTER__ == 8
+/* A task state segment, only for the interrupt stack of the timer gate. */
+static struct __attribute__((packed)) { u32 reserved0; u64 rsp[3]; u64 reserved1; u64 ist[7]; u64 reserved2; u16 reserved3, iomap; } tss;
+static u8 gate_stack[16384] __attribute__((aligned(16)));
+static u8 gdt[256];
+
+static void load_tss(void) {
+    struct descriptor_pointer old, fresh;
+    __asm__ volatile("sgdt %0" : "=m"(old));
+    static uptr tss_slot;
+    uptr limit;
+    if (old.base == (uptr)gdt) limit = tss_slot;   /* still ours */
+    else {
+        limit = (uptr)old.limit + 1;
+        if (limit > sizeof(gdt) - 16) return;
+        memcpy(gdt, (void *)old.base, limit);
+        limit = (limit + 7) & ~(uptr)7;
+        tss_slot = limit;
+    }
+    u64 base = (u64)(uptr)&tss, size = sizeof(tss) - 1;
+    u64 *d = (u64 *)(gdt + limit);
+    d[0] = (size & 0xffff) | (base & 0xffffff) << 16 | 0x89ull << 40 | ((base >> 24) & 0xff) << 56;
+    d[1] = base >> 32;
+    tss.ist[0] = (u64)(uptr)(gate_stack + sizeof(gate_stack));
+    tss.iomap = sizeof(tss);
+    fresh.limit = (u16)(limit + 16 - 1);
+    fresh.base = (uptr)gdt;
+    __asm__ volatile("lgdt %0" ::"m"(fresh));
+    u16 selector = (u16)limit;
+    __asm__ volatile("ltr %0" ::"r"(selector));
+}
+#endif
+
+void cpu_preempt_start(void) {
+#if __SIZEOF_POINTER__ == 8
+    load_tss();
+#endif
+    volatile u8 *cell = (volatile u8 *)0x70d0;
+    cell[0] = rt_inb(0x21);              /* the masks the BIOS wants back */
+    cell[1] = rt_inb(0xa1);
+    cell[2] = 1;
+    rt_outb(0x21, 0xfe);
+    rt_outb(0xa1, 0xff);
+    rt_outb(0x43, 0x36);                 /* 100 Hz */
+    rt_outb(0x40, 11932 & 0xff);
+    rt_outb(0x40, 11932 >> 8);
+}
+
+void cpu_preempt_stop(void) {
+    volatile u8 *cell = (volatile u8 *)0x70d0;
+    if (!cell[2]) return;
+    rt_outb(0x43, 0x36);                 /* the BIOS's 18.2 Hz */
+    rt_outb(0x40, 0);
+    rt_outb(0x40, 0);
+    rt_outb(0x21, cell[0]);
+    rt_outb(0xa1, cell[1]);
+    cell[2] = 0;
 }
 
 void cpu_install_idt(void) {

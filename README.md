@@ -3,13 +3,15 @@
     DOS-XC
 </h1>
 
-DOS-XC (DOS eXtended Core) is a full-fledged modern DOS operating system. It can run your 16-bit DOS programs, or new modern 32-bit and 64-bit programs. In summary, it's like DOS but awesome.
+DOS-XC (DOS eXtended Core) is a full-fledged modern DOS operating system. It can run your 16-bit DOS programs through kernel-level emulation, or new modern 32-bit and 64-bit programs. In summary, it's like DOS but awesome.
+
+DOS-XC is beta software and should not be used as a daily machine unless you **llloovveee** DOS.
 
 ## Screenshots
-![The welcome message and command prompt from the live CD](/.github/screenshots/live.png)
-![The 1990 game 'The Oregon Trail' running on the system](/.github/screenshots/oregon.png)
-![Packages menu of DOS-XC Setup, showing all packages selected for installation](.github/screenshots/packages.png)
-![GCC running and compiling a Hello World program](/.github/screenshots/gcc.png)
+![The GUI Setup program showing a list of installable packages](/.github/screenshots/setup-gui.png)
+![GCC compiling and running a Hello world program on DOS-XC](/.github/screenshots/GCC.png)
+![The 16-bit MS-DOS game "The Oregon Trail" running on DOS-XC among a task manager and a file manager](/.github/screenshots/oregon.png)
+![The Displays settings menu showing multi-monitor support and scaling support](/.github/screenshots/displays.png)
 
 ## Goals
 DOS-XC wants to be a(n):
@@ -23,32 +25,40 @@ Every version has an accompanying GitHub release, so you can start there: https:
 - Download `DOSXC_<version>_x64.iso` for 64-bit systems, or `DOSXC_<version>_x86.iso` for 32-bit systems.
 
 ## Using the system
-The installation media start a live system on drive `X:`; type `SETUP` to
-install DOS-XC on a hard disk (it becomes `C:`).  Programs live in
-`\Programs`, one folder per package, your files belong in `\Home`, and
-`PKG` installs, updates and removes packages (`PKG HELP`).  Type `HELP`
-for the commands; `D:` switches to another drive.  USB keyboards, mice and
-drives can be plugged in and out at any time; `EJECT E:` before pulling
-out a drive you wrote to.  `SHUTDOWN` switches the computer off (so does
-its power button) and `RESTART` restarts it.
+By default, DOS-XC starts with its graphical environment, the DOS-XC Desktop. Here, you get graphical tools, games, and configuration utilities, plus wallpapers and greater customizability.
+
+For hardcore DOS command line fans, you can uninstall the desktop by running:
+```bat
+pkg.exe remove "DOS-XC Desktop"
+```
+
+Your 16-bit MS-DOS programs run in a kernel-level emulator and you can run them just like regular programs.
 
 ## Building
 ```sh
-toolchain/build-toolchain.sh x86_64   # optional: GCC for the x64 edition (the GCC package)
-toolchain/build-toolchain.sh i686     # optional: GCC for the x86 edition
-ports/build-ports.sh x86_64           # optional: Vim and XZ (also for i686)
-scripts/build.sh                      # build/iso/DOSXC_<version>_x86.iso and _x64.iso
-scripts/boot64.sh                     # run in QEMU (MEMORY=1024 MiB by default); boot32.sh for x86
+# Builds GCC and ported programs
+toolchain/build-toolchain.sh x86_64
+toolchain/build-toolchain.sh i686
+ports/build-ports.sh x86_64
+
+# Builds the ISOs to /build/iso/
+scripts/build.sh
+
+# Boots the ISO with QEMU, sub "64" for "32" to run the 32-bit system instead
+scripts/boot64.sh
+
+# Attach a virtual hard disk
+scripts/boot64.sh -hd disk.img
 ```
 
-`scripts/build.sh` needs the cross compilers from `toolchain/cross` (the
-shell, the commands, PKG and Setup are DOS-XC programs) and puts
-intermediate files in `build/part`, packages in `build/packages` and the
-bootable ISOs in `build/iso`.  Set `BUILD` to use another directory.
-Put `OREGON.ZIP` in the repository root to build the Oregon Trail package.
+To build the system, you need the cross-compiler with our shell script:
+```sh
+.\toolchain\build-toolchain.sh
+```
 
 ## Documentation
 - [docs/PROGRAMS.md](docs/PROGRAMS.md): the 32/64-bit program format, system calls, drives, the console, shared libraries and the C library
+- [docs/DESKTOP.md](docs/DESKTOP.md): the graphical desktop and multiple monitors
 - [docs/PACKAGES.md](docs/PACKAGES.md): packages, PKG and the `.dsp` format
 - [docs/TOOLCHAIN.md](docs/TOOLCHAIN.md): using and building GCC on DOS-XC, and the ports
 - [docs/USB.md](docs/USB.md): USB keyboards, mice and drives

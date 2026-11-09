@@ -144,6 +144,7 @@ static void button_pressed(void) {
     struct fat32_info info;
     if (current && !fs_stat(path, &info)) {
         char *argv[3] = {"SHUTDOWN.EXE", "/B", 0};
+        display_text();
         terminal_mouse_hide();
         process_spawn(current, path, argv, 0, 0, 0);       /* returns only if cancelled or failed */
     } else {

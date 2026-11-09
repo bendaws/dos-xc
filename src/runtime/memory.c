@@ -4,8 +4,7 @@
  *
  * The program arena: one block of physical RAM above the system area,
  * divided into page-granular regions tagged with the owning process.
- * Programs nest strictly (a parent waits for its child), so releasing a
- * finished process returns every region it owned.
+ * Releasing a finished process returns every region it owned.
  */
 
 #include "runtime.h"
@@ -152,6 +151,13 @@ void memory_free_owner(int owner) {
     for (unsigned i = 0; i < count; ++i)
         if (regions[i].owner == owner) regions[i].owner = FREE;
     coalesce();
+}
+
+u64 memory_owned(int owner) {
+    u64 total = 0;
+    for (unsigned i = 0; i < count; ++i)
+        if (regions[i].owner == owner) total += regions[i].size;
+    return total;
 }
 
 u64 memory_total(void) { return arena_end - arena_start; }

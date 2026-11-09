@@ -176,7 +176,9 @@ static int api_rundos(const char *path, const char *arguments) {
     }
     if (rt_strlen(program) >= 128 || rt_strlen(arguments) > 126 || rt_strlen(directory) >= 128) return -DOSXC_E2BIG;
     files_flush_all();
+    display_text();
     terminal_mouse_hide();
+    sched_pause();
     int value = runtime_save(&dos_resume);
     if (!value) {
         dos_pending = 1;
@@ -185,6 +187,7 @@ static int api_rundos(const char *path, const char *arguments) {
         ctx->run_dos(program + 2, arguments, directory + 2);
         bridge_runtime_active(1);
         cpu_resume();                   /* run_dos refused */
+        sched_resume();
         dos_pending = 0;
         return -DOSXC_EINVAL;
     }
@@ -240,33 +243,56 @@ static int api_reboot(void) {
 static dosxc_i64 api_time(void) { return cpu_rtc_time(); }
 static dosxc_u64 api_nanoseconds(void) { return cpu_nanoseconds(); }
 static void api_sleep(dosxc_u64 nanoseconds) {
-    if (!net_active()) { cpu_sleep(nanoseconds); return; }
+    if (!net_active()) { sched_sleep(nanoseconds); return; }
     u64 end = cpu_nanoseconds() + nanoseconds;           /* the network keeps running */
     for (;;) {
         net_poll();
         u64 now = cpu_nanoseconds();
         if (now >= end) return;
-        cpu_sleep(end - now < 1000000 ? end - now : 1000000);
+        sched_sleep(end - now < 1000000 ? end - now : 1000000);
     }
 }
 
-/* A tone on the PC speaker (PIT channel 2), timed with the calibrated
-   time stamp counter. */
-static void speaker_beep(unsigned hertz, unsigned milliseconds) {
-    if (hertz < 19) hertz = 19;
-    u32 divisor = 1193182u / hertz;
+/* The PC speaker (PIT channel 2).  It has no volume of its own, so the
+   system volume only decides whether it sounds at all. */
+static int sound_volume = 100, speaker_owner;
+
+static void speaker_set(unsigned divisor) {
+    u8 state = rt_inb(0x61);
+    if (!divisor || !sound_volume) { rt_outb(0x61, (u8)(state & 0xfc)); return; }
     if (divisor > 65535) divisor = 65535;
-    if (milliseconds > 60000) milliseconds = 60000;
     rt_outb(0x43, 0xb6);
     rt_outb(0x42, (u8)divisor);
     rt_outb(0x42, (u8)(divisor >> 8));
-    u8 state = rt_inb(0x61);
     rt_outb(0x61, (u8)(state | 3));
+}
+
+void speaker_process_finished(int pid) {
+    if (speaker_owner != pid) return;
+    speaker_owner = 0;
+    speaker_set(0);
+}
+
+/* A tone, timed with the calibrated time stamp counter. */
+static void speaker_beep(unsigned hertz, unsigned milliseconds) {
+    if (hertz < 19) hertz = 19;
+    if (milliseconds > 60000) milliseconds = 60000;
+    speaker_set(1193182u / hertz);
     cpu_sleep((u64)milliseconds * 1000000ull);
-    rt_outb(0x61, (u8)(state & 0xfc));
+    speaker_set(0);
 }
 
 static int api_console(int operation, long a, long b) {
+    if (current && current->vc) {
+        struct vconsole *v = current->vc;
+        switch (operation) {
+        case DOSXC_CONSOLE_CLEAR: return vc_clear(v);
+        case DOSXC_CONSOLE_GETCOLOR: return vc_get_color(v);
+        case DOSXC_CONSOLE_COLOR: return vc_color(v, (unsigned)a & 255, (a & 0x100) != 0);
+        case DOSXC_CONSOLE_CURSOR: return vc_cursor(v, (unsigned)a, (unsigned)b);
+        case DOSXC_CONSOLE_VIRTUAL: return 1;
+        }
+    }
     switch (operation) {
     case DOSXC_CONSOLE_CLEAR: ctx->clear(); return 0;
     case DOSXC_CONSOLE_POLL: return terminal_poll();
@@ -279,8 +305,20 @@ static int api_console(int operation, long a, long b) {
     case DOSXC_CONSOLE_CURSOR: ctx->cursor((unsigned)a, (unsigned)b); return 0;
     case DOSXC_CONSOLE_GETKEY: return terminal_get_key((int)a);
     case DOSXC_CONSOLE_BEEP: speaker_beep((unsigned)a, (unsigned)b); return 0;
+    case DOSXC_CONSOLE_VIRTUAL: return 0;
+    case DOSXC_CONSOLE_SPEAKER:
+        speaker_owner = a ? (current ? current->pid : 0) : 0;
+        speaker_set((unsigned)a);
+        return 0;
+    case DOSXC_CONSOLE_VOLUME:
+        if (a >= 0) {
+            sound_volume = a > 100 ? 100 : (int)a;
+            if (!sound_volume) speaker_set(0);
+        }
+        return sound_volume;
     case DOSXC_CONSOLE_MODE: return files_console_mode((int)a);
     case DOSXC_CONSOLE_MOUSE: return terminal_mouse((struct dosxc_mouse *)a);
+    case DOSXC_CONSOLE_POINTER: return terminal_pointer((struct dosxc_pointer *)a);
     }
     return -DOSXC_EINVAL;
 }
@@ -289,6 +327,7 @@ static int api_console(int operation, long a, long b) {
    after saying it is safe to switch off by hand. */
 static int api_power(int operation) {
     if (operation != DOSXC_POWER_OFF) return -DOSXC_EINVAL;
+    display_text();
     terminal_mouse_hide();
     power_off();
     rt_print("\r\nIt is now safe to turn off your computer.\r\n");
@@ -386,6 +425,8 @@ void runtime_syscall(struct syscall_frame *f) {
     case DOSXC_SYS_POWER: r = api_power(I(0)); break;
     case DOSXC_SYS_NET: r = net_syscall_net(I(0), (long)ARG(1), P(2)); break;
     case DOSXC_SYS_DRIVER: r = driver_syscall(I(0), (long)ARG(1), P(2), (dosxc_size)ARG(3)); break;
+    case DOSXC_SYS_DISPLAY: r = display_syscall(I(0), (long)ARG(1), P(2), (dosxc_size)ARG(3)); break;
+    case DOSXC_SYS_TASK: r = sched_syscall(I(0), P(1), (long)ARG(2), (long)ARG(3)); break;
     case DOSXC_SYS_SETFL: r = files_set_flags(I(0), I(1)); break;
     case DOSXC_SYS_SOCKET: case DOSXC_SYS_CONNECT: case DOSXC_SYS_BIND: case DOSXC_SYS_LISTEN: case DOSXC_SYS_ACCEPT:
     case DOSXC_SYS_SENDTO: case DOSXC_SYS_RECVFROM: case DOSXC_SYS_SHUTDOWN: case DOSXC_SYS_SOCKOPT: case DOSXC_SYS_SOCKNAME:
@@ -400,6 +441,7 @@ void runtime_syscall(struct syscall_frame *f) {
 #else
     (void)wide;
 #endif
+    sched_syscall_end((uptr *)(f + 1));
 }
 
 int runtime_init(struct command_context *context) {
@@ -520,6 +562,7 @@ int runtime_resume(struct command_context *context, int code) {
     cpu_resume();
     cache_resume();
     volumes_resume();
+    sched_resume();
     int status = runtime_switch(&shell->saved, &dos_resume, (code & 0xff) + 1);
     cpu_restore_idt();
     current = 0;

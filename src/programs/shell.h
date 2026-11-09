@@ -14,4 +14,5 @@ void shell_run(struct fat32_volume *volume, int native_dos_available, char drive
 void shell_firmware(disk_count_fn, disk_info_fn, disk_io_fn, void (__attribute__((sysv_abi)) *)(void),
                     unsigned (__attribute__((sysv_abi)) *)(void),
                     int (__attribute__((sysv_abi)) *)(int *, int *, int *, unsigned *),
-                    void (__attribute__((sysv_abi)) *)(void), uint64_t);
+                    void (__attribute__((sysv_abi)) *)(void), uint64_t,
+                    int (__attribute__((sysv_abi)) *)(int, unsigned, unsigned *, unsigned *, unsigned *, uint64_t *));

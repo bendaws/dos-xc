@@ -101,7 +101,23 @@ Put the program on a disk image with `DOSXC_EXTRA_TREES=dir scripts/build.sh`
 
 ## Ports
 
-`ports/build-ports.sh ARCH [xz] [vim]` cross-compiles XZ Utils and Vim
-into `build/ports/ARCH`, which `scripts/build.sh` packs.  Vim uses its
+`ports/build-ports.sh ARCH [xz] [vim] [curl] [python]` cross-compiles the
+ports into `build/ports/ARCH`, which `scripts/build.sh` packs.  Vim uses its
 built-in `ansi` terminal description (there is no terminfo database) and
 `system()` for shell commands, since DOS-XC has no `fork()`.
+
+### Python
+
+The `python3` package is CPython 3.14.  Building it needs a host `python3.14`.
+Every extension module is linked into the interpreter, because DOS-XC has no
+`dlopen`, and [`ports/python-dosxc.py`](../ports/python-dosxc.py) adapts the
+standard library to drive letters, `;` search paths and `posix_spawn`.
+
+* Not available: threads (`threading.Thread.start` raises `RuntimeError`),
+  `ctypes`, `mmap`, `multiprocessing`, `ssl` and so HTTPS, `sqlite3`, `bz2`,
+  `lzma`, IPv6, and C extension modules that are not built in.
+* `subprocess` runs the child to completion inside `Popen`, so a child cannot
+  talk back and forth with its parent.  `shell=True` splits the command into
+  words and runs it directly; shell syntax such as pipes is not interpreted.
+* `asyncio` runs on one thread, and `os.urandom` is only cryptographically
+  strong on processors with RDRAND.

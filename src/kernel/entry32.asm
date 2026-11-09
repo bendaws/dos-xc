@@ -39,6 +39,13 @@ bios_body:
     pushfd
     cli
     pushad
+    cmp byte [0x70d2], 0          ; multitasking: the BIOS needs its own interrupts
+    je .bios_masks
+    mov al, [0x70d0]
+    out 0x21, al
+    mov al, [0x70d1]
+    out 0xa1, al
+.bios_masks:
     mov [0x7080], esp
     mov edi, 0
     mov dword [0x70b0], bios_resume
@@ -55,6 +62,13 @@ bios_body:
     jmp 8:0x90000
 bios_resume:
     mov esp, [0x7080]
+    cmp byte [0x70d2], 0
+    je .resume_masks
+    mov al, 0xfe
+    out 0x21, al
+    mov al, 0xff
+    out 0xa1, al
+.resume_masks:
     popad
     popfd
     ret

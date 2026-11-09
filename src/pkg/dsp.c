@@ -34,8 +34,8 @@ unsigned long dsp_crc32(unsigned long crc, const void *data, size_t size) {
 int dsp_valid_name(const char *name) {
     if (!*name || strlen(name) > 40) return 0;
     for (const char *p = name; *p; ++p)
-        if (!isalnum((unsigned char)*p) && *p != '-' && *p != '_' && *p != '.') return 0;
-    return *name != '.';
+        if (!isalnum((unsigned char)*p) && *p != '-' && *p != '_' && *p != '.' && *p != ' ') return 0;
+    return *name != '.' && *name != ' ' && name[strlen(name) - 1] != ' ';
 }
 
 static void field(char *out, size_t size, const char *value, size_t length) {

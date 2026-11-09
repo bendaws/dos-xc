@@ -123,6 +123,8 @@ def main():
     parser.add_argument('--hda', help='raw disk image attached as the first hard disk')
     parser.add_argument('--uefi', help='firmware image (e.g. OVMF) for UEFI boot')
     parser.add_argument('-c', '--command', action='append', default=[])
+    parser.add_argument('--no-exit-desktop', dest='exit_desktop', action='store_false',
+                        help='stay on the desktop instead of pressing F12 to reach the prompt')
     parser.add_argument('--timeout', type=float, default=300, help='seconds allowed per command')
     parser.add_argument('--boot-timeout', type=float, default=60)
     parser.add_argument('--screendump', help='write a PPM screenshot here when finished')
@@ -133,8 +135,12 @@ def main():
     ok = True
     try:
         deadline = time.time() + args.boot_timeout
+        next_exit = time.time() + 6
         while time.time() < deadline and not PROMPT.search(session.text().rstrip(' ')):
             time.sleep(1.5)
+            if args.exit_desktop and time.time() >= next_exit:   # F12: the desktop comes up at boot
+                session.hmp('sendkey f12')
+                next_exit = time.time() + 3
         if not PROMPT.search(session.text().rstrip(' ')):
             print('error: no shell prompt after boot', file=sys.stderr)
             ok = False

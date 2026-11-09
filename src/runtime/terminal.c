@@ -30,6 +30,8 @@
 #define ROWS 25
 #define COLUMNS 80
 
+static void vc_output(struct vconsole *v, const u8 *buffer, uptr size);
+
 /* ---- output ----------------------------------------------------------- */
 
 static int state;                       /* 0 text, 1 after ESC, 2 CSI, 3 ESC + intermediate */
@@ -342,6 +344,10 @@ static void put_byte(u8 b) {
 }
 
 dosxc_ssize terminal_write(const u8 *buffer, uptr size) {
+    if (current && current->vc) {
+        vc_output(current->vc, buffer, size);
+        return (dosxc_ssize)size;
+    }
     int shown = mouse_drawn;
     terminal_mouse_hide();
     sync_cursor();
@@ -369,11 +375,166 @@ void terminal_reset(void) {
 
 /* ---- input ------------------------------------------------------------ */
 
-static char line[512];
-static uptr line_length, line_position;
-static int raw_mode;
-static u8 queue[64];
-static unsigned queue_head, queue_tail;
+struct input {
+    char line[512];
+    uptr line_length, line_position;
+    int raw_mode;
+    u8 queue[64];
+    unsigned queue_head, queue_tail;
+};
+static struct input console_input;
+
+/* ---- virtual consoles ------------------------------------------------- */
+
+/* A terminal window: programs attached to one read keys the window pushes
+   and write bytes the window draws (it interprets the escape sequences). */
+#define VC_COUNT 8
+#define VC_OUT 16384
+#define VC_KEYS 256
+struct vconsole {
+    int used, closed, refs, owner;
+    u8 out[VC_OUT];
+    volatile u32 out_read, out_write;
+    int keys[VC_KEYS];
+    volatile u32 key_read, key_write;
+    unsigned char color;
+    struct input in;
+};
+static struct vconsole consoles[VC_COUNT];
+
+/* The input state the current call works on. */
+static struct input *I = &console_input;
+static void select_input(void) { I = current && current->vc ? &current->vc->in : &console_input; }
+#define line (I->line)
+#define line_length (I->line_length)
+#define line_position (I->line_position)
+#define raw_mode (I->raw_mode)
+#define queue (I->queue)
+#define queue_head (I->queue_head)
+#define queue_tail (I->queue_tail)
+
+int vc_open(int owner) {
+    for (int i = 0; i < VC_COUNT; ++i) {
+        struct vconsole *v = &consoles[i];
+        if (v->used) continue;
+        memset(v, 0, sizeof(*v));
+        v->used = 1;
+        v->owner = owner;
+        v->color = 7;
+        return i;
+    }
+    return -DOSXC_EAGAIN;
+}
+
+struct vconsole *vc_get(int id) {
+    if (id < 0 || id >= VC_COUNT || !consoles[id].used || consoles[id].closed) return 0;
+    return &consoles[id];
+}
+
+void vc_attach(struct process *p, struct vconsole *v) {
+    if (p->vc == v) return;
+    p->vc = v;
+    if (v) ++v->refs;
+}
+
+static void vc_release_slot(struct vconsole *v) { if (v->closed && !v->refs) v->used = 0; }
+
+void vc_detach(struct process *p) {
+    struct vconsole *v = p->vc;
+    p->vc = 0;
+    if (!v) return;
+    --v->refs;
+    vc_release_slot(v);
+}
+
+/* The window went away: whatever runs in it ends. */
+void vc_close(struct vconsole *v) {
+    if (!v || v->closed) return;
+    v->closed = 1;
+    process_kill_console(v);
+    vc_release_slot(v);
+}
+
+void vc_owner_died(int pid) {
+    for (int i = 0; i < VC_COUNT; ++i)
+        if (consoles[i].used && !consoles[i].closed && consoles[i].owner == pid) vc_close(&consoles[i]);
+}
+
+int vc_read(struct vconsole *v, u8 *buffer, uptr size) {
+    uptr n = 0;
+    while (n < size && v->out_read != v->out_write) {
+        buffer[n++] = v->out[v->out_read];
+        v->out_read = (v->out_read + 1) % VC_OUT;
+    }
+    return (int)n;
+}
+
+int vc_push_keys(struct vconsole *v, const int *keys, uptr count) {
+    uptr n = 0;
+    for (; n < count; ++n) {
+        u32 next = (v->key_write + 1) % VC_KEYS;
+        if (next == v->key_read) break;
+        v->keys[v->key_write] = keys[n];
+        v->key_write = next;
+    }
+    return (int)n;
+}
+
+static void vc_output(struct vconsole *v, const u8 *buffer, uptr size) {
+    for (uptr i = 0; i < size; ++i) {
+        u32 next = (v->out_write + 1) % VC_OUT;
+        while (next == v->out_read) {
+            if (v->closed) return;
+            sched_sleep(1000000);
+        }
+        v->out[v->out_write] = buffer[i];
+        v->out_write = next;
+    }
+}
+
+/* Console operations on a window, as escape sequences it understands. */
+int vc_clear(struct vconsole *v) {
+    vc_output(v, (const u8 *)"\033[2J\033[H", 7);
+    return 0;
+}
+
+static unsigned vc_number(char *out, unsigned v) {
+    char digits[12];
+    unsigned d = 0, n = 0;
+    do digits[d++] = (char)('0' + v % 10); while (v /= 10);
+    while (d) out[n++] = digits[--d];
+    return n;
+}
+
+int vc_cursor(struct vconsole *v, unsigned row, unsigned column) {
+    char s[32];
+    unsigned n = 0;
+    s[n++] = 27;
+    s[n++] = '[';
+    n += vc_number(s + n, row + 1);
+    s[n++] = ';';
+    n += vc_number(s + n, column + 1);
+    s[n++] = 'H';
+    vc_output(v, (const u8 *)s, n);
+    return 0;
+}
+
+/* CSI attribute ; whole-screen z: DOS colors, which ANSI cannot express. */
+int vc_color(struct vconsole *v, unsigned attribute, int whole) {
+    char s[32];
+    unsigned n = 0;
+    v->color = (unsigned char)attribute;
+    s[n++] = 27;
+    s[n++] = '[';
+    n += vc_number(s + n, attribute & 255);
+    s[n++] = ';';
+    n += vc_number(s + n, whole ? 1 : 0);
+    s[n++] = 'z';
+    vc_output(v, (const u8 *)s, n);
+    return 0;
+}
+
+int vc_get_color(struct vconsole *v) { return v->color; }
 
 static void enqueue(const char *bytes) {
     while (*bytes && queue_tail < sizeof(queue)) queue[queue_tail++] = (u8)*bytes++;
@@ -431,8 +592,36 @@ static void report_mouse(unsigned code, int release) {
     if (queue_tail + n <= sizeof(queue)) enqueue(text);
 }
 
+/* Raw movement for graphical programs; the text cursor stays out of it. */
+int terminal_pointer(struct dosxc_pointer *out) {
+    int dx = 0, dy = 0, wheel = 0, present = 0;
+    unsigned buttons = 0;
+    if (ctx->pointer) present = ctx->pointer(&dx, &dy, &wheel, &buttons) > 0;
+    else {
+        struct usb_mouse_state m;
+        present = usb_mouse_take(&m);
+        dx = m.dx; dy = m.dy; wheel = m.wheel; buttons = m.buttons;
+    }
+    if (out) {
+        out->dx = dx;
+        out->dy = dy;
+        out->wheel = wheel;
+        out->buttons = buttons;
+    }
+    return present;
+}
+
 /* Read the mice, move the cursor, and report to the program if it asked. */
+static void mouse_poll_console(void);
 static void mouse_poll(void) {
+    struct input *saved = I;
+    I = &console_input;
+    mouse_poll_console();
+    I = saved;
+}
+
+static void mouse_poll_console(void) {
+    if (display_graphics()) return;          /* no text cursor on a graphics screen */
     int dx = 0, dy = 0, wheel = 0;
     unsigned buttons = 0;
     int present = 0;
@@ -485,6 +674,10 @@ static void mouse_poll(void) {
 }
 
 int terminal_mouse(struct dosxc_mouse *out) {
+    if (current && current->vc) {          /* no text mouse in a window */
+        if (out) memset(out, 0, sizeof(*out));
+        return 0;
+    }
     mouse_poll();
     if (out) {
         out->row = mouse_row;
@@ -507,10 +700,27 @@ static int source_key(void) {
     mouse_poll();
     net_tick();
     int key = usb_key_read();
-    return key >= 0 ? key : ctx->read_key();
+    if (key >= 0) return key;
+    /* The kernel's poll briefly unmasks the keyboard interrupt. */
+    uptr flags;
+#if __SIZEOF_POINTER__ == 8
+    __asm__ volatile("pushfq; pop %0; cli" : "=r"(flags));
+#else
+    __asm__ volatile("pushfl; pop %0; cli" : "=r"(flags));
+#endif
+    key = ctx->read_key();
+    if (flags & 0x200) __asm__ volatile("sti");
+    return key;
 }
 
 static int read_key(void) {
+    if (current && current->vc) {
+        struct vconsole *v = current->vc;
+        if (v->key_read == v->key_write) return -1;
+        int key = v->keys[v->key_read];
+        v->key_read = (v->key_read + 1) % VC_KEYS;
+        return key;
+    }
     if (pushed_count) {
         int key = pushed_back[0];
         memmove(pushed_back, pushed_back + 1, --pushed_count * sizeof(int));
@@ -521,8 +731,14 @@ static int read_key(void) {
 
 /* Is Ctrl+C waiting?  Other keys stay queued for the program. */
 int terminal_interrupted(void) {
+    select_input();
     if (raw_mode) return 0;
     int key;
+    if (current && current->vc) {
+        while ((key = read_key()) >= 0)
+            if (key == 3) return 1;
+        return 0;
+    }
     while ((key = source_key()) >= 0) {
         if (key == 3) return 1;
         if (pushed_count < sizeof(pushed_back) / sizeof(*pushed_back)) pushed_back[pushed_count++] = key;
@@ -538,6 +754,7 @@ static void take_replies(void) {
 }
 
 int terminal_poll(void) {
+    select_input();
     take_replies();
     if (raw_mode) {
         if (queue_head != queue_tail) return 1;
@@ -549,14 +766,21 @@ int terminal_poll(void) {
     return 0;
 }
 
+static void wait_a_moment(void) {
+    if (current && current->vc) sched_sleep(2000000);
+    else sched_yield();
+}
+
 static int wait_key(void) {
     int key;
-    do key = read_key();
-    while (key < 0);
+    while ((key = read_key()) < 0) wait_a_moment();
     return key;
 }
 
+static void echo(const char *text) { terminal_write((const u8 *)text, rt_strlen(text)); }
+
 dosxc_ssize terminal_read(u8 *buffer, uptr size) {
+    select_input();
     if (!size) return 0;
     if (raw_mode) {
         take_replies();
@@ -570,28 +794,29 @@ dosxc_ssize terminal_read(u8 *buffer, uptr size) {
         for (;;) {
             int key = wait_key();
             if (key == '\n' || key == '\r') {
-                ctx->write("\r\n");
+                echo("\r\n");
                 line[line_length++] = '\n';
                 break;
             }
             if (key == '\b') {
                 if (line_length) {
                     --line_length;
-                    ctx->write("\b \b");
+                    echo("\b \b");
                 }
                 continue;
             }
             if ((key == 26 || key == 4) && !line_length) {   /* Ctrl+Z / Ctrl+D: end of input */
-                ctx->write("^Z\r\n");
+                echo("^Z\r\n");
                 return 0;
             }
             if (key == 3) {                                  /* Ctrl+C */
-                ctx->write("^C\r\n");
+                echo("^C\r\n");
                 process_exit(DOSXC_SIGNALED(2));
             }
             if (key >= 32 && key < 256 && key != 127 && line_length < sizeof(line) - 1) {
                 line[line_length++] = (char)key;
-                ctx->putc((char)key);
+                char one[2] = {(char)key, 0};
+                echo(one);
             }
         }
     }
@@ -603,6 +828,7 @@ dosxc_ssize terminal_read(u8 *buffer, uptr size) {
 }
 
 int terminal_mode(int mode) {
+    select_input();
     int old = raw_mode;
     raw_mode = mode == DOSXC_CONSOLE_RAW;
     if (!raw_mode) queue_head = queue_tail = 0;
@@ -611,14 +837,15 @@ int terminal_mode(int mode) {
 
 /* GETKEY: the next key as a keyboard code; queued raw bytes come first. */
 int terminal_get_key(int wait) {
+    select_input();
     if (queue_head != queue_tail) return queue[queue_head++];
     int key;
-    do key = read_key();
-    while (wait && key < 0);
+    while ((key = read_key()) < 0 && wait) wait_a_moment();
     return key;
 }
 
 void terminal_input_reset(void) {
+    select_input();
     line_position = line_length = 0;
     raw_mode = 0;
     queue_head = queue_tail = 0;

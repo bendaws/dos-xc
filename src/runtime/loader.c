@@ -5,7 +5,8 @@
  * The DOS-XC executable loader and process model.
  *
  * spawn() works like MS-DOS EXEC: the parent is suspended until the child
- * exits, then resumes with the child's wait status.  Every program is a
+ * exits, then resumes with the child's wait status (a program can also be
+ * started as a task of its own, see sched.c).  Every program is a
  * static PIE, so the loader places the child in free arena memory, applies
  * its RELATIVE relocations and enters it on a private stack.  Exceptions
  * raised while a program runs terminate that program only.
@@ -279,8 +280,9 @@ static int find_program(struct process *parent, const char *path, char *canonica
     return -DOSXC_ENOENT;
 }
 
-int process_spawn(struct process *parent, const char *path, char *const argv[], char *const envp[],
-                  const char *output, int append) {
+/* Load a program without running it.  On failure nothing remains of it. */
+static int process_prepare(struct process *parent, const char *path, char *const argv[], char *const envp[],
+                           const char *output, int append, struct process **out, uptr *entry, uptr *stack_pointer) {
     char canonical[PATH_MAX_RT], posix[PATH_MAX_RT];
     int r = find_program(parent, path, canonical);
     if (r) return r;
@@ -300,8 +302,10 @@ int process_spawn(struct process *parent, const char *path, char *const argv[], 
     p->pid = next_pid++;
     if (next_pid > 0x7fff0000) next_pid = 1;
     p->parent = parent;
+    vc_attach(p, parent ? parent->vc : 0);
     rt_strcpy(p->path, canonical);
     if ((r = files_setup(p, parent, output, append))) {
+        vc_detach(p);
         p->used = 0;
         return r;
     }
@@ -344,21 +348,105 @@ int process_spawn(struct process *parent, const char *path, char *const argv[], 
                          envp ? envp : environment_master(), &image, link);
         if (!sp) r = -DOSXC_E2BIG;
     }
-    if (!r) {
-        struct process *saved = current;
-        current = p;
-        if (!parent) root = p;
-        cpu_install_idt();
-        r = runtime_enter(image.entry, sp, &p->saved, cpu_has_sse());
-        cpu_restore_idt();
-        current = saved;
+    if (r) {
+        process_finish(p);
+        return r;
     }
+    *out = p;
+    *entry = image.entry;
+    *stack_pointer = sp;
+    return 0;
+}
+
+int process_spawn(struct process *parent, const char *path, char *const argv[], char *const envp[],
+                  const char *output, int append) {
+    struct process *p;
+    uptr entry, sp;
+    int r = process_prepare(parent, path, argv, envp, output, append, &p, &entry, &sp);
+    if (r) return r;
+    struct process *saved = current;
+    current = p;
+    sched_set_leaf(p);
+    if (!parent) root = p;
+    cpu_install_idt();
+    r = runtime_enter(entry, sp, &p->saved, cpu_has_sse());
+    cpu_restore_idt();
+    current = saved;
+    sched_set_leaf(saved);
+    if (saved) libraries_activate(saved);
     process_finish(p);
     return r;
 }
 
+/* Start a program beside its parent; returns its pid. */
+int process_background(struct process *parent, const char *path, char *const argv[], struct vconsole *console) {
+    struct process *p;
+    uptr entry, sp;
+    int r = process_prepare(parent, path, argv, 0, 0, 0, &p, &entry, &sp);
+    if (r) return r;
+    if (console) { vc_detach(p); vc_attach(p, console); }
+    r = sched_start(p, entry, sp);
+    if (r < 0) process_finish(p);
+    return r;
+}
+
+int process_list(struct dosxc_task_info *out, unsigned capacity) {
+    unsigned n = 0;
+    for (unsigned i = 0; i < MAX_DEPTH; ++i) {
+        struct process *p = &processes[i];
+        if (!p->used) continue;
+        if (n < capacity) {
+            struct dosxc_task_info *t = &out[n];
+            memset(t, 0, sizeof(*t));
+            t->pid = p->pid;
+            t->parent = p->parent ? p->parent->pid : 0;
+            t->background = (dosxc_u32)p->background;
+            t->memory = memory_owned(p->pid);
+            t->cpu_ns = p->cpu_ns;
+            rt_strcpy(t->path, p->path);
+        }
+        ++n;
+    }
+    return (int)n;
+}
+
+int process_alive(int pid) {
+    for (unsigned i = 0; i < MAX_DEPTH; ++i)
+        if (processes[i].used && processes[i].pid == pid) return 1;
+    return 0;
+}
+
+void process_kill_console(struct vconsole *console) {
+    for (unsigned i = 0; i < MAX_DEPTH; ++i)
+        if (processes[i].used && processes[i].vc == console) processes[i].killed = 1;
+}
+
+/* End PID and the children it is waiting for at their next safe point. */
+int process_kill(int pid) {
+    struct process *target = 0;
+    for (unsigned i = 0; i < MAX_DEPTH; ++i)
+        if (processes[i].used && processes[i].pid == pid) target = &processes[i];
+    if (!target) return -DOSXC_ESRCH;
+    if (target == root || target->pid == display_owner()) return -DOSXC_EPERM;
+    target->killed = 1;
+    for (int changed = 1; changed;) {
+        changed = 0;
+        for (unsigned i = 0; i < MAX_DEPTH; ++i) {
+            struct process *p = &processes[i];
+            if (p->used && !p->killed && !p->background && p->parent && p->parent->killed) { p->killed = 1; changed = 1; }
+        }
+    }
+    return 0;
+}
+
 /* Release what a finished process owned. */
 void process_finish(struct process *p) {
+    display_process_finished(p->pid);
+    speaker_process_finished(p->pid);
+    sched_process_died(p);
+    for (unsigned i = 0; i < MAX_DEPTH; ++i)
+        if (processes[i].used && processes[i].parent == p) processes[i].parent = 0;
+    vc_detach(p);
     libraries_release(p);
     files_release(p);
     memory_free_owner(p->pid);
@@ -381,6 +469,7 @@ void runtime_exception(uptr *frame) {
         "Control protection fault"};
     uptr vector = frame[0] & 31, error = frame[1], ip = frame[2];
     drivers_fault(vector, ip);             /* does not return inside a driver */
+    if (!current || display_owner() == current->pid) display_text();   /* so the report can be read */
     int signal = vector == 0 || vector == 16 || vector == 19 ? 8
                : vector == 6 ? 4 : vector == 1 || vector == 3 ? 5 : vector == 17 ? 7 : 11;
     rt_print("\r\n");

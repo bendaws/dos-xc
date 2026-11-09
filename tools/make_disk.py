@@ -4,7 +4,7 @@
   tools/make_disk.py BUILD BITS PACKAGES
 
 The image holds \\SYSTEM, the EFI loader, empty \\TEMP and \\Home folders,
-\\Programs with the coreutils and batch packages installed, \\Packages
+\\Programs with the coreutils, batch and desktop packages installed, \\Packages
 with every package for this edition (for Setup and PKG), any extra trees
 named in DOSXC_EXTRA_TREES or DOSXC_EXTRA_TREES_32/_64 (host directories
 separated by os.pathsep) and optional DOS programs from DOS_PROGRAMS_ZIP.
@@ -169,10 +169,10 @@ for package in sorted(PACKAGES.glob('*.dsp')):
     stem, _, bits = package.stem.rpartition('-')
     if bits in (BITS, '16'):
         tree['Packages'][stem + '.dsp'] = package.read_bytes()
-# The live system comes with coreutils and batch installed.
+# The live system comes with coreutils, batch and the desktop installed.
 staging = BUILD / f'live{BITS}'
 shutil.rmtree(staging, ignore_errors=True)
-for name in ('coreutils', 'batch'):
+for name in ('coreutils', 'batch', 'desktop'):
     dsp.install(PACKAGES / f'{name}-{BITS}.dsp', staging)
 tree['Programs'] = load_tree(staging / 'Programs')
 extra_trees = os.pathsep.join(os.environ.get(name, '') for name in

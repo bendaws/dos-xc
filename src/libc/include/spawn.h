@@ -15,8 +15,6 @@
 #define POSIX_SPAWN_SETPGROUP 2
 #define POSIX_SPAWN_SETSIGDEF 4
 #define POSIX_SPAWN_SETSIGMASK 8
-#define POSIX_SPAWN_SETSCHEDPARAM 16
-#define POSIX_SPAWN_SETSCHEDULER 32
 typedef struct { int __flags; pid_t __pgroup; sigset_t __mask, __default; } posix_spawnattr_t;
 struct __dosxc_spawn_action;
 typedef struct { int __count, __capacity; struct __dosxc_spawn_action *__actions; } posix_spawn_file_actions_t;

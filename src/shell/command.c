@@ -31,6 +31,7 @@
 
 static int errorlevel;
 static int interactive;
+static void start_desktop(void);
 static char system_drive = 'C';
 static int exit_requested;
 
@@ -70,6 +71,13 @@ static int is_directory(const char *path) {
 static int is_file(const char *path) {
     struct stat st;
     return !stat(path, &st) && !S_ISDIR(st.st_mode);
+}
+
+/* A file of the DOS-XC Desktop package, if it is installed. */
+#define DESKTOP_FOLDER "\\Programs\\DOS-XC Desktop"
+static int find_desktop_file(const char *relative, char *out, size_t size) {
+    snprintf(out, size, "%c:" DESKTOP_FOLDER "\\%s", system_drive, relative);
+    return is_file(out);
 }
 
 /* ---- welcome ------------------------------------------------------------ */
@@ -557,12 +565,22 @@ static int run_program(const char *found, const char *name, char *arguments) {
             if (strlen(directory) == 2) strcat(directory, "\\");
             chdir(directory);
         }
-        int r = dosxc_sys_rundos(found, arguments);
+        int r;
+        char vm[64];
+        if (dosxc_sys_console(DOSXC_CONSOLE_VIRTUAL, 0, 0) == 1 && find_desktop_file("Apps\\DOSVM.EXE", vm, sizeof(vm))) {
+            /* In a terminal window: the virtual machine, so the desktop keeps running. */
+            char *argv[4] = {"DOSVM.EXE", (char *)found, arguments, 0};
+            int status = dosxc_sys_spawn(vm, argv, 0);
+            r = status < 0 ? status : wait_status_level(status);
+            if (status < 0) printf("%s: the DOS virtual machine could not be started.\n", name);
+        } else {
+            r = dosxc_sys_rundos(found, arguments);
+            if (r == -DOSXC_ENOSYS) { say("16-bit programs need BIOS (legacy) boot.\n"); r = 1; }
+            else if (r == -DOSXC_EXDEV) { printf("16-bit programs must be on drive %c:.\n", system_drive); r = 1; }
+            else if (r == -DOSXC_E2BIG) { say("The command line or path is too long for a 16-bit program.\n"); r = 1; }
+            else if (r < 0) { printf("%s: cannot start the 16-bit program.\n", name); r = 1; }
+        }
         if (folder && *saved) chdir(saved);
-        if (r == -DOSXC_ENOSYS) { say("16-bit programs need BIOS (legacy) boot.\n"); return 1; }
-        if (r == -DOSXC_EXDEV) { printf("16-bit programs must be on drive %c:.\n", system_drive); return 1; }
-        if (r == -DOSXC_E2BIG) { say("The command line or path is too long for a 16-bit program.\n"); return 1; }
-        if (r < 0) { printf("%s: cannot start the 16-bit program.\n", name); return 1; }
         return r;
     }
     printf("%s: not a program DOS-XC can run.\n", name);
@@ -795,6 +813,25 @@ static int run_command(char *line) {
     return errorlevel;
 }
 
+/* The system comes up on the desktop when it is installed.  Only the first
+   shell after a boot starts it: leaving the desktop stays at the prompt, and
+   Esc, held or tapped while the system starts, skips it once. */
+static void start_desktop(void) {
+    char marker[8];
+    if (env_get("DESKTOPSTARTED", marker, sizeof(marker)) >= 0) return;
+    env_set("DESKTOPSTARTED", "1");
+    char program[64];
+    if (!find_desktop_file("DESKTOP.EXE", program, sizeof(program))) return;
+    for (int i = 0; i < 12; ++i) {
+        int k = dosxc_sys_console(DOSXC_CONSOLE_GETKEY, 0, 0);
+        if (k == 27) { say("Staying at the command prompt.\n"); return; }
+        if (k < 0) dosxc_sys_sleep(20000000);
+    }
+    char *argv[2] = {program, 0};
+    fflush(stdout);
+    dosxc_sys_spawn(program, argv, 0);
+}
+
 /* ---- main ------------------------------------------------------------------ */
 
 int main(int argc, char **argv) {
@@ -829,6 +866,7 @@ int main(int argc, char **argv) {
             snprintf(line, sizeof(line), "\"%s\"", autoexec);
             run_command(line);
         }
+        start_desktop();
     }
     char line[LINE_MAX_SHELL];
     while (!exit_requested) {

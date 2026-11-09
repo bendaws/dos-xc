@@ -82,6 +82,7 @@ uid_t geteuid(void);
 gid_t getgid(void);
 int getgroups(int, gid_t[]);
 int gethostname(char *, size_t);
+int getentropy(void *, size_t);
 char *getlogin(void);
 int getlogin_r(char *, size_t);
 int getopt(int, char *const[], const char *);

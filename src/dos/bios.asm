@@ -8,13 +8,16 @@ bits 16
 ;   +1 function: 0x42 read, 0x43 write (one sector), 0xC2 read [0x704C] sectors
 ;      (2048-byte blocks on the boot CD), 0xC3 write [0x704C] sectors,
 ;      0x48 drive parameters (INT 13h AH=48h) to 0x78000,
-;      0xE8 E820 memory map to 0x78000
+;      0xE8 E820 memory map to 0x78000,
+;      0x10 INT 10h: ax, bx, cx, di from 0x7050.. with es = 0x7800; result = ax
 ;   +2 drive, +4 LBA, +8 result (0 or -1; E820 entry count)
 bios_service:
     xor ax, ax
     mov es, ax
     cmp byte [es:0x7041], 0xe8
     je memory_map
+    cmp byte [es:0x7041], 0x10
+    je video_service
     cmp byte [es:0x7041], 0x48
     je drive_parameters
     mov eax, [es:0x7044]
@@ -60,7 +63,7 @@ bios_service:
     cli
     xor ax, ax
     mov ds, ax
-    lgdt [0x70a0]
+    o32 lgdt [0x70a0]
     mov eax, [0x7090]
     mov cr4, eax
     mov eax, [0x708c]
@@ -88,6 +91,16 @@ bios_protected:
     lidt [0x70c0]
     jmp far [0x70b0]
 bits 16
+video_service:
+    mov ax, [es:0x7050]
+    mov bx, [es:0x7052]
+    mov cx, [es:0x7054]
+    mov di, [es:0x7056]
+    mov dx, 0x7800
+    mov es, dx
+    int 0x10
+    movzx eax, ax
+    jmp bios_service.result
 memory_map:
     mov ax, 0x7800
     mov es, ax

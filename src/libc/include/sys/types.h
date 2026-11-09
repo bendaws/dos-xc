@@ -16,7 +16,9 @@
 #define __NEED_suseconds_t
 #define __NEED_clockid_t
 #define __NEED_intptr_t
+#define __NEED_struct_timespec
 #include <sys/_types.h>
+#include <sys/select.h>
 #include <endian.h>
 typedef unsigned int id_t;
 typedef int key_t;

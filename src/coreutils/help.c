@@ -17,6 +17,7 @@ int main(void) {
          "  EJECT drive:         Unmount a USB drive before pulling it out\n"
          "  SHUTDOWN             Switch the computer off (also the power button)\n"
          "  RESTART              Restart the computer (REBOOT does the same)\n"
+         "  DESKTOP              Start the graphical desktop (F12 leaves it)\n"
          "\n"
          "Network: IPCONFIG, PING host, DRIVERS\n"
          "Packages: PKG LIST, PKG INSTALL file.dsp, PKG REMOVE name, PKG HELP\n"

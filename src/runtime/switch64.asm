@@ -11,7 +11,8 @@ section .text
 
 global runtime_enter, runtime_leave, runtime_spurious, bios_call, runtime_save, runtime_switch
 global runtime_exception_stubs, runtime_syscall_entry
-extern runtime_exception, runtime_syscall, runtime_fxsr
+global runtime_timer_gate
+extern runtime_exception, runtime_syscall, runtime_fxsr, sched_tick, sched_preempted
 
 ; int runtime_enter(uptr entry, uptr stack, struct saved_context *save, int sse)
 ; Saves the caller's callee-saved state, switches to the program stack and
@@ -199,6 +200,110 @@ exception_common:
     cli
     hlt
     jmp .halt
+
+; Vector 8 is where the BIOS keeps IRQ 0 and also the double fault; only the
+; timer sets its bit in the interrupt controller.  This gate runs on its own
+; stack (programs use the red zone), so a switch is done by making the
+; program itself continue at runtime_preempt_entry.
+runtime_timer_gate:
+    push rax
+    mov al, 0x0b
+    out 0x20, al
+    in al, 0x20
+    test al, 1
+    pop rax
+    jz stub_8
+    push rax
+    push rcx
+    push rdx
+    push rsi
+    push rdi
+    push r8
+    push r9
+    push r10
+    push r11
+    mov al, 0x20
+    out 0x20, al
+    mov rdi, [rsp+72]           ; rip
+    cld
+    call sched_tick
+    test eax, eax
+    jz .return
+    mov rax, [rsp+72+24]        ; rsp, past the red zone
+    sub rax, 128+16
+    mov rcx, [rsp+72+16]        ; rflags
+    mov [rax], rcx
+    mov rcx, [rsp+72]           ; rip
+    mov [rax+8], rcx
+    mov [rsp+72+24], rax
+    lea rcx, [rel runtime_preempt_entry]
+    mov [rsp+72], rcx
+    and qword [rsp+72+16], ~0x200
+.return:
+    pop r11
+    pop r10
+    pop r9
+    pop r8
+    pop rdi
+    pop rsi
+    pop rdx
+    pop rcx
+    pop rax
+    iretq
+
+runtime_preempt_entry:
+    push r15
+    push r14
+    push r13
+    push r12
+    push r11
+    push r10
+    push r9
+    push r8
+    push rbp
+    push rdi
+    push rsi
+    push rdx
+    push rcx
+    push rbx
+    push rax
+    cld
+    mov rbx, rsp
+    sub rsp, 512
+    and rsp, -16
+    cmp dword [runtime_fxsr], 0
+    je .fnsave
+    fxsave [rsp]
+    jmp .saved
+.fnsave:
+    fnsave [rsp]
+.saved:
+    call sched_preempted
+    cmp dword [runtime_fxsr], 0
+    je .frstor
+    fxrstor [rsp]
+    jmp .restored
+.frstor:
+    frstor [rsp]
+.restored:
+    mov rsp, rbx
+    pop rax
+    pop rbx
+    pop rcx
+    pop rdx
+    pop rsi
+    pop rdi
+    pop rbp
+    pop r8
+    pop r9
+    pop r10
+    pop r11
+    pop r12
+    pop r13
+    pop r14
+    pop r15
+    popfq
+    ret 128
 
 section .data
 align 8

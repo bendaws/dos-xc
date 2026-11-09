@@ -53,7 +53,10 @@ int rt_equal_nocase(const char *a, const char *b) {
     return !*a && !*b;
 }
 
-void rt_print(const char *text) { ctx->write(text); }
+void rt_print(const char *text) {
+    if (current && current->vc) terminal_write((const u8 *)text, rt_strlen(text));
+    else ctx->write(text);
+}
 
 void rt_print_hex(u64 value) {
     char buffer[19];

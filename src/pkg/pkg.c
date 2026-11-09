@@ -473,7 +473,7 @@ static int pack_command(int argc, char **argv) {
         }
     }
     if (!dsp_valid_name(info.name) || !info.version[0] || (info.arch != 16 && info.arch != 32 && info.arch != 64)) {
-        puts("A package needs a name (letters, digits, - _ .), a version and an architecture (/B:16, 32 or 64).\n"
+        puts("A package needs a name (letters, digits, spaces, - _ .), a version and an architecture (/B:16, 32 or 64).\n"
              "Give them with the options or in PACKAGE.INF inside the folder.");
         return 1;
     }
