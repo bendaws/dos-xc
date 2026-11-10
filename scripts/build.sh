@@ -5,6 +5,7 @@ set -eu
 # build/part; the bootable images go to build/iso as
 # DOSXC_<version>_x86.iso and DOSXC_<version>_x64.iso.
 ROOT=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
+. "$ROOT/scripts/parallel.sh"
 BUILD=${BUILD:-"$ROOT/build"}
 PART=$BUILD/part
 ISO_DIR=$BUILD/iso
@@ -32,9 +33,10 @@ compile_kernel() {
     "$NASM" -f elf"$bits" "$ROOT/src/kernel/entry$bits.asm" -o "$PART/entry$tag.o"
     for component in kernel/main kernel/console drivers/keyboard drivers/pcspeaker drivers/fat32 drivers/storage programs/shell; do
         name=${component##*/}
-        "$CC" --target="$target" -ffreestanding -fno-stack-protector -fno-pic -mno-red-zone -mno-sse -mno-sse2 \
+        spawn "$CC" --target="$target" -ffreestanding -fno-stack-protector -fno-pic -mno-red-zone -mno-sse -mno-sse2 \
             -nostdinc -I"$ROOT/src" -c "$ROOT/src/$component.c" -o "$PART/$name$tag.o"
     done
+    finish_jobs
     "$LD" -m "$emulation" -e 0 -T "$ROOT/src/kernel/module.ld" --defsym=MODULE_BASE="$core_base" --defsym=MODULE_BITS="$bits" --defsym=bios_transfer="$((kernel_base + 320))" \
         -o "$PART/core$tag.elf" "$PART/console$tag.o" "$PART/keyboard$tag.o" "$PART/pcspeaker$tag.o" \
         "$PART/fat32$tag.o" "$PART/storage$tag.o" --defsym=__core_bss_start=__module_bss_start --defsym=__core_bss_end=__module_bss_end
@@ -75,11 +77,12 @@ compile_runtime() {
     objects=
     for unit in system loader dynamic paging files terminal volumes cache memory cpu support \
                 usb pci xhci ehci ohci uhci bridge power drivers net tcp socket display sched random; do
-        "$CC" --target="$runtime_target" -ffreestanding -fno-stack-protector -fno-pic -mno-red-zone -mno-sse -mno-sse2 \
+        spawn "$CC" --target="$runtime_target" -ffreestanding -fno-stack-protector -fno-pic -mno-red-zone -mno-sse -mno-sse2 \
             -nostdinc -O2 -Wall -Wextra -Wno-unused-parameter -I"$ROOT/src" \
             -c "$ROOT/src/runtime/$unit.c" -o "$PART/runtime$runtime_bits/$unit.o"
         objects="$objects $PART/runtime$runtime_bits/$unit.o"
     done
+    finish_jobs
     "$NASM" -f elf"$runtime_bits" -I"$PART/" "$ROOT/src/runtime/switch$runtime_bits.asm" -o "$PART/runtime$runtime_bits/switch.o"
     "$LD" -m "$runtime_emulation" -T "$ROOT/src/runtime/runtime.ld" --defsym=RUNTIME_ADDRESS=0x4400000 \
         --defsym=RUNTIME_BITS="$runtime_bits" -o "$PART/runtime$runtime_bits/elfapi.elf" \
@@ -107,20 +110,21 @@ compile_userland() {
     "$ROOT/src/libc/build.sh" "$libc_arch" "$sysroot" clang >/dev/null
     mkdir -p "$out/system" "$out/coreutils" "$out/batch"
     flags="--sysroot=$sysroot -O2 -Wall -Wextra -Wno-unused-parameter -Wno-sign-compare -Wno-format-truncation -Wno-misleading-indentation -Wno-stringop-truncation -s"
-    "$cc" $flags -I"$ROOT/src/shell" "$ROOT/src/shell/command.c" -o "$out/system/COMMAND.EXE"
-    "$cc" $flags "$ROOT/src/pkg/pkg.c" "$ROOT/src/pkg/dsp.c" "$ROOT/src/pkg/inflate.c" "$ROOT/src/pkg/deflate.c" \
+    spawn "$cc" $flags -I"$ROOT/src/shell" "$ROOT/src/shell/command.c" -o "$out/system/COMMAND.EXE"
+    spawn "$cc" $flags "$ROOT/src/pkg/pkg.c" "$ROOT/src/pkg/dsp.c" "$ROOT/src/pkg/inflate.c" "$ROOT/src/pkg/deflate.c" \
         -o "$out/system/PKG.EXE"
-    "$cc" $flags -I"$ROOT/src" "$ROOT/src/setup/setup.c" "$ROOT/src/setup/install.c" "$ROOT/src/setup/target.c" "$ROOT/src/drivers/fat32.c" \
+    spawn "$cc" $flags -I"$ROOT/src" "$ROOT/src/setup/setup.c" "$ROOT/src/setup/install.c" "$ROOT/src/setup/target.c" "$ROOT/src/drivers/fat32.c" \
         "$ROOT/src/pkg/dsp.c" "$ROOT/src/pkg/inflate.c" "$ROOT/src/pkg/deflate.c" -o "$out/system/SETUP.EXE"
     for command in $COREUTILS; do
         source=$(echo "$command" | tr A-Z a-z)
-        "$cc" $flags "$ROOT/src/coreutils/$source.c" -o "$out/coreutils/$command.EXE"
+        spawn "$cc" $flags "$ROOT/src/coreutils/$source.c" -o "$out/coreutils/$command.EXE"
     done
-    "$cc" $flags "$ROOT/src/coreutils/copy.c" -o "$out/coreutils/MOVE.EXE"
+    spawn "$cc" $flags "$ROOT/src/coreutils/copy.c" -o "$out/coreutils/MOVE.EXE"
+    finish_jobs
     for alias in MKDIR:MD RMDIR:RD ERASE:DEL RENAME:REN REBOOT:RESTART; do
         cp "$out/coreutils/${alias#*:}.EXE" "$out/coreutils/${alias%%:*}.EXE"
     done
-    "$cc" $flags "$ROOT/src/batch/batch.c" -o "$out/batch/BATCH.EXE"
+    spawn "$cc" $flags "$ROOT/src/batch/batch.c" -o "$out/batch/BATCH.EXE"
     # The desktop package: DESKTOP.EXE and, in Apps, a process per program.
     desktop=$ROOT/src/desktop
     desktop_out=$out/desktop
@@ -128,19 +132,20 @@ compile_userland() {
     mkdir -p "$desktop_out/Apps" "$desktop_out/Wallpapers"
     cp "$desktop"/wallpapers/*.jpg "$desktop_out/Wallpapers/"
     flags="$flags -Wno-missing-field-initializers"
-    "$cc" $flags -I"$desktop" "$desktop/desktop.c" "$desktop/gfx.c" "$desktop/apps.c" "$desktop/widgets.c" "$desktop/dialogs.c" \
+    spawn "$cc" $flags -I"$desktop" "$desktop/desktop.c" "$desktop/gfx.c" "$desktop/apps.c" "$desktop/widgets.c" "$desktop/dialogs.c" \
         "$desktop/image.c" "$ROOT/src/pkg/inflate.c" -I"$ROOT/src/pkg" -o "$desktop_out/DESKTOP.EXE"
     gui="$desktop/gfx.c $desktop/gui.c $desktop/widgets.c $desktop/dialogs.c $desktop/image.c $ROOT/src/pkg/inflate.c"
     for app in explorer:EXPLORER taskmgr:TASKMGR calc:CALC editor:EDITOR paint:PAINT solitaire:SOLITAIRE mines:MINES chess:CHESS terminal:TERMINAL; do
         [ -f "$desktop/${app%%:*}.c" ] || continue
-        "$cc" $flags -I"$desktop" "$desktop/${app%%:*}.c" $gui -I"$ROOT/src/pkg" -lm -o "$desktop_out/Apps/${app#*:}.EXE"
+        spawn "$cc" $flags -I"$desktop" "$desktop/${app%%:*}.c" $gui -I"$ROOT/src/pkg" -lm -o "$desktop_out/Apps/${app#*:}.EXE"
     done
-    "$cc" $flags -I"$desktop" -I"$ROOT/src" "$desktop/pkgmgr.c" $gui "$ROOT/src/pkg/dsp.c" "$ROOT/src/pkg/deflate.c" -I"$ROOT/src/pkg" -lm \
+    spawn "$cc" $flags -I"$desktop" -I"$ROOT/src" "$desktop/pkgmgr.c" $gui "$ROOT/src/pkg/dsp.c" "$ROOT/src/pkg/deflate.c" -I"$ROOT/src/pkg" -lm \
         -o "$desktop_out/Apps/PKGMGR.EXE"
-    "$cc" $flags -I"$desktop" -I"$ROOT/src" "$desktop/setupgui.c" $gui "$ROOT/src/setup/install.c" "$ROOT/src/setup/target.c" \
+    spawn "$cc" $flags -I"$desktop" -I"$ROOT/src" "$desktop/setupgui.c" $gui "$ROOT/src/setup/install.c" "$ROOT/src/setup/target.c" \
         "$ROOT/src/drivers/fat32.c" "$ROOT/src/pkg/dsp.c" "$ROOT/src/pkg/deflate.c" -I"$ROOT/src/pkg" -lm -o "$desktop_out/Apps/SETUPGUI.EXE"
-    "$cc" $flags -I"$ROOT/src" "$ROOT/src/vdm/cpu.c" "$ROOT/src/vdm/bios.c" "$ROOT/src/vdm/video.c" "$ROOT/src/vdm/dos.c" "$ROOT/src/vdm/host.c" \
+    spawn "$cc" $flags -I"$ROOT/src" "$ROOT/src/vdm/cpu.c" "$ROOT/src/vdm/bios.c" "$ROOT/src/vdm/video.c" "$ROOT/src/vdm/dos.c" "$ROOT/src/vdm/host.c" \
         -o "$desktop_out/Apps/DOSVM.EXE"
+    finish_jobs
     python3 "$ROOT/tools/dsp.py" pack "$desktop_out" "$PACKAGES/desktop-$bits.dsp" Name="DOS-XC Desktop" Version="$VERSION" \
         Author="Ben Daws" Description="Graphical desktop and its programs" Arch="$bits" Path=. >/dev/null
     # Packages: coreutils and batch every build; the larger ones when their
@@ -154,14 +159,15 @@ compile_userland() {
     for driver in e1000 tg3 virtio-net; do
         [ -f "$ROOT/src/netdrivers/$driver.c" ] || continue
         name=$(echo "$driver" | tr a-z A-Z | tr -d -)
-        "$cc" --sysroot="$sysroot" -shared -fPIC -nostdlib -ffreestanding -mno-red-zone -mno-sse -mno-mmx -O2 -Wall -Wextra \
+        spawn "$cc" --sysroot="$sysroot" -shared -fPIC -nostdlib -ffreestanding -mno-red-zone -mno-sse -mno-mmx -O2 -Wall -Wextra \
             -Wno-unused-parameter -Wno-sign-compare -s -Wl,-z,max-page-size=4096 -Wl,--hash-style=both \
             "$ROOT/src/netdrivers/$driver.c" -o "$out/ethernet/$name.DRV"
     done
     mkdir -p "$out/hyperv"
-    "$cc" --sysroot="$sysroot" -shared -fPIC -nostdlib -ffreestanding -mno-red-zone -mno-sse -mno-mmx -O2 -Wall -Wextra \
+    spawn "$cc" --sysroot="$sysroot" -shared -fPIC -nostdlib -ffreestanding -mno-red-zone -mno-sse -mno-mmx -O2 -Wall -Wextra \
         -Wno-unused-parameter -Wno-sign-compare -fvisibility=hidden -s -Wl,-z,max-page-size=4096 -Wl,--hash-style=both \
         -I"$ROOT/src/hyperv" "$ROOT"/src/hyperv/*.c -o "$out/hyperv/HYPERV.DRV"
+    finish_jobs
     python3 "$ROOT/tools/dsp.py" pack "$out/hyperv" "$PACKAGES/hyperv-$bits.dsp" Name=hyperv Version=1.0 \
         Author="Ben Daws" Description="Hyper-V network, disks, keyboard and mouse" Arch="$bits" Driver=HYPERV.DRV >/dev/null
     python3 "$ROOT/tools/dsp.py" pack "$out/ethernet" "$PACKAGES/ethernet-$bits.dsp" Name=ethernet Version=1.0 \

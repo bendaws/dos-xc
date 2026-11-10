@@ -8,6 +8,7 @@
 # override) when one is found.
 set -eu
 HERE=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
+. "$HERE/../../scripts/parallel.sh"
 ARCH=$1
 OUT=$2
 CC=${3:-clang}
@@ -32,9 +33,10 @@ mkdir -p "$work" "$OUT/lib" "$OUT/include"
 objects=
 for source in "$HERE"/src/*.c; do
     object="$work/$(basename "$source" .c).o"
-    $CC $flags -c "$source" -o "$object"
+    spawn $CC $flags -c "$source" -o "$object"
     objects="$objects $object"
 done
+finish_jobs
 $CC $flags -c "$HERE/crt/setjmp-$ARCH.S" -o "$work/setjmp.o"
 rm -f "$OUT/lib/libc.a" "$OUT/lib/libm.a"
 "$AR" rcs "$OUT/lib/libc.a" $objects "$work/setjmp.o"

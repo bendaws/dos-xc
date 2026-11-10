@@ -9,7 +9,7 @@ Older hardware checks that are still open: `git show 97064ed:TODO.md`.
 - [ ] Set up WSL (Ubuntu); see "Building on Windows" in `README.md`.
 - [ ] Test the PowerShell scripts. `scripts/boot{32,64}.ps1`, `scripts/build.ps1`, `toolchain/build-toolchain.ps1`, `ports/build-ports.ps1` and `scripts/windows-common.ps1` **have never been run**: no PowerShell on the Mac.
 - [ ] Rebuild the toolchain in WSL. `toolchain/cross` holds Mac binaries; `toolchain/{cross,work,downloads,dist}` and `build/` are git-ignored. The shell scripts have only ever run on macOS, so expect Linux fixes. Keep the tree on WSL's ext4, not `/mnt/c`: the toolchain and Firefox builds will be far too slow there.
-- [ ] Install `python3.14` in WSL (the Python port needs that exact minor version on the host).
+- [x] Install `python3.14` in WSL (the Python port needs that exact minor version on the host). Ubuntu 26.04 ships it.
 
 ### Testing in Hyper-V
 DOS-XC has never run in Hyper-V, so everything here is untested. All testing so far used QEMU's software emulation, so expect problems with ring 0 programs, timer preemption and `rdtsc` timing under a real hypervisor.
@@ -29,7 +29,7 @@ DOS-XC has never run in Hyper-V, so everything here is untested. All testing so 
 - **GCC:** thread model `posix`. C `__thread`, C++ `thread_local`, `std::thread`, `std::mutex` and exceptions in threads work from the cross compilers and from the native package on both editions (native compiles only tested from a FAT32 disk with the package at `\Programs\GCC`).
 
 ## Firefox roadmap
-Facts checked against the source on 2026-11-09 (`github.com/mozilla-firefox/firefox`, 162.0a1): Rust 1.95+ is required; toolkits are only windows, cocoa, uikit, android, gtk3 (`toolkit/moz.configure`), with a `widget/headless` backend; `fission.autostart` defaults to true; the repository is about 5.7 GB. **Not yet checked:** whether GCC 15 is still accepted (see `build/moz.configure/toolchain.configure`). A Clang targeting DOS-XC may be needed; decide this early, since it affects everything below. Also check whether single-process mode still exists.
+Facts checked against the source on 2026-11-09 (`github.com/mozilla-firefox/firefox`, 162.0a1): Rust 1.95+ is required; toolkits are only windows, cocoa, uikit, android, gtk3 (`toolkit/moz.configure`), with a `widget/headless` backend; `fission.autostart` defaults to true; the repository is about 5.7 GB. **GCC 15 is accepted:** `build/moz.configure/toolchain.configure` requires GCC 11.1 or newer, or Clang 19 or newer, and only rejects GCC for Windows and WASI targets, so start with the existing GCC. Rust's `bindgen` still needs libclang, which must be able to parse DOS-XC's headers. **Single-process mode still exists:** `BrowserTabsRemoteAutostart()` in `toolkit/xre/nsAppRunner.cpp` honours `MOZ_FORCE_DISABLE_E10S=1`, but only in builds without `MOZILLA_OFFICIAL` (or with non-local connections disabled). So a first port can be non-official and single-process, which puts the process and IPC work in items 5 and 6 after the first working browser. It runs web content in the browser process with no isolation, so it is for bring-up only.
 
 1. **Memory.** `mmap`, `munmap`, `mprotect`, `madvise`, anonymous shared memory. Only `DOSXC_SYS_ALLOC` exists now. There is no `<sys/mman.h>`.
 2. **Address space.** BIOS 64-bit boots map only the first 4 GiB (`src/runtime/cpu.c`), and QEMU gets 1 GiB by default. Firefox needs several GiB, so plan on at least 4 GiB of RAM and mapping above 4 GiB. UEFI memory is a block reserved by the loader; check its limits too.

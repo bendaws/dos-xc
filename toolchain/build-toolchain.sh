@@ -131,8 +131,13 @@ gcc() {
         --with-sysroot="$SYSROOT" --with-native-system-header-dir=/include --with-system-zlib \
         $GCC_OPTIONS MAKEINFO=true
     mkdir -p gcc/d gcc/rust     # genhooks writes their hook headers even when disabled
-    run_logged gcc-cross-make $MAKE -j"$JOBS" all-gcc all-target-libgcc all-target-libstdc++-v3 MAKEINFO=true
-    run_logged gcc-cross-install $MAKE install-strip-gcc install-strip-target-libgcc install-strip-target-libstdc++-v3 MAKEINFO=true
+    run_logged gcc-cross-make $MAKE -j"$JOBS" all-gcc all-target-libgcc MAKEINFO=true
+    run_logged gcc-cross-install $MAKE install-strip-gcc install-strip-target-libgcc MAKEINFO=true
+    # libstdc++'s configure links test programs against libc.so.  On i686 that
+    # needs libgcc's 64-bit division, which did not exist at the libc stage.
+    ( libc )
+    run_logged gcc-cross-make-libstdc++ $MAKE -j"$JOBS" all-target-libstdc++-v3 MAKEINFO=true
+    run_logged gcc-cross-install-libstdc++ $MAKE install-strip-target-libstdc++-v3 MAKEINFO=true
     cd "$HERE" && remove_tree "$b"
 }
 
@@ -141,7 +146,6 @@ libc_gcc() {
 }
 
 # ---- Canadian cross: tools built here that run on DOS-XC ----------------
-BUILD_TRIPLE=$(sh "$SRC/gcc-$GCC_VERSION/config.guess" 2>/dev/null || echo unknown)
 DEPS=$WORK/native-deps-$ARCH
 HOST_TOOLS="CC=$TARGET-gcc CXX=$TARGET-g++ AR=$TARGET-ar RANLIB=$TARGET-ranlib NM=$TARGET-nm STRIP=$TARGET-strip"
 BUILD_TOOLS="CC_FOR_BUILD=clang CXX_FOR_BUILD=clang++"
@@ -258,6 +262,8 @@ PY
 mkdir -p "$WORK"
 for stage in $STAGES; do
     log "$ARCH: $stage"
+    # Set here because config.guess only exists once the fetch stage has run.
+    BUILD_TRIPLE=$(sh "$SRC/gcc-$GCC_VERSION/config.guess" 2>/dev/null || echo unknown)
     case "$stage" in
     fetch) fetch ;;
     libc) libc ;;
