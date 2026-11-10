@@ -167,6 +167,7 @@ struct process {
     u8 *library_data[MAX_PROCESS_LIBRARIES];             /* this process's copies */
     int library_count;
     int background, killed;      /* a task of its own; End Task was asked for */
+    int exit_pending, exit_status; /* a thread ended the process with this status */
     u64 cpu_ns;
     struct vconsole *vc;         /* its terminal window, if any */
 };
@@ -214,6 +215,18 @@ void sched_pause(void);
 void sched_resume(void);
 long sched_syscall(int operation, void *a, long b, long c);
 void sched_process_died(struct process *p);
+void sched_thread_leave(int wait_status);
+int socket_wait_interrupted(void);
+void sched_stop_threads(struct process *p);
+
+int volumes_driver_disk(int handle, u64 sectors, int readonly, const char *name);
+void volumes_driver_disk_gone(int handle);
+int driver_disk_io(int handle, u64 lba, unsigned count, void *buffer, int write);
+void usb_input_key(unsigned usage, int pressed);
+void usb_input_mouse(int dx, int dy, int wheel, unsigned buttons);
+
+void random_stir(void);
+long random_syscall(void *buffer, dosxc_size size);
 
 /* loader.c */
 int process_background(struct process *parent, const char *path, char *const argv[], struct vconsole *console);

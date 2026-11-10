@@ -113,6 +113,7 @@
 #define DOSXC_SYS_DRIVER 83        /* op, a, buffer, size */
 #define DOSXC_SYS_DISPLAY 84       /* op, a, buffer, size */
 #define DOSXC_SYS_TASK 85          /* op, a, b, c */
+#define DOSXC_SYS_RANDOM 86        /* buffer, size: returns the bytes written (at most 65536) */
 
 typedef __INT32_TYPE__ dosxc_i32;
 typedef __UINT32_TYPE__ dosxc_u32;
@@ -280,6 +281,12 @@ struct dosxc_pointer {
 #define DOSXC_TASK_CONSOLE_READ 10  /* a = bytes, b = console, c = size: what programs wrote */
 #define DOSXC_TASK_CONSOLE_KEYS 11  /* a = int keys, b = console, c = count */
 #define DOSXC_TASK_CONSOLE_CLOSE 12 /* b = console: ends what runs in it */
+/* Threads of one process.  The futex operations are atomic with respect to other threads. */
+#define DOSXC_TASK_THREAD_CREATE 13 /* a = entry, b = stack pointer, c = thread data: returns its id */
+#define DOSXC_TASK_THREAD_EXIT 14   /* a = int to zero and wake once the stack is unused, or 0 */
+#define DOSXC_TASK_THREAD_SLOT 15   /* returns the address of a word holding the running thread's data */
+#define DOSXC_TASK_FUTEX_WAIT 16    /* a = int, b = expected, c = nanoseconds (<= 0: forever); -EAGAIN, -ETIMEDOUT */
+#define DOSXC_TASK_FUTEX_WAKE 17    /* a = int, b = how many: returns the number woken */
 struct dosxc_task_info {
     int pid, parent;
     dosxc_u32 background, reserved;

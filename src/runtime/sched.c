@@ -10,11 +10,16 @@
  * used up its time slice, so a program stuck in a loop cannot hold up the
  * others.  Under UEFI the firmware owns the timer, so only the system call
  * switches apply there.
+ *
+ * A thread is a task whose chain starts at a process that already runs: it
+ * has its own program stack and shares everything else.  Blocking is done
+ * with futexes.  The whole system runs on one processor, so the kernel's
+ * non-preemption makes each system call atomic.
  */
 
 #include "runtime.h"
 
-#define MAX_TASKS 24
+#define MAX_TASKS 64
 #define SLICE_NS 10000000u
 #define TASK_STACK 32768
 
@@ -34,6 +39,12 @@ struct task {
     struct saved_context context;
     u64 wake;                  /* cpu_nanoseconds() to sleep until; 0 runs now */
     uptr entry, sp;
+    int thread;                /* a thread of OWNER rather than a process's main line */
+    int finishing;             /* waiting for its process's threads to end */
+    struct process *owner;
+    uptr thread_data;          /* what sched_thread_slot holds while it runs */
+    uptr wait_address;         /* futex it sleeps on; 0 when it is not waiting */
+    struct saved_context thread_saved;
 };
 
 static struct task tasks[MAX_TASKS];
@@ -44,7 +55,18 @@ static int preempting;
 static void *shared_board;
 static int shared_owner;
 
-void sched_set_leaf(struct process *p) { tasks[running].leaf = p; }
+/* Programs read this to find their thread data without a system call: zero
+   means the main thread of the running process. */
+uptr sched_thread_slot;
+
+static void slot_update(struct task *t) {
+    sched_thread_slot = t->thread && t->leaf == t->owner ? t->thread_data : 0;
+}
+
+void sched_set_leaf(struct process *p) {
+    tasks[running].leaf = p;
+    slot_update(&tasks[running]);
+}
 
 static void account(u64 now) {
     if (current) current->cpu_ns += now - slice_start;
@@ -52,7 +74,12 @@ static void account(u64 now) {
 }
 
 static void check_killed(void) {
-    if (current && current->killed) process_exit(DOSXC_SIGNALED(9));
+    if (tasks[running].finishing) return;
+    if (current && current->killed) process_exit(current->exit_pending ? current->exit_status : DOSXC_SIGNALED(9));
+}
+
+static int task_ready(const struct task *t, u64 now) {
+    return t->used && (t->wake <= now || (t->leaf && t->leaf->killed));
 }
 
 /* Run another task, or wait if nothing is ready.  Returns when this task's
@@ -64,22 +91,24 @@ static void schedule(void) {
         for (int k = 1; k < MAX_TASKS; ++k) {
             int i = (running + k) % MAX_TASKS;
             struct task *t = &tasks[i];
-            if (!t->used || t->wake > now) continue;
+            if (!task_ready(t, now)) continue;
             account(now);
             self->leaf = current;
             running = i;
             t->wake = 0;
             current = t->leaf;
+            slot_update(t);
             libraries_activate(current);
             runtime_switch(&self->context, &t->context, 1);
             check_killed();
             return;
         }
-        if (self->wake <= now) {
+        if (self->wake <= now || (current && current->killed)) {
             self->wake = 0;
             check_killed();
             return;
         }
+        if (self->wait_address && current && !self->finishing) socket_wait_interrupted();
         u64 before = cpu_nanoseconds();
         __asm__ volatile("pause");
         idle_ns += cpu_nanoseconds() - before;
@@ -117,14 +146,9 @@ int sched_tick(uptr ip) {
 
 void sched_preempted(void) { sched_yield(); }
 
-static void task_entry(void) {
+/* The running task is finished: give its slot back and run something else. */
+static __attribute__((noreturn)) void task_retire(void) {
     struct task *t = &tasks[running];
-    struct process *p = current;
-    if (preempting) __asm__ volatile("sti");
-    if (!p->killed) runtime_enter(t->entry, t->sp, &p->saved, cpu_has_sse());
-    __asm__ volatile("cli");
-    current = p;
-    process_finish(p);
     current = 0;
     t->used = 0;
     --task_count;
@@ -134,10 +158,11 @@ static void task_entry(void) {
         for (int k = 1; k <= MAX_TASKS; ++k) {
             int i = (running + k) % MAX_TASKS;
             struct task *next = &tasks[i];
-            if (!next->used || next->wake > now) continue;
+            if (!task_ready(next, now)) continue;
             running = i;
             next->wake = 0;
             current = next->leaf;
+            slot_update(next);
             libraries_activate(current);
             runtime_leave(&next->context, 1);
         }
@@ -146,8 +171,27 @@ static void task_entry(void) {
     }
 }
 
-/* Make P, already loaded, a task of its own. */
-int sched_start(struct process *p, uptr entry, uptr sp) {
+static void task_entry(void) {
+    struct task *t = &tasks[running];
+    struct process *p = current;
+    if (preempting) __asm__ volatile("sti");
+    if (!p->killed) runtime_enter(t->entry, t->sp, &p->saved, cpu_has_sse());
+    __asm__ volatile("cli");
+    current = p;
+    process_finish(p);
+    task_retire();
+}
+
+static void thread_entry(void) {
+    struct task *t = &tasks[running];
+    if (preempting) __asm__ volatile("sti");
+    if (!current->killed) runtime_enter(t->entry, t->sp, &t->thread_saved, cpu_has_sse());
+    __asm__ volatile("cli");
+    task_retire();
+}
+
+/* Set up a new task for P that starts in ENTRY_POINT.  Returns its index. */
+static int task_create(struct process *p, uptr entry, uptr sp, void (*entry_point)(void)) {
     int index = -1;
     for (int i = 1; i < MAX_TASKS && index < 0; ++i)
         if (!tasks[i].used) index = i;
@@ -159,17 +203,101 @@ int sched_start(struct process *p, uptr entry, uptr sp) {
     t->leaf = p;
     t->entry = entry;
     t->sp = sp;
-    p->background = 1;
     if (runtime_save(&t->context)) __builtin_unreachable();
     t->context.registers[CONTEXT_FRAME] = 0;
     t->context.registers[CONTEXT_SP] = (uptr)(stacks[index] + TASK_STACK - 16) | (sizeof(uptr) == 8 ? 8 : 12);
-    t->context.registers[CONTEXT_IP] = (uptr)task_entry;
+    t->context.registers[CONTEXT_IP] = (uptr)entry_point;
     if (task_count++ == 1 && !slice_start) slice_start = cpu_nanoseconds();
     if (!preempting && ctx->bios_available) {
         cpu_preempt_start();
         preempting = 1;
     }
+    return index;
+}
+
+/* Make P, already loaded, a task of its own. */
+int sched_start(struct process *p, uptr entry, uptr sp) {
+    int index = task_create(p, entry, sp, task_entry);
+    if (index < 0) return index;
+    p->background = 1;
     return p->pid;
+}
+
+static int thread_create(uptr entry, uptr sp, uptr thread_data) {
+    int index = task_create(current, entry, sp, thread_entry);
+    if (index < 0) return index;
+    tasks[index].thread = 1;
+    tasks[index].owner = current;
+    tasks[index].thread_data = thread_data;
+    return index;
+}
+
+static long futex_wake(int *address, long count) {
+    long woken = 0;
+    for (int i = 0; i < MAX_TASKS && woken < count; ++i) {
+        struct task *t = &tasks[i];
+        if (t->used && t->wait_address == (uptr)address && t->leaf == current) {
+            t->wait_address = 0;
+            t->wake = 0;
+            ++woken;
+        }
+    }
+    return woken;
+}
+
+static long futex_wait(int *address, int expected, long nanoseconds) {
+    struct task *self = &tasks[running];
+    if (*(volatile int *)address != expected) return -DOSXC_EAGAIN;
+    self->wait_address = (uptr)address;
+    self->wake = nanoseconds > 0 ? cpu_nanoseconds() + (u64)nanoseconds : ~(u64)0;
+    schedule();
+    int timed_out = self->wait_address != 0;
+    self->wait_address = 0;
+    return timed_out ? -DOSXC_ETIMEDOUT : 0;
+}
+
+static __attribute__((noreturn)) void thread_finish(int *clear) {
+    struct task *t = &tasks[running];
+    if (clear) {
+        *clear = 0;
+        futex_wake(clear, 0x7fffffff);
+    }
+    runtime_leave(&t->thread_saved, 1);
+    __builtin_unreachable();
+}
+
+/* A thread's call to end its process ends only the thread, here: the main
+   thread does the real exit, on the stack it started from. */
+void sched_thread_leave(int wait_status) {
+    struct task *t = &tasks[running];
+    if (!t->thread || t->leaf != t->owner) return;
+    if (!t->owner->killed) {
+        t->owner->killed = 1;
+        t->owner->exit_pending = 1;
+        t->owner->exit_status = wait_status;
+    }
+    thread_finish(0);
+}
+
+/* P is ending: wait for its threads, each of which ends at its next turn. */
+void sched_stop_threads(struct process *p) {
+    struct task *self = &tasks[running];
+    int was_finishing = self->finishing;
+    for (;;) {
+        int remaining = 0;
+        for (int i = 0; i < MAX_TASKS; ++i) {
+            struct task *t = &tasks[i];
+            if (t == self || !t->used || !t->thread || t->owner != p) continue;
+            ++remaining;
+            t->owner->killed = 1;
+            if (t->leaf) t->leaf->killed = 1;
+        }
+        if (!remaining) break;
+        self->finishing = 1;
+        self->wake = 0;
+        schedule();
+    }
+    self->finishing = was_finishing;
 }
 
 /* A 16-bit program takes over the machine for a while. */
@@ -196,6 +324,11 @@ long sched_syscall(int operation, void *a, long b, long c) {
         vc_close(vc_get((int)b));
         return 0;
     case DOSXC_TASK_YIELD: sched_yield(); return 0;
+    case DOSXC_TASK_THREAD_CREATE: return thread_create((uptr)a, (uptr)b, (uptr)c);
+    case DOSXC_TASK_THREAD_EXIT: thread_finish(a);
+    case DOSXC_TASK_THREAD_SLOT: return (long)(uptr)&sched_thread_slot;
+    case DOSXC_TASK_FUTEX_WAIT: return futex_wait(a, (int)b, c);
+    case DOSXC_TASK_FUTEX_WAKE: return futex_wake(a, b);
     case DOSXC_TASK_LIST: return process_list(a, (unsigned)b);
     case DOSXC_TASK_KILL: return process_kill((int)b);
     case DOSXC_TASK_ALIVE: return process_alive((int)b);

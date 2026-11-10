@@ -108,7 +108,7 @@ binutils() {
 }
 
 # Options shared by the cross and native GCC builds.
-GCC_OPTIONS="--disable-nls --disable-shared --enable-static --disable-multilib --enable-threads=single \
+GCC_OPTIONS="--disable-nls --disable-shared --enable-static --disable-multilib --enable-threads=posix \
  --disable-tls --disable-libssp --disable-libgomp --disable-libatomic --disable-libquadmath --disable-libvtv \
  --disable-libsanitizer --disable-libitm --disable-libcc1 --disable-lto --disable-plugin --enable-default-pie \
  --enable-initfini-array --without-isl --disable-bootstrap --disable-werror --disable-gcov \

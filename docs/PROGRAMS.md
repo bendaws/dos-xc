@@ -213,6 +213,36 @@ that never makes a system call keeps the processor until it does.  The kernel
 itself is not preempted, and programs share one address space without protection
 from each other.
 
+## Threads
+
+`<pthread.h>` provides POSIX threads: creation, join and detach, mutexes,
+condition variables, read-write locks, barriers, spin locks, `pthread_once`,
+thread-specific data and, in `<semaphore.h>`, unnamed semaphores.  They are in
+`libc`; `-pthread` and `-lpthread` are accepted but add nothing.  `errno`, `malloc`, stdio streams
+and GCC's emulated `__thread` variables are per-thread or thread-safe.
+
+A thread is a kernel task that shares its process.  All programs and threads
+in the system share 64 task slots, and creating a thread beyond that reports
+`EAGAIN`.  The system runs on one processor.  Threads are preempted under the same rules as programs:
+by a 100 Hz timer on a BIOS boot, but only at system calls under UEFI, so a
+thread spinning without system calls holds up the others there.
+
+| Operation | Effect |
+| --- | --- |
+| `DOSXC_TASK_THREAD_CREATE` | Starts a thread at `a` with stack pointer `b`; `c` is its data pointer |
+| `DOSXC_TASK_THREAD_EXIT` | Ends the thread; zeroes and wakes the int at `a` once its stack is unused |
+| `DOSXC_TASK_THREAD_SLOT` | Returns the address of a word holding the running thread's data (0 for the main thread) |
+| `DOSXC_TASK_FUTEX_WAIT` | Sleeps while the int at `a` equals `b`, for up to `c` ns (forever if `c` <= 0) |
+| `DOSXC_TASK_FUTEX_WAKE` | Wakes up to `b` threads sleeping on `a`; returns how many |
+
+`exit` from any thread, a crash in any thread, or the main thread returning
+ends the whole process and all its threads.
+
+Limits: cancellation is deferred and only takes effect at
+`pthread_testcancel` and in condition waits and `pthread_join`.  Signals are
+not per-thread (`pthread_kill` only accepts signal 0).  Stacks default to 2 MiB,
+have no guard page, and are not extended.
+
 ## Graphics
 
 `DOSXC_SYS_DISPLAY` (`dosxc_sys_display(op, index, buffer, size)`) gives a
@@ -298,7 +328,7 @@ closed.
 `src/libc` is a C library written for DOS-XC: stdio (with exact
 floating-point formatting), stdlib, string, math, time, locale stubs,
 wide characters, `setjmp`, `getopt`, directories, `posix_spawn`, `waitpid`,
-`pipe`, `select` on pipes, `fork`-less process creation and the POSIX
+`pipe`, `select` on pipes, POSIX threads, `fork`-less process creation and the POSIX
 pieces GCC, binutils and libstdc++ need.  Build it with
 
 ```sh

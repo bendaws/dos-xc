@@ -9,7 +9,7 @@ DOS-XC is beta software and should not be used as a daily machine unless you **l
 
 ## Screenshots
 ![The GUI Setup program showing a list of installable packages](/.github/screenshots/setup-gui.png)
-![GCC compiling and running a Hello world program on DOS-XC](/.github/screenshots/GCC.png)
+![GCC compiling and running a Hello world program on DOS-XC](/.github/screenshots/gcc.png)
 ![The 16-bit MS-DOS game "The Oregon Trail" running on DOS-XC among a task manager and a file manager](/.github/screenshots/oregon.png)
 ![The Displays settings menu showing multi-monitor support and scaling support](/.github/screenshots/displays.png)
 
@@ -50,6 +50,24 @@ scripts/boot64.sh
 # Attach a virtual hard disk
 scripts/boot64.sh -hd disk.img
 ```
+
+### Building on Windows
+The same commands exist as PowerShell scripts. The build runs inside WSL, because GCC and the ports need a POSIX shell, and booting uses the Windows build of [QEMU](https://www.qemu.org/download/#windows).
+
+```powershell
+# Once, then restart. Inside WSL (Ubuntu), install the build tools:
+wsl --install
+sudo apt install build-essential clang lld llvm nasm xorriso python3 curl xz-utils bison flex gawk zlib1g-dev perl
+
+toolchain\build-toolchain.ps1 x86_64
+toolchain\build-toolchain.ps1 i686
+ports\build-ports.ps1 x86_64
+scripts\build.ps1
+scripts\boot64.ps1
+scripts\boot64.ps1 -hd disk.img
+```
+
+If PowerShell refuses to run the scripts, use `Set-ExecutionPolicy -Scope Process Bypass` first. Building the Python port also needs `python3.14` inside WSL. The boot scripts read `ISO`, `QEMU`, `MEMORY`, `AUDIO` and `DISPLAYS` like their shell versions, and `$env:ACCEL = 'whpx'` uses the Windows Hypervisor Platform where it is enabled.
 
 To build the system, you need the cross-compiler with our shell script:
 ```sh

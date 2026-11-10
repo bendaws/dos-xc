@@ -74,7 +74,7 @@ compile_runtime() {
     mkdir -p "$PART/runtime$runtime_bits"
     objects=
     for unit in system loader dynamic paging files terminal volumes cache memory cpu support \
-                usb pci xhci ehci ohci uhci bridge power drivers net tcp socket display sched; do
+                usb pci xhci ehci ohci uhci bridge power drivers net tcp socket display sched random; do
         "$CC" --target="$runtime_target" -ffreestanding -fno-stack-protector -fno-pic -mno-red-zone -mno-sse -mno-sse2 \
             -nostdinc -O2 -Wall -Wextra -Wno-unused-parameter -I"$ROOT/src" \
             -c "$ROOT/src/runtime/$unit.c" -o "$PART/runtime$runtime_bits/$unit.o"
@@ -158,6 +158,12 @@ compile_userland() {
             -Wno-unused-parameter -Wno-sign-compare -s -Wl,-z,max-page-size=4096 -Wl,--hash-style=both \
             "$ROOT/src/netdrivers/$driver.c" -o "$out/ethernet/$name.DRV"
     done
+    mkdir -p "$out/hyperv"
+    "$cc" --sysroot="$sysroot" -shared -fPIC -nostdlib -ffreestanding -mno-red-zone -mno-sse -mno-mmx -O2 -Wall -Wextra \
+        -Wno-unused-parameter -Wno-sign-compare -fvisibility=hidden -s -Wl,-z,max-page-size=4096 -Wl,--hash-style=both \
+        -I"$ROOT/src/hyperv" "$ROOT"/src/hyperv/*.c -o "$out/hyperv/HYPERV.DRV"
+    python3 "$ROOT/tools/dsp.py" pack "$out/hyperv" "$PACKAGES/hyperv-$bits.dsp" Name=hyperv Version=1.0 \
+        Author="Ben Daws" Description="Hyper-V network, disks, keyboard and mouse" Arch="$bits" Driver=HYPERV.DRV >/dev/null
     python3 "$ROOT/tools/dsp.py" pack "$out/ethernet" "$PACKAGES/ethernet-$bits.dsp" Name=ethernet Version=1.0 \
         Author="Ben Daws" Description="Ethernet drivers (Intel, Broadcom, virtio)" Arch="$bits" \
         Driver=$(cd "$out/ethernet" && ls *.DRV | tr '\n' ';' | sed 's/;$//') >/dev/null
@@ -204,11 +210,11 @@ for bits_arch in 32:i686 64:x86_64; do
     package_port "${bits_arch%%:*}" "${bits_arch#*:}" xz Version=5.8.1 Author="The Tukaani Project" \
         Description="Compression utility" Path=BIN
     package_port "${bits_arch%%:*}" "${bits_arch#*:}" curl Version=8.11.1 Author="Daniel Stenberg and the curl contributors" \
-        Description="HTTP transfer tool (no TLS)" Path=BIN
+        Description="HTTP and HTTPS transfer tool" Path=BIN Env=CURL_CA_BUNDLE=%PACKAGE%/CACERT.PEM
     package_port "${bits_arch%%:*}" "${bits_arch#*:}" Vim Version=9.1.1000 Author="Bram Moolenaar and the Vim community" \
         Description="Fast, keyboard-only terminal text editor" Path=BIN Env=VIM=%PACKAGE%/share/vim
     package_port "${bits_arch%%:*}" "${bits_arch#*:}" python3 Version=3.14.6 Author="Python Software Foundation" \
-        Description="Python programming language" Path=BIN Env=PYTHONHOME=%PACKAGE%
+        Description="Python programming language" Path=BIN Env=PYTHONHOME=%PACKAGE% Env=SSL_CERT_FILE=%PACKAGE%/CACERT.PEM
 done
 
 # The Oregon Trail, a 16-bit DOS game, from OREGON.ZIP when it is present.

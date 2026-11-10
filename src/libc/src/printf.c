@@ -657,6 +657,7 @@ int vasprintf(char **out, const char *f, va_list ap) {
 }
 
 int vfprintf(FILE *file, const char *f, va_list ap) {
+    STREAM_GUARD(file);
     struct sink s;
     s.put = put_buffered;
     s.count = 0;

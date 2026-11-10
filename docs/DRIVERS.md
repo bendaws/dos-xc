@@ -67,6 +67,40 @@ Rules that follow from running inside the system:
 drivers in [`src/netdrivers`](../src/netdrivers) are complete examples;
 `e1000.c` is the simplest.
 
+## Devices that are not PCI functions
+
+A driver whose `pci_ids` is 0 has `probe` called once, with a null device,
+and `poll` called like any other.  `probe` decides whether its hardware exists.
+
+## Disks
+
+`disk_register` adds a disk and mounts its FAT volumes.  `io` transfers at most
+64 sectors of 512 bytes and waits for the result; `disk_unregister` removes it.
+
+## Keyboards and mice
+
+From `poll`, `input_key` takes a HID keyboard usage with whether it is pressed
+(a device that repeats keys just sends the press again).  `input_mouse` takes
+relative motion and the button state, and its first call makes the system
+report that a mouse is present.
+
+## Hyper-V
+
+`HYPERV.DRV`, in the `hyperv` package and built from [`src/hyperv`](../src/hyperv),
+drives VMBus and the synthetic network adapter, SCSI controllers, keyboard and
+mouse.  They share one driver because they share one VMBus connection.
+
+It needs a **Generation 1** VM.  On Generation 2, firmware services keep running
+under DOS-XC and the firmware holds the VMBus connection, so the driver reports
+that in `DRIVERS /LOG` and stays idle; outside Hyper-V it also stays idle.
+Disks on the VM's IDE controller keep using the BIOS, and only SCSI disks of 512-byte
+sectors appear through the driver.  Disks added while the VM runs are not noticed.
+The VM's mouse is absolute and DOS-XC's is relative, so the guest pointer may
+sit apart from the host's until it reaches a screen edge.
+
+**This driver has only been compiled.**  It has not run on Hyper-V.  Start with
+`DRIVERS /LOG` when something fails: each stage of the connection logs there.
+
 ## Packaging
 
 A package lists its drivers in the `Driver` key.  `PKG` copies those

@@ -21,8 +21,22 @@ IPCONFIG /DHCP                            back to DHCP
 PING [/N count] host                      ICMP echo
 ```
 
-`PKG INSTALL X:\Packages\curl.dsp` adds `CURL` (HTTP only).  Ctrl+C
-interrupts a program that is blocked on the network.
+`PKG INSTALL X:\Packages\curl.dsp` adds `CURL`, which speaks HTTP and HTTPS.
+Ctrl+C interrupts a program that is blocked on the network.
+
+## TLS
+
+`curl` and Python are linked with OpenSSL 3.5 and verify servers against the
+Mozilla root certificates, `CACERT.PEM` in each package (`CURL_CA_BUNDLE` and
+`SSL_CERT_FILE` point at them).  Certificate checks need the right date, so
+the computer's clock must be set.  The bundle is taken when the ports are
+built; rebuild the packages to refresh it.
+
+Keys come from `getentropy`, which reads the system pool
+([`src/runtime/random.c`](../src/runtime/random.c)).  It collects the timing
+of every system call since boot and RDRAND where the processor has it.  The
+pool is not saved across restarts, so on a processor without RDRAND a program
+started straight after boot gets less randomness than one started later.
 
 ## For programs
 
@@ -31,5 +45,4 @@ The C library provides BSD sockets (`<sys/socket.h>`, `<netinet/in.h>`,
 `poll` and `select`.  `getaddrinfo` resolves names with the DHCP-supplied DNS
 servers.  `127.0.0.1` reaches the machine itself.
 
-Limits: IPv4 only, no IP fragment reassembly, 64 KiB TCP windows.  There is no
-TLS library yet, so `https://` URLs do not work.
+Limits: IPv4 only, no IP fragment reassembly, 64 KiB TCP windows.

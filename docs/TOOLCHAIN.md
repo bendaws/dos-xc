@@ -45,8 +45,10 @@ Programs are linked dynamically by default, against `libc.so` in
 (compile it with `-fPIC`); see [PROGRAMS.md](PROGRAMS.md#shared-libraries).
 The compiler and binutils themselves are dynamic programs too.  `-no-pie`
 is rejected.
-Thread-local storage is emulated (`--disable-tls`) and the thread model is
-`single`.
+GCC's thread model is `posix`, so C and C++ programs can use threads
+([PROGRAMS.md](PROGRAMS.md#threads)), including `std::thread`, `std::mutex` and
+exceptions thrown inside a thread.  `-pthread` is accepted.  `__thread` and
+`thread_local` are emulated (`--disable-tls`) through `libc`.
 
 ## Building the toolchain
 
@@ -113,11 +115,14 @@ Every extension module is linked into the interpreter, because DOS-XC has no
 `dlopen`, and [`ports/python-dosxc.py`](../ports/python-dosxc.py) adapts the
 standard library to drive letters, `;` search paths and `posix_spawn`.
 
-* Not available: threads (`threading.Thread.start` raises `RuntimeError`),
-  `ctypes`, `mmap`, `multiprocessing`, `ssl` and so HTTPS, `sqlite3`, `bz2`,
-  `lzma`, IPv6, and C extension modules that are not built in.
+* `ssl` and `hashlib` use OpenSSL, so `urllib` can fetch HTTPS URLs.
+* `threading` and `concurrent.futures` use real threads.  Each thread gets a
+  6 MiB stack, because CPython assumes about 4 MB when it sets its recursion
+  limit and cannot ask DOS-XC for the real size.
+* Not available: `ctypes`, `mmap`, `multiprocessing`, `sqlite3`, `bz2`, `lzma`, IPv6, and C
+  extension modules that are not built in.
 * `subprocess` runs the child to completion inside `Popen`, so a child cannot
   talk back and forth with its parent.  `shell=True` splits the command into
   words and runs it directly; shell syntax such as pipes is not interpreted.
-* `asyncio` runs on one thread, and `os.urandom` is only cryptographically
-  strong on processors with RDRAND.
+* `asyncio` has no wake-up pipe, so `loop.call_soon_threadsafe()` takes effect
+  at the loop's next timeout rather than at once.

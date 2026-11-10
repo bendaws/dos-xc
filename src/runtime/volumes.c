@@ -34,6 +34,7 @@ struct disk {
     u8 bios;                          /* INT 13h drive number, or 0 */
     unsigned firmware;                /* UEFI disk index */
     int usb;                          /* usb.c disk, or -1 */
+    int driver;                       /* a driver's disk: its handle + 1, or 0 */
     int absent;                       /* slot kept for a disk that went away */
     int ejected;                      /* UEFI: ejected, still in the drive */
     u32 crc;                          /* of sector 0, to recognise BIOS disks on USB */
@@ -75,7 +76,8 @@ int disk_io(unsigned index, u64 lba, unsigned count, void *buffer, int write) {
     if (write && (d->flags & (DOSXC_DISK_READONLY | DOSXC_DISK_SYSTEM))) return -DOSXC_EROFS;
     if (write) d->ahead_count = 0;
     int r;
-    if (d->usb >= 0) r = usb_disk_io(d->usb, lba, count, buffer, write);
+    if (d->driver) r = driver_disk_io(d->driver - 1, lba, count, buffer, write);
+    else if (d->usb >= 0) r = usb_disk_io(d->usb, lba, count, buffer, write);
     else if (ctx->disk_io) r = ctx->disk_io(d->firmware, lba, count, buffer, write);
     else if (lba + count > 0xffffffffull) r = -1;
     else r = bios_transfer(d->bios, (u32)lba, count, buffer, write);
@@ -378,6 +380,25 @@ void volumes_usb_changed(int usb, int present) {
         if (d->bios) bridge_set_drive(d->bios, -1);
         d->usb = -1;
         disk_left(i, "USB");
+    }
+}
+
+/* drivers.c: a driver's disk appeared or went away. */
+int volumes_driver_disk(int handle, u64 sectors, int readonly, const char *name) {
+    struct disk *d = new_disk();
+    if (!d) return -1;
+    d->driver = handle + 1;
+    d->sectors = sectors;
+    d->flags = readonly ? DOSXC_DISK_READONLY : 0;
+    disk_arrived((unsigned)(d - disks), name);
+    return 0;
+}
+
+void volumes_driver_disk_gone(int handle) {
+    for (unsigned i = 0; i < disk_total; ++i) {
+        if (disks[i].driver != handle + 1 || disks[i].absent) continue;
+        disks[i].driver = 0;
+        disk_left(i, "Disk");
     }
 }
 

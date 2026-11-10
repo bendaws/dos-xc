@@ -34,4 +34,6 @@ struct __dosxc_file {
     char **memory_out;
     size_t *memory_size_out;
     struct __dosxc_file *next;
+    struct __dosxc_rlock lock;
 };
+#define STREAM_GUARD(f) LOCK_GUARD(&(f)->lock)

@@ -441,6 +441,7 @@ int process_kill(int pid) {
 
 /* Release what a finished process owned. */
 void process_finish(struct process *p) {
+    sched_stop_threads(p);
     display_process_finished(p->pid);
     speaker_process_finished(p->pid);
     sched_process_died(p);
@@ -456,6 +457,7 @@ void process_finish(struct process *p) {
 
 void process_exit(int wait_status) {
     if (!current) for (;;) __asm__ volatile("cli; hlt");
+    sched_thread_leave(wait_status);
     runtime_leave(&current->saved, wait_status & 0xffff);
 }
 
@@ -512,5 +514,5 @@ void runtime_exception(uptr *frame) {
         rt_print("The system is halted.\r\n");
         for (;;) __asm__ volatile("cli; hlt");
     }
-    runtime_leave(&current->saved, DOSXC_SIGNALED(signal));
+    process_exit(DOSXC_SIGNALED(signal));
 }

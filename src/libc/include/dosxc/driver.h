@@ -41,6 +41,13 @@ struct dk_net_ops {
     int (*transmit)(void *instance, const void *frame, unsigned length);
 };
 
+/* Disks (DK_DISK_*).  512-byte sectors. */
+struct dk_disk_ops {
+    /* Transfer COUNT sectors (at most 64); wait for it.  Returns 0 or < 0. */
+    int (*io)(void *instance, dosxc_u64 lba, unsigned count, void *buffer, int write);
+};
+#define DK_DISK_READONLY 1
+
 struct dk_api {
     dosxc_u32 version, size;
 
@@ -88,13 +95,26 @@ struct dk_api {
     void (*net_receive)(int handle, const void *frame, unsigned length);
     void (*net_link)(int handle, int up, unsigned megabits);
     void (*net_unregister)(int handle);
+
+    /* Disks: register returns a handle or < 0, and mounts the disk's volumes. */
+    int (*disk_register)(const struct dk_disk_ops *ops, void *instance, dosxc_u64 sectors, unsigned flags, const char *name);
+    void (*disk_unregister)(int handle);
+
+    /* Input.  USAGE is a HID keyboard usage (modifiers 0xe0..0xe7 too), from
+       poll() only.  A key press also repeats if the device sends it again.
+       DX and DY are relative; BUTTONS has bit 0 left, 1 right, 2 middle. */
+    void (*input_key)(unsigned usage, int pressed);
+    void (*input_mouse)(int dx, int dy, int wheel, unsigned buttons);
+
+    /* Nonzero when firmware services are still running (a UEFI boot). */
+    int (*firmware_services)(void);
 };
 
 struct dk_driver {
     dosxc_u32 abi;                        /* DK_ABI_VERSION */
     dosxc_u32 size;                       /* sizeof (struct dk_driver) */
     const char *name, *version, *description;
-    const struct dk_pci_id *pci_ids;      /* devices to bind; 0: none */
+    const struct dk_pci_id *pci_ids;      /* devices to bind; 0: probe once, with a null device */
 
     /* Called once, first.  Keep API; return 0, or < 0 to refuse to load. */
     int (*load)(const struct dk_api *api);

@@ -561,6 +561,7 @@ void net_tick(void) {
     if (now - last_tick < 250000ull) return;
     last_tick = now;
     if (net_active()) net_poll();
+    else drivers_poll();                 /* input drivers need polling with no network in use */
 }
 
 /* ---- adapters -------------------------------------------------------------- */

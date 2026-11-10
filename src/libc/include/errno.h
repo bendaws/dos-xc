@@ -6,9 +6,10 @@
 #define _ERRNO_H
 #include <sys/cdefs.h>
 __BEGIN_DECLS
-extern int errno;
+extern int errno;                /* the main thread's; programs built before threads use it directly */
+int *__errno_location(void);
 __END_DECLS
-#define errno errno
+#define errno (*__errno_location())
 
 #define EPERM 1
 #define ENOENT 2

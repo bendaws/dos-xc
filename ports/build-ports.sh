@@ -24,6 +24,7 @@ VIM_VERSION=9.1.1000
 CURL_VERSION=8.11.1
 PYTHON_VERSION=3.14.6
 ZLIB_VERSION=1.3.1
+OPENSSL_VERSION=3.5.9
 DOWNLOADS=$ROOT/toolchain/downloads
 WORK=$ROOT/toolchain/work/ports-$ARCH
 OUT=${BUILD:-"$ROOT/build"}/ports/$ARCH
@@ -139,13 +140,38 @@ port_vim() {
     echo "vim $VIM_VERSION -> $OUT/Vim"
 }
 
+# OpenSSL (TLS) goes into the sysroot once, for the ports that link it.
+build_openssl() {
+    stamp=$SYSROOT/lib/.openssl-$OPENSSL_VERSION-threads
+    [ -f "$stamp" ] && return 0
+    fetch openssl-$OPENSSL_VERSION.tar.gz https://github.com/openssl/openssl/releases/download/openssl-$OPENSSL_VERSION/openssl-$OPENSSL_VERSION.tar.gz
+    unpack openssl-$OPENSSL_VERSION.tar.gz openssl
+    cd "$WORK/openssl"
+    case "$ARCH" in x86_64) openssl_target=linux-x86_64 ;; *) openssl_target=linux-elf ;; esac
+    run_logged openssl-configure env CC="$CC_PORT" AR="$TARGET-ar" RANLIB="$TARGET-ranlib" \
+        perl ./Configure "$openssl_target" --prefix="$SYSROOT" --libdir=lib --openssldir=/SYSTEM/ssl \
+        --with-rand-seed=getrandom no-shared no-dso no-async no-engine no-module no-legacy no-tests \
+        no-apps no-docs no-afalgeng no-ui-console no-secure-memory no-quic -DNO_SYS_UN_H -DNO_SYSLOG
+    run_logged openssl-make make -j"$JOBS" build_libs
+    run_logged openssl-install make install_dev
+    touch "$stamp"
+}
+
+# The Mozilla root certificates, as distributed by the curl project.
+fetch_ca_bundle() {
+    fetch cacert.pem https://curl.se/ca/cacert.pem
+}
+
 port_curl() {
+    build_openssl
+    fetch_ca_bundle
     fetch curl-$CURL_VERSION.tar.xz https://curl.se/download/curl-$CURL_VERSION.tar.xz
     unpack curl-$CURL_VERSION.tar.xz curl
     cd "$WORK/curl"
-    # HTTP only: no TLS library has been ported, and IPv6 is not implemented.
-    run_logged curl-configure ./configure --build="$BUILD_TRIPLE" --host=$TARGET --prefix=/Programs/curl \
-        --disable-shared --enable-static --without-ssl --disable-ipv6 --disable-threaded-resolver \
+    # IPv6 is not implemented.  The certificate bundle is found through CURL_CA_BUNDLE.
+    run_logged curl-configure env PKG_CONFIG=false ./configure --build="$BUILD_TRIPLE" --host=$TARGET --prefix=/Programs/curl \
+        --disable-shared --enable-static --with-openssl="$SYSROOT" --without-ca-bundle --without-ca-path \
+        --disable-ipv6 --disable-threaded-resolver \
         --without-zlib --without-libpsl --without-brotli --without-zstd --without-libidn2 --without-nghttp2 \
         --disable-ldap --disable-ldaps --disable-rtsp --disable-dict --disable-telnet --disable-tftp --disable-pop3 \
         --disable-imap --disable-smb --disable-smtp --disable-gopher --disable-mqtt --disable-file \
@@ -157,10 +183,13 @@ port_curl() {
     cp "$WORK/curl/src/curl.exe" "$OUT/curl/BIN/CURL.EXE" 2>/dev/null || cp "$WORK/curl/src/curl" "$OUT/curl/BIN/CURL.EXE"
     "$TARGET-strip" "$OUT/curl/BIN/CURL.EXE"
     cp "$WORK/curl/COPYING" "$OUT/curl/COPYING.TXT"
+    cp "$DOWNLOADS/cacert.pem" "$OUT/curl/CACERT.PEM"
     echo "curl $CURL_VERSION -> $OUT/curl"
 }
 
 port_python() {
+    build_openssl
+    fetch_ca_bundle
     minor=${PYTHON_VERSION%.*}
     # A cross build runs a host Python of the same minor version.
     build_python=$(command -v "python$minor") || { echo "error: python$minor is needed on the build machine" >&2; exit 1; }
@@ -177,10 +206,9 @@ port_python() {
 
     unpack Python-$PYTHON_VERSION.tar.xz python
     cd "$WORK/python"
-    # Teach configure the platform; threads use CPython's own stubs (as on WASI).
+    # Teach configure the platform.
     perl -0pi -e 's/(\t\*-\*-wasi\*\)\n\s+ac_sys_system=WASI\n\s+;;\n)/$1\t*-*-dosxc*)\n\t    ac_sys_system=DOSXC\n\t    ;;\n/;
-                  s/(\t\*-\*-vxworks\*\)\n\t\t_host_ident=\$host_cpu\n\t\t;;\n)/$1\t*-*-dosxc*)\n\t\t_host_ident=\$host_cpu\n\t\t;;\n/;
-                  s/  WASI\) :\n    posix_threads=stub/  WASI|DOSXC) :\n    posix_threads=stub/' configure
+                  s/(\t\*-\*-vxworks\*\)\n\t\t_host_ident=\$host_cpu\n\t\t;;\n)/$1\t*-*-dosxc*)\n\t\t_host_ident=\$host_cpu\n\t\t;;\n/' configure
     # Search paths are separated by ";" because paths contain "C:".
     perl -0pi -e 's/#ifndef DELIM\n/#ifdef __dosxc__\n#  define DELIM L\x27;\x27\n#endif\n#ifndef DELIM\n/' Include/osdefs.h
     "$build_python" "$HERE/python-dosxc.py" .
@@ -190,9 +218,14 @@ ac_cv_file__dev_ptmx=no
 ac_cv_file__dev_ptc=no
 ac_cv_buggy_getaddrinfo=no
 ax_cv_c_float_words_bigendian=no
-ac_cv_sizeof_pthread_t=4
-ac_cv_sizeof_pthread_key_t=4
 ac_cv_enable_visibility=no
+ac_cv_pthread_is_default=yes
+ac_cv_pthread=no
+ac_cv_kthread=no
+ac_cv_kpthread=no
+ac_cv_cxx_thread=no
+ac_cv_posix_semaphores_enabled=yes
+ac_cv_broken_sem_getvalue=no
 py_cv_module__ctypes=n/a
 py_cv_module__ctypes_test=n/a
 py_cv_module__remote_debugging=n/a
@@ -204,7 +237,8 @@ EOF
         ./configure --build="$BUILD_TRIPLE" --host=$TARGET --prefix=/Programs/python3 \
         --with-build-python="$build_python" --with-suffix=.exe --disable-shared --disable-ipv6 \
         --without-ensurepip --without-mimalloc --disable-test-modules \
-        CC="$CC_PORT" CFLAGS="-O2 -DSIZEOF_PTHREAD_T=4"
+        --with-openssl="$SYSROOT" --with-openssl-rpath=no \
+        CC="$CC_PORT" CFLAGS="-O2 -DTHREAD_STACK_SIZE=0x600000"
     run_logged python-make make -j"$JOBS"
     rm -rf "$WORK/python-staging"
     run_logged python-install make install DESTDIR="$WORK/python-staging"
@@ -221,6 +255,7 @@ EOF
            "$lib"/config-*
     find "$lib" -name '*.opt-[12].pyc' -delete
     cp "$WORK/python/LICENSE" "$OUT/python3/LICENSE.TXT"
+    cp "$DOWNLOADS/cacert.pem" "$OUT/python3/CACERT.PEM"
     echo "python $PYTHON_VERSION -> $OUT/python3"
 }
 

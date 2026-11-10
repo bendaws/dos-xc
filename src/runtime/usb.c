@@ -260,11 +260,33 @@ static void mouse_report(const u8 *r, int length) {
     if (length >= 4) mouse.wheel += (signed char)r[3];
 }
 
+/* A mouse driven by a device driver rather than the USB stack. */
+static int driver_mouse;
+
+void usb_input_mouse(int dx, int dy, int wheel, unsigned buttons) {
+    driver_mouse = 1;
+    mouse.buttons = (u8)(buttons & 7);
+    mouse.dx += dx;
+    mouse.dy += dy;
+    mouse.wheel += wheel;
+}
+
 int usb_mouse_take(struct usb_mouse_state *out) {
+    int present = mice > 0 || driver_mouse;
     *out = mouse;
-    out->present = mice > 0;
+    out->present = present;
     mouse.dx = mouse.dy = mouse.wheel = 0;
-    return mice > 0;
+    return present;
+}
+
+/* A key from a device driver, as a HID usage. */
+void usb_input_key(unsigned usage, int pressed) {
+    if (usage >= 0xe0 && usage <= 0xe7) {
+        u8 bit = (u8)(1u << (usage - 0xe0));
+        modifiers = pressed ? (u8)(modifiers | bit) : (u8)(modifiers & ~bit);
+    } else if (pressed && usage < 0x100) {
+        key_press((u8)usage);
+    }
 }
 
 /* ---- mass storage (bulk-only transport, SCSI) ------------------------- */

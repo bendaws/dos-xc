@@ -157,7 +157,10 @@ static void *map_large(size_t size) {
     return MEM(c);
 }
 
+static struct __dosxc_rlock heap_lock;
+
 void *malloc(size_t n) {
+    LOCK_GUARD(&heap_lock);
     size_t size = request_size(n);
     if (!size) {
         errno = ENOMEM;
@@ -185,6 +188,7 @@ void *malloc(size_t n) {
 
 void free(void *p) {
     if (!p) return;
+    LOCK_GUARD(&heap_lock);
     chunk *c = CHUNK(p);
     if (c->size & MAPPED) {
         total_mapped -= SIZE(c) + c->prev_size;
@@ -212,6 +216,7 @@ void *calloc(size_t count, size_t size) {
 
 void *realloc(void *p, size_t n) {
     if (!p) return malloc(n);
+    LOCK_GUARD(&heap_lock);
     if (!n) {
         free(p);
         return 0;
@@ -256,6 +261,7 @@ void *reallocarray(void *p, size_t count, size_t size) {
 }
 
 void *memalign(size_t alignment, size_t n) {
+    LOCK_GUARD(&heap_lock);
     if (alignment <= ALIGNMENT) return malloc(n);
     if (alignment & (alignment - 1)) {
         errno = EINVAL;

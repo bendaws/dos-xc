@@ -47,7 +47,7 @@ void setup_find_disks(void) {
 
 static int required(const char *name) { return !strcasecmp(name, "coreutils"); }
 static int preselected(const char *name) {
-    return required(name) || !strcasecmp(name, "batch") || !strcasecmp(name, "ethernet") || !strcasecmp(name, "DOS-XC Desktop");
+    return required(name) || !strcasecmp(name, "batch") || !strcasecmp(name, "ethernet") || !strcasecmp(name, "hyperv") || !strcasecmp(name, "DOS-XC Desktop");
 }
 
 static int compare_packages(const void *a, const void *b) {

@@ -18,6 +18,7 @@ FILE *stdin = &stdin_file;
 FILE *stdout = &stdout_file;
 FILE *stderr = &stderr_file;
 static FILE *open_files;
+static struct __dosxc_rlock open_files_lock;
 
 /* Terminals are line buffered; files and pipes fully buffered. */
 static void probe(FILE *f) {
@@ -115,10 +116,12 @@ int fflush(FILE *f) {
         int r = 0;
         if (fflush(stdout)) r = EOF;
         if (fflush(stderr)) r = EOF;
+        LOCK_GUARD(&open_files_lock);
         for (FILE *p = open_files; p; p = p->next)
             if (fflush(p)) r = EOF;
         return r;
     }
+    STREAM_GUARD(f);
     if (f->mode == MODE_WRITE) return flush_write(f);
     if (f->mode == MODE_READ) drop_read(f);
     f->mode = MODE_NONE;
@@ -194,6 +197,7 @@ static unsigned char *read_buffer(FILE *f) {
 }
 
 int fgetc(FILE *f) {
+    STREAM_GUARD(f);
     if (to_read(f)) return EOF;
     if (f->position == f->length && !refill(f)) return EOF;
     return read_buffer(f)[f->position++];
@@ -205,6 +209,7 @@ int getc_unlocked(FILE *f) { return fgetc(f); }
 int getchar_unlocked(void) { return fgetc(stdin); }
 
 int ungetc(int c, FILE *f) {
+    STREAM_GUARD(f);
     if (c == EOF || to_read(f)) return EOF;
     unsigned char *b;
     int capacity = buffer_size(f, &b);
@@ -220,6 +225,7 @@ int ungetc(int c, FILE *f) {
 }
 
 size_t fread(void *destination, size_t size, size_t count, FILE *f) {
+    STREAM_GUARD(f);
     size_t total = size * count, done = 0;
     if (!total) return 0;
     if (to_read(f)) return 0;
@@ -249,6 +255,7 @@ size_t fread(void *destination, size_t size, size_t count, FILE *f) {
 size_t fread_unlocked(void *d, size_t s, size_t c, FILE *f) { return fread(d, s, c, f); }
 
 char *fgets(char *s, int n, FILE *f) {
+    STREAM_GUARD(f);
     if (n <= 0) return 0;
     int i = 0;
     while (i < n - 1) {
@@ -272,6 +279,7 @@ char *gets(char *s) {
 }
 
 ssize_t getdelim(char **line, size_t *capacity, int delimiter, FILE *f) {
+    STREAM_GUARD(f);
     size_t n = 0;
     if (!line || !capacity) {
         errno = EINVAL;
@@ -300,6 +308,7 @@ ssize_t getdelim(char **line, size_t *capacity, int delimiter, FILE *f) {
 ssize_t getline(char **line, size_t *capacity, FILE *f) { return getdelim(line, capacity, '\n', f); }
 
 int fputc(int c, FILE *f) {
+    STREAM_GUARD(f);
     if (to_write(f)) return EOF;
     unsigned char byte = (unsigned char)c;
     if (f->flags & F_UNBUFFERED || !f->capacity) {
@@ -321,6 +330,7 @@ int putc_unlocked(int c, FILE *f) { return fputc(c, f); }
 int putchar_unlocked(int c) { return fputc(c, stdout); }
 
 size_t fwrite(const void *source, size_t size, size_t count, FILE *f) {
+    STREAM_GUARD(f);
     size_t total = size * count;
     if (!total) return 0;
     if (to_write(f)) return 0;
@@ -356,6 +366,7 @@ int putw(int v, FILE *f) { return fwrite(&v, sizeof(v), 1, f) == 1 ? 0 : EOF; }
 
 /* ---- positioning ---- */
 int fseeko(FILE *f, off_t offset, int whence) {
+    STREAM_GUARD(f);
     if (f->mode == MODE_WRITE && flush_write(f)) return -1;
     if (whence == SEEK_CUR && f->mode == MODE_READ) offset -= (off_t)(f->length - f->position);
     f->position = f->length = 0;
@@ -367,6 +378,7 @@ int fseeko(FILE *f, off_t offset, int whence) {
 int fseek(FILE *f, long offset, int whence) { return fseeko(f, offset, whence); }
 
 off_t ftello(FILE *f) {
+    STREAM_GUARD(f);
     off_t position = raw_seek(f, 0, SEEK_CUR);
     if (position < 0) return -1;
     if (f->mode == MODE_READ) position -= (off_t)(f->length - f->position);
@@ -400,11 +412,12 @@ int feof_unlocked(FILE *f) { return feof(f); }
 int ferror_unlocked(FILE *f) { return ferror(f); }
 void clearerr_unlocked(FILE *f) { clearerr(f); }
 int fileno_unlocked(FILE *f) { return fileno(f); }
-void flockfile(FILE *f) { (void)f; }
-int ftrylockfile(FILE *f) { (void)f; return 0; }
-void funlockfile(FILE *f) { (void)f; }
+void flockfile(FILE *f) { if (__dosxc_threaded) __dosxc_rlock_acquire(&f->lock); }
+int ftrylockfile(FILE *f) { flockfile(f); return 0; }
+void funlockfile(FILE *f) { if (__dosxc_threaded) __dosxc_rlock_release(&f->lock); }
 
 int setvbuf(FILE *f, char *buffer, int mode, size_t size) {
+    STREAM_GUARD(f);
     if (f->mode != MODE_NONE && fflush(f)) return -1;
     f->flags &= ~(F_LINE | F_UNBUFFERED | F_PROBE);
     if (mode == _IONBF) {
@@ -462,8 +475,11 @@ static FILE *new_stream(int fd, int flags) {
     f->buffer = malloc(BUFSIZ);
     if (f->buffer) f->capacity = BUFSIZ;
     else f->flags |= F_UNBUFFERED;
-    f->next = open_files;
-    open_files = f;
+    {
+        LOCK_GUARD(&open_files_lock);
+        f->next = open_files;
+        open_files = f;
+    }
     return f;
 }
 
@@ -485,6 +501,7 @@ FILE *fdopen(int fd, const char *mode) {
 }
 
 static void unlink_stream(FILE *f) {
+    LOCK_GUARD(&open_files_lock);
     for (FILE **p = &open_files; *p; p = &(*p)->next)
         if (*p == f) {
             *p = f->next;
@@ -569,8 +586,11 @@ FILE *fmemopen(void *buffer, size_t size, const char *mode) {
     if (*mode == 'r') f->memory_length = size;
     else if (*mode == 'a') f->memory_length = f->memory_position = strnlen(buffer, size);
     else if (size) f->memory[0] = 0;
-    f->next = open_files;
-    open_files = f;
+    {
+        LOCK_GUARD(&open_files_lock);
+        f->next = open_files;
+        open_files = f;
+    }
     return f;
 }
 
@@ -589,8 +609,11 @@ FILE *open_memstream(char **out, size_t *size) {
     f->memory_size_out = size;
     *out = f->memory;
     *size = 0;
-    f->next = open_files;
-    open_files = f;
+    {
+        LOCK_GUARD(&open_files_lock);
+        f->next = open_files;
+        open_files = f;
+    }
     return f;
 }
 

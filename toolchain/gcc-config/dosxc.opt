@@ -1,0 +1,4 @@
+; Options for the DOS-XC target.
+
+pthread
+Driver

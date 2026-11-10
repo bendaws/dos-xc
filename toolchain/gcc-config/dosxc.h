@@ -49,6 +49,15 @@
 #undef LIB_SPEC
 #define LIB_SPEC "-lc"
 
+/* The C library goes first: it holds the threads implementation and
+   __emutls_get_address, and every object must use that one copy of the
+   emulated thread-local storage rather than libgcc's.  */
+#undef LINK_GCC_C_SEQUENCE_SPEC
+#define LINK_GCC_C_SEQUENCE_SPEC "%{!nolibc:%L} %G %{!nolibc:%L}"
+
+#undef CPP_SPEC
+#define CPP_SPEC "%{pthread:-D_REENTRANT}"
+
 #undef LINK_SPEC
 #define LINK_SPEC \
   "%{no-pie:%eDOS-XC programs are always position-independent (omit -no-pie)} \

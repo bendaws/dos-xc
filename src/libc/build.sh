@@ -42,6 +42,9 @@ rm -f "$OUT/lib/libc.a" "$OUT/lib/libm.a"
 # one tiny object because GNU ld rejects archives without a symbol index.
 echo 'char __dosxc_libm;' | $CC $flags -x c -c - -o "$work/libm.o"
 "$AR" rcs "$OUT/lib/libm.a" "$work/libm.o"
+# Threads are in libc too; -lpthread links for programs that ask for it.
+echo 'char __dosxc_libpthread;' | $CC $flags -x c -c - -o "$work/libpthread.o"
+"$AR" rcs "$OUT/lib/libpthread.a" "$work/libpthread.o"
 # The shared C library (\\SYSTEM\\LIB\\libc.so on DOS-XC).
 LLD=${LLD:-ld.lld}
 case "$ARCH" in x86_64) emulation=elf_x86_64 triple=x86_64-dosxc ;; *) emulation=elf_i386 triple=i686-dosxc ;; esac

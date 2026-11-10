@@ -11,6 +11,8 @@ BINUTILS=$(ls -d "$SRC"/binutils-* | head -1)
 
 cp "$HERE/gcc-config/dosxc.h" "$GCC/gcc/config/dosxc.h"
 cp "$HERE/gcc-config/xm-dosxc.h" "$GCC/gcc/config/xm-dosxc.h"
+cp "$HERE/gcc-config/dosxc.opt" "$GCC/gcc/config/dosxc.opt"
+cp "$HERE/gcc-config/dosxc.opt.urls" "$GCC/gcc/config/dosxc.opt.urls"
 
 python3 -I - "$SRC" "$GCC" "$BINUTILS" <<'EOF'
 import pathlib, re, sys
@@ -71,6 +73,15 @@ x86_64-*-dosxc*)
 \ttm_file="${tm_file} i386/unix.h i386/att.h elfos.h glibc-stdint.h i386/i386elf.h i386/x86-64.h dosxc.h"
 \t;;
 ''')
+
+# -pthread is accepted (threads are in the C library).
+edit(gcc / 'gcc/config.gcc', 'dosxc.opt', r'^\*-\*-dosxc\*\)$', 'extra_options="${extra_options} dosxc.opt"\n', after=True)
+
+# Threads are always linked, so gthreads calls them directly, not through weak symbols.
+edit(gcc / 'libgcc/gthr.h', '__dosxc__', r'^#ifndef GTHREAD_USE_WEAK', """#ifdef __dosxc__
+#define GTHREAD_USE_WEAK 0
+#endif
+""")
 
 # 4. GCC host description: programs are *.exe.
 edit(gcc / 'gcc/config.host', 'dosxc', r'^  i\[34567\]86-pc-msdosdjgpp\*\)', '''\

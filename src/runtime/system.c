@@ -374,6 +374,7 @@ void runtime_syscall(struct syscall_frame *f) {
     const struct dosxc_api *a = &runtime_api;
     i64 r;
     int wide = 0;
+    random_stir();
     usb_tick();                          /* hot plug and input, a few times a second at most */
     volumes_poll();
     power_poll();
@@ -427,6 +428,7 @@ void runtime_syscall(struct syscall_frame *f) {
     case DOSXC_SYS_DRIVER: r = driver_syscall(I(0), (long)ARG(1), P(2), (dosxc_size)ARG(3)); break;
     case DOSXC_SYS_DISPLAY: r = display_syscall(I(0), (long)ARG(1), P(2), (dosxc_size)ARG(3)); break;
     case DOSXC_SYS_TASK: r = sched_syscall(I(0), P(1), (long)ARG(2), (long)ARG(3)); break;
+    case DOSXC_SYS_RANDOM: r = random_syscall(P(0), (dosxc_size)ARG(1)); break;
     case DOSXC_SYS_SETFL: r = files_set_flags(I(0), I(1)); break;
     case DOSXC_SYS_SOCKET: case DOSXC_SYS_CONNECT: case DOSXC_SYS_BIND: case DOSXC_SYS_LISTEN: case DOSXC_SYS_ACCEPT:
     case DOSXC_SYS_SENDTO: case DOSXC_SYS_RECVFROM: case DOSXC_SYS_SHUTDOWN: case DOSXC_SYS_SOCKOPT: case DOSXC_SYS_SOCKNAME:

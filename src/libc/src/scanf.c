@@ -197,6 +197,7 @@ static int scan(struct source *s, const char *f, va_list ap) {
 }
 
 int vfscanf(FILE *file, const char *f, va_list ap) {
+    STREAM_GUARD(file);
     struct source s = {file, 0, 0};
     return scan(&s, f, ap);
 }

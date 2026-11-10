@@ -107,6 +107,9 @@ static void build_idt(void) {
     }
     for (int v = 0; v < 32; ++v)
         if (v != 2) set_gate(v, runtime_exception_stubs[v], cs, 0x8e);
+    /* Reserved by Intel and unused: HYPERV.DRV's synthetic interrupt vector.
+       Its messages are polled, so a delivered interrupt need do nothing. */
+    set_gate(0x1c, (uptr)runtime_spurious, cs, 0x8e);
     /* Under UEFI, system calls keep the caller's interrupt flag (firmware
        drivers depend on its timer).  On a BIOS boot the kernel runs with
        interrupts off even when programs have them on for multitasking. */

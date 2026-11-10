@@ -158,6 +158,35 @@ static volatile void *api_mmio_map(dosxc_u64 physical, dosxc_size size) {
     return (volatile void *)(uptr)physical;
 }
 
+/* ---- disks and input ------------------------------------------------------ */
+
+#define MAX_DRIVER_DISKS 16
+static struct { int used; struct driver *driver; const struct dk_disk_ops *ops; void *instance; } driver_disks[MAX_DRIVER_DISKS];
+
+static int api_disk_register(const struct dk_disk_ops *ops, void *instance, dosxc_u64 sectors, unsigned flags, const char *name) {
+    for (int i = 0; i < MAX_DRIVER_DISKS; ++i) {
+        if (driver_disks[i].used) continue;
+        driver_disks[i].used = 1;
+        driver_disks[i].driver = probing;
+        driver_disks[i].ops = ops;
+        driver_disks[i].instance = instance;
+        if (volumes_driver_disk(i, sectors, flags & DK_DISK_READONLY, name)) {
+            driver_disks[i].used = 0;
+            return -DOSXC_ENOMEM;
+        }
+        return i;
+    }
+    return -DOSXC_ENOMEM;
+}
+
+static void api_disk_unregister(int handle) {
+    if (handle < 0 || handle >= MAX_DRIVER_DISKS || !driver_disks[handle].used) return;
+    volumes_driver_disk_gone(handle);
+    driver_disks[handle].used = 0;
+}
+
+static int api_firmware_services(void) { return !ctx->bios_available; }
+
 static const struct dk_api driver_api = {
     DK_ABI_VERSION, sizeof(struct dk_api),
     api_log, api_notice, api_format, api_nanoseconds, api_sleep, api_alloc, api_free,
@@ -165,6 +194,7 @@ static const struct dk_api driver_api = {
     api_pci_read8, api_pci_read16, api_pci_read32, api_pci_write8, api_pci_write16, api_pci_write32,
     api_pci_bar, api_pci_enable, api_mmio_map,
     net_register, net_receive, net_link, net_unregister,
+    api_disk_register, api_disk_unregister, usb_input_key, usb_input_mouse, api_firmware_services,
 };
 
 /* ---- faults -------------------------------------------------------------- */
@@ -175,6 +205,7 @@ static struct driver *guard_driver;
 static uptr fault_vector, fault_ip;
 
 static void stop_devices(struct driver *d) {
+    if (!d->d->pci_ids) return;
     for (int i = 0; i < d->bound_count; ++i) {
         const struct pci_function *f = &d->bound[i].f;
         pci_write16(f, 4, (u16)(pci_read16(f, 4) & ~4u));
@@ -235,6 +266,19 @@ static void call_transmit(void *arg) {
 int driver_transmit(struct driver *d, const struct dk_net_ops *ops, void *instance, const void *frame, u32 length) {
     struct transmit_call c = {ops, instance, frame, length, -DOSXC_EIO};
     if (guarded(d, call_transmit, &c)) return -DOSXC_EIO;
+    return c.result;
+}
+
+struct disk_call { const struct dk_disk_ops *ops; void *instance; u64 lba; unsigned count; void *buffer; int write, result; };
+static void call_disk(void *arg) {
+    struct disk_call *c = arg;
+    c->result = c->ops->io(c->instance, c->lba, c->count, c->buffer, c->write);
+}
+
+int driver_disk_io(int handle, u64 lba, unsigned count, void *buffer, int write) {
+    if (handle < 0 || handle >= MAX_DRIVER_DISKS || !driver_disks[handle].used) return -DOSXC_EIO;
+    struct disk_call c = {driver_disks[handle].ops, driver_disks[handle].instance, lba, count, buffer, write, -DOSXC_EIO};
+    if (guarded(driver_disks[handle].driver, call_disk, &c)) return -DOSXC_EIO;
     return c.result;
 }
 
@@ -325,6 +369,15 @@ static struct driver *find_by_file(const char *file) {
 
 static void bind_devices(struct driver *d) {
     if (!d->d->probe) return;
+    if (!d->d->pci_ids) {                   /* not a PCI device: probe once */
+        struct probe_call c = {d, 0, -1, 0};
+        probing = d;
+        int r = guarded(d, call_probe, &c);
+        probing = 0;
+        if (!r && !c.result) d->bound[d->bound_count++].instance = c.instance;
+        if (d->state != DOSXC_DRIVER_STATE_FAILED) d->state = d->bound_count ? DOSXC_DRIVER_STATE_LOADED : DOSXC_DRIVER_STATE_IDLE;
+        return;
+    }
     scan_pci();
     for (int i = 0; i < pci_count && d->bound_count < MAX_BOUND; ++i) {
         if (claimed[i] || !id_matches(d->d->pci_ids, &pci_functions[i])) continue;
@@ -398,7 +451,7 @@ static int driver_unload(const char *file) {
             struct poll_call c = {d, d->bound[i].instance};
             guarded(d, call_remove, &c);
         }
-        for (int p = 0; p < pci_count; ++p)
+        for (int p = 0; d->d->pci_ids && p < pci_count; ++p)
             if (pci_functions[p].bus == d->bound[i].f.bus && pci_functions[p].device == d->bound[i].f.device &&
                 pci_functions[p].function == d->bound[i].f.function) claimed[p] = 0;
     }

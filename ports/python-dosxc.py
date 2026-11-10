@@ -105,8 +105,9 @@ patch('Lib/shutil.py',
       ("        files = [cmd]\n",
        "        files = [cmd, cmd + '.EXE'] if sys.platform == 'dosxc' and not use_bytes else [cmd]\n"))
 
-# socketpair() does not exist here.  The self-pipe only wakes the event loop
-# from other threads, and there are none.
+# socketpair() does not exist here.  The self-pipe wakes the event loop from
+# other threads, so loop.call_soon_threadsafe() takes effect at the loop's next
+# timeout rather than at once.
 patch('Lib/asyncio/selector_events.py',
       ("""    def _close_self_pipe(self):
         self._remove_reader(self._ssock.fileno())

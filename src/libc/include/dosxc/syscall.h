@@ -253,6 +253,9 @@ static __inline__ int dosxc_sys_display(int operation, long a, void *buffer, dos
 static __inline__ long dosxc_sys_task(int operation, void *a, long b, long c) {
     return (long)__dosxc_syscall4(DOSXC_SYS_TASK, operation, (__dosxc_word)a, b, c);
 }
+static __inline__ long dosxc_sys_random(void *buffer, dosxc_size size) {
+    return (long)__dosxc_syscall2(DOSXC_SYS_RANDOM, (__dosxc_word)buffer, (__dosxc_word)size);
+}
 static __inline__ int dosxc_sys_fdpoll(int fd, int events) {
     return (int)__dosxc_syscall2(DOSXC_SYS_FDPOLL, fd, events);
 }
