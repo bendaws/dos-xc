@@ -34,7 +34,7 @@ disks) work in DOS-XC and can be plugged in and pulled out at any time.
 ### BIOS boot
 
 The runtime (`\SYSTEM\ELFAPI.DLL`) drives the USB host controllers itself
-([`src/runtime/usb.h`](../src/runtime/usb.h)):
+([`os/runtime/usb.h`](../os/runtime/usb.h)):
 
 | File | Contents |
 |------|----------|
@@ -53,7 +53,7 @@ from the BIOS (the legacy-support handoff), resets it and enumerates what
 is connected.  Disks are 512-byte-sector SCSI block devices (LUN 0).
 
 Once the runtime owns the controllers the BIOS's own USB support is gone,
-so a small real-mode **bridge** ([`src/dos/bridge.asm`](../src/dos/bridge.asm))
+so a small real-mode **bridge** ([`os/dos/bridge.asm`](../os/dos/bridge.asm))
 is copied to `0x1000` and hooks:
 
 * INT 13h for BIOS drives that turned out to be USB disks: a disk is
@@ -102,7 +102,7 @@ and EHCI with UHCI companions:
 (and `uhci2`, `uhci3` with `firstport=2` and `4`).  `-device usb-hub` is a
 full-speed hub.  QEMU drops a `-drive` together with its device, so plug a
 drive in again with `!drive_add 0 if=none,id=stick2,format=raw,file=stick.img`
-and a new `device_add`.  Set `USB_DEBUG` in `src/runtime/usb.c` to trace
+and a new `device_add`.  Set `USB_DEBUG` in `os/runtime/usb.c` to trace
 enumeration.
 
 Not covered by QEMU: split transactions (QEMU has no high-speed hub), USB 3

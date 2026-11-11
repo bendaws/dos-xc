@@ -1,0 +1,23 @@
+/*
+ * DOS-XC /os/libc/include/linux/magic.h
+ * Copyright (c) 2026 Ben Daws - see LICENSE.txt
+ */
+
+#ifndef _LINUX_MAGIC_H
+#define _LINUX_MAGIC_H
+#define ADFS_SUPER_MAGIC 0xadf5
+#define AFS_SUPER_MAGIC 0x5346414f
+#define AUTOFS_SUPER_MAGIC 0x187
+#define CODA_SUPER_MAGIC 0x73757245
+#define CIFS_MAGIC_NUMBER 0xff534d42
+#define SMB_SUPER_MAGIC 0x517b
+#define SMB2_MAGIC_NUMBER 0xfe534d42
+#define NCP_SUPER_MAGIC 0x564c
+#define NFS_SUPER_MAGIC 0x6969
+#define PROC_SUPER_MAGIC 0x9fa0
+#define OCFS2_SUPER_MAGIC 0x7461636f
+#define TMPFS_MAGIC 0x01021994
+#define FUSE_SUPER_MAGIC 0x65735546
+#define OVERLAYFS_SUPER_MAGIC 0x794c7630
+#define MSDOS_SUPER_MAGIC 0x4d44
+#endif

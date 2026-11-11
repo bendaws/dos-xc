@@ -1,17 +1,9 @@
 #!/usr/bin/env python3
-"""Build and inspect DOS-XC packages (.dsp) on the build machine.
+#
+# DOS-XC /tools/dsp.py
+# Copyright (c) 2026 Ben Daws - see LICENSE.txt
+#
 
-  tools/dsp.py pack FOLDER OUT.dsp Name=... Version=... Author=... \\
-               Description=... Arch=16|32|64 [Path=...] [StartIn=program]
-               [Env=NAME=value ...] [Driver=A.DRV;B.DRV]
-  tools/dsp.py list FILE.dsp
-  tools/dsp.py install FILE.dsp ROOT      extract to ROOT/Programs/<Name>
-                                          and write its PACKAGE.INF
-
-The format (see src/pkg/dsp.h): "DSPK", u16 version 1, u16 flags,
-u32 metadata length, the metadata ("Key=value" lines), then a ZIP archive
-whose offsets count from the start of the file.
-"""
 import struct
 import sys
 import zlib
@@ -19,7 +11,6 @@ from pathlib import Path
 
 KEYS = ('Name', 'Version', 'Author', 'Description', 'Arch', 'Path', 'StartIn', 'Env', 'Driver')
 DOS_DATE = ((2026 - 1980) << 9) | (1 << 5) | 1
-
 
 def metadata_text(info):
     lines = []
@@ -29,7 +20,6 @@ def metadata_text(info):
         elif k in info and (k != 'StartIn' or info[k]):
             lines.append(f'{k}={info[k]}\r\n')
     return ''.join(lines)
-
 
 def parse_metadata(text):
     info = {}
@@ -43,7 +33,6 @@ def parse_metadata(text):
                     else:
                         info[k] = value.strip()
     return info
-
 
 def pack(folder, out, info):
     for required in ('Name', 'Version', 'Arch'):
@@ -78,7 +67,6 @@ def pack(folder, out, info):
     Path(out).write_bytes(bytes(data))
     return info
 
-
 def read(path):
     blob = Path(path).read_bytes()
     if blob[:4] != b'DSPK':
@@ -101,7 +89,6 @@ def read(path):
         entries.append((name, raw))
     return info, entries
 
-
 def install(path, root):
     info, entries = read(path)
     target = Path(root) / 'Programs' / info['Name']
@@ -122,10 +109,9 @@ def install(path, root):
             (target / name).replace(folder / name)
     return info
 
-
 def main():
     if len(sys.argv) < 3:
-        raise SystemExit(__doc__)
+        raise SystemExit('Build and inspect DOS-XC packages (.dsp) on the build machine.\n\n  tools/dsp.py pack FOLDER OUT.dsp Name=... Version=... Author=... \\\n               Description=... Arch=16|32|64 [Path=...] [StartIn=program]\n               [Env=NAME=value ...] [Driver=A.DRV;B.DRV]\n  tools/dsp.py list FILE.dsp\n  tools/dsp.py install FILE.dsp ROOT      extract to ROOT/Programs/<Name>\n                                          and write its PACKAGE.INF\n\nThe format (see os/pkg/dsp.h): "DSPK", u16 version 1, u16 flags,\nu32 metadata length, the metadata ("Key=value" lines), then a ZIP archive\nwhose offsets count from the start of the file.\n')
     command = sys.argv[1]
     if command == 'pack':
         info = {}
@@ -149,8 +135,7 @@ def main():
         info = install(sys.argv[2], sys.argv[3])
         print(f'Installed {info["Name"]} {info["Version"]} into {sys.argv[3]}/Programs/{info["Name"]}')
     else:
-        raise SystemExit(__doc__)
-
+        raise SystemExit('Build and inspect DOS-XC packages (.dsp) on the build machine.\n\n  tools/dsp.py pack FOLDER OUT.dsp Name=... Version=... Author=... \\\n               Description=... Arch=16|32|64 [Path=...] [StartIn=program]\n               [Env=NAME=value ...] [Driver=A.DRV;B.DRV]\n  tools/dsp.py list FILE.dsp\n  tools/dsp.py install FILE.dsp ROOT      extract to ROOT/Programs/<Name>\n                                          and write its PACKAGE.INF\n\nThe format (see os/pkg/dsp.h): "DSPK", u16 version 1, u16 flags,\nu32 metadata length, the metadata ("Key=value" lines), then a ZIP archive\nwhose offsets count from the start of the file.\n')
 
 if __name__ == '__main__':
     main()

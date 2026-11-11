@@ -1,10 +1,14 @@
 #!/usr/bin/env python3
-"""Generate non-C version resources from the single kernel header definition."""
+#
+# DOS-XC /tools/version.py
+# Copyright (c) 2026 Ben Daws - see LICENSE.txt
+#
+
 import json
 from pathlib import Path
 import re
 import sys
-header=(Path(__file__).resolve().parents[1]/'src/kernel/bootinfo.h').read_text()
+header=(Path(__file__).resolve().parents[1]/'os/kernel/bootinfo.h').read_text()
 def value(name):
     match=re.search(r'^#define\s+'+name+r'\s+"([^"\n]+)"\s*$',header,re.M)
     if not match:raise SystemExit(f'Missing string definition: {name}')

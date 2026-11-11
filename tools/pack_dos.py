@@ -1,5 +1,9 @@
 #!/usr/bin/env python3
-"""Package user-supplied DOS files into sector-aligned BIOS CD data."""
+#
+# DOS-XC /tools/pack_dos.py
+# Copyright (c) 2026 Ben Daws - see LICENSE.txt
+#
+
 import os
 from pathlib import Path
 import sys

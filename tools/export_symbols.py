@@ -1,5 +1,9 @@
 #!/usr/bin/env python3
-"""Write the public ABI addresses of a fixed-address DOS-XC module."""
+#
+# DOS-XC /tools/export_symbols.py
+# Copyright (c) 2026 Ben Daws - see LICENSE.txt
+#
+
 import re
 import struct
 import sys

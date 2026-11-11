@@ -1,5 +1,9 @@
 #!/usr/bin/env python3
-"""Bind the BIOS loader to the ISO filesystem image and update its checksum."""
+#
+# DOS-XC /tools/finalize_iso.py
+# Copyright (c) 2026 Ben Daws - see LICENSE.txt
+#
+
 from pathlib import Path
 import struct
 import sys

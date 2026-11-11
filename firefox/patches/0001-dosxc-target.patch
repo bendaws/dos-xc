@@ -1,0 +1,4072 @@
+diff --git a/accessible/other/Platform.cpp b/accessible/other/Platform.cpp
+index bbb60f5f49..3b786e0030 100644
+--- a/accessible/other/Platform.cpp
++++ b/accessible/other/Platform.cpp
+@@ -37,3 +37,7 @@ void a11y::PlatformAnnouncementEvent(Accessible* aTarget,
+                                      uint16_t aPriority) {}
+ 
+ void a11y::GetHumanReadableInstantiatorStr(nsAString& aResult) {}
++
++uint64_t a11y::GetCacheDomainsForKnownClients(uint64_t aCacheDomains) {
++  return aCacheDomains;
++}
+diff --git a/browser/app/nsBrowserApp.cpp b/browser/app/nsBrowserApp.cpp
+index 1fbef26996..737b8d6628 100644
+--- a/browser/app/nsBrowserApp.cpp
++++ b/browser/app/nsBrowserApp.cpp
+@@ -3,6 +3,11 @@
+  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
+ 
+ #include "nsXULAppAPI.h"
++#ifdef MOZ_WIDGET_DOSXC
++#  include <dlfcn.h>
++#  include <sys/stat.h>
++#  include <unistd.h>
++#endif
+ #include "mozilla/XREAppData.h"
+ #include "XREChildData.h"
+ #include "XREShellData.h"
+@@ -338,6 +343,43 @@ static void ExpandFileDescriptorTable() {
+ #endif
+ 
+ int main(int argc, char* argv[], char* envp[]) {
++#ifdef MOZ_WIDGET_DOSXC
++  // DOS-XC's own settings, before anything reads them.  HOME is a POSIX path
++  // here: the system's own is a DOS one, which Gecko cannot use.
++  // Gecko's paths have no drive letter: they mean the current drive, so make
++  // that the one Firefox is on.
++  Dl_info self;
++  if (dladdr(reinterpret_cast<void*>(&main), &self) && self.dli_fname &&
++      self.dli_fname[0] && self.dli_fname[1] == ':') {
++    char root[4] = {self.dli_fname[0], ':', '/', 0};
++    chdir(root);
++  }
++  setenv("MOZ_FORCE_DISABLE_E10S", "1", 0);
++  setenv("MOZ_HEADLESS", "1", 0);
++  setenv("MOZ_CRASHREPORTER_DISABLE", "1", 0);
++  const char* home = getenv("HOME");
++  if (!home || home[0] != '/') {
++    char path[1024];
++    ssize_t length = readlink("/proc/self/exe", path, sizeof(path) - 8);
++    if (length > 0) {
++      path[length] = 0;
++      if (char* slash = strrchr(path, '/')) {
++        strcpy(slash + 1, "home");
++        setenv("HOME", path, 1);
++      }
++    }
++  }
++  const char* temporary = getenv("TMPDIR");
++  if (!temporary || temporary[0] != '/') {
++    home = getenv("HOME");
++    if (home) {
++      char path[1024];
++      snprintf(path, sizeof(path), "%s/tmp", home);
++      mkdir(path, 0700);
++      setenv("TMPDIR", path, 1);
++    }
++  }
++#endif
+ #if defined(XP_UNIX)
+   ReserveDefaultFileDescriptors();
+ #endif
+diff --git a/browser/branding/dosfox/configure.sh b/browser/branding/dosfox/configure.sh
+new file mode 100644
+index 0000000000..d74395085b
+--- /dev/null
++++ b/browser/branding/dosfox/configure.sh
+@@ -0,0 +1,8 @@
++# This Source Code Form is subject to the terms of the Mozilla Public
++# License, v. 2.0. If a copy of the MPL was not distributed with this
++# file, You can obtain one at http://mozilla.org/MPL/2.0/.
++
++# DOSfox: Firefox built for DOS-XC.  Not Mozilla's official build, so not
++# called Firefox and not shown with the Firefox logo.
++MOZ_APP_DISPLAYNAME=DOSfox
++MOZ_MACBUNDLE_ID=dosfox
+diff --git a/browser/branding/dosfox/content/about-logo-private.png b/browser/branding/dosfox/content/about-logo-private.png
+new file mode 100644
+index 0000000000000000000000000000000000000000..057d28d964c09bd3551ef3c2155bbcbd124328ae
+GIT binary patch
+literal 932
+zcmeAS@N?(olHy`uVBq!ia0vp^2SAvE4M+yv$zf+;V9xe*aSW-L^Y-q-Jdr?#wu_OQ
+zm||Q#1vut4Es)CM<Uc5^a6sY10<B*fEmyWVnq~;)urdWUu3_$e(&e50Ywlw6*_oI0
+z%a6?8y_@x4(f<!W-=`ip`}Jtv%@3dNNY^RtaAt9s#o!^#kjbRr%dmvA!Gv*w8p9>9
+z;Ot$GAAIZ0%k<kfhrjm!?8T2$m)$)7m<2-}lIG|I(f97HIXk&L`S$FsJAY+xv;04!
+zEr7*ru%6ugId|T?J^Ny>$zs3r(?Wm#D|_>qUrsK+D*FjOTejT2w%wM!e;#k`|Ml~y
+zpPseNIr}zK?%e9egobbhh|`gr1oh9Yyw|tq1@_P1H|N*i`*wTduchRE|8VBsw>vTM
+zJb(SI8L<Ze)S26I&%arFE@$(0pUvA%{LS{sN<GEvz=yg4XZwL}yJYrKYnyBl6Ff+<
+zxT`LA|3lMVdvE@-bz1E9|K8gCnQ6s%H9ULIdh6G<rQ1@Yq}8!S8_W*g{6@aG+8MuQ
+z2XB5ayDE2P-QPVvf1h2~Afzd7zr^o9FO9b8Zj{}1`}Vxm2Xk+L63nf`7K|%CbGhJ3
+zEw}sgbnnT?{+Ijt=j8Oyp}Fnb@^Wv_TZ`W>AND$IKD)2HV|VTO^Y|U+dq4G#eT`j7
+z|AiG7tJ~A8ZKK0dzwPxj*S`I&2Y&!BE0_77oV}$q`u?jk&+tXt(l`85tg0H<-CG(5
+P%zX@=u6{1-oD!M<KqYFF
+
+literal 0
+HcmV?d00001
+
+diff --git a/browser/branding/dosfox/content/about-logo-private@2x.png b/browser/branding/dosfox/content/about-logo-private@2x.png
+new file mode 100644
+index 0000000000000000000000000000000000000000..f890aba91d25febf209e2cf00729dd7c3f2d3a88
+GIT binary patch
+literal 1949
+zcmeAS@N?(olHy`uVBq!ia0y~yU~B+k4mP03lH*(VGcd5Hc)B=-RLpsMT{kZ#oT2TZ
+z_0<MV;~8FTjB&0hA!jdWbid$Y3Q7vN=g1c4CED7TDk2%KB`YA1Adq1e>&Pr58+(7>
+z`OOXQ<?jBhEDaMrP=6z*{P{%v=RaT8ZGAF*f8>wfKQo_LFz8QbU~u7NaF{|B>Ppr-
+zW`_IuoA1tb-?#sE`{NToU;bVHJM(0o_`kY43=E4{7!<syMuip2Gwe$R+O>D#&zQS1
+zd;dw!<@>$xcOC;nAQOXtD%GghJNW~)-+XuOa?@QqndPdxe_MR#jN4XUC%^muXMLcB
+z;pV6R)%87Nqo$oe4{V+Fn?e6>+HULqJNtL+k+Za~{rf31Y7;P2FZ|uz@BI8>`y9UC
+znJVTC4H}FL9YWNiR$SduF#GL0o1*`ZK2=3+3SWQU&->f=`1&)oE#hxqJ+t^Oc*(E*
+z?}fk5m;YY)|04AR`yxL$q5c-1eqH(ba-j8mchm2kFMkQPboK1V7iyn9rFu}$`^}(p
+z`}uMHVtK{4KySbJ_i}^$uKLnqnO*0%?_{K61_5QWwdS|)Rz6|Y(_6n>_4l72i7)=G
+zzMkLy&UpRB`R`x6SO1?+{Xhk#;O{>_9=_x5QT_GT+dJ+JH+N9oSMK%?9&NX8e>WeL
+z34yWa{C(ziV32nI<JedC)1>4-FzuAgucUrx0`0v!d*ko&%Z1QrE3C8yS_H~1FaBLU
+zd*l88OTGX8+S%V-zl^n*nTk0Dl<lJIf#$l|Jph(+pHKXSlz4ekyX&pqfFgAD?2Y&3
+ze+bedK0jRATWwtSKhLVKmSIoA^22p6{(ZjuH|qtn*g0Nm7P7z+JIhq}4zL*V=PvtQ
+zFy}Xi{;j*mclv+W1T1VbPtKeFPW-?8mK3UcaW%BiEuP=_w5o2`cj;%lshxCueE%~^
+YM%FNX<yANYtaceZUHx3vIVCg!0JmWl&Hw-a
+
+literal 0
+HcmV?d00001
+
+diff --git a/browser/branding/dosfox/content/about-logo.png b/browser/branding/dosfox/content/about-logo.png
+new file mode 100644
+index 0000000000000000000000000000000000000000..057d28d964c09bd3551ef3c2155bbcbd124328ae
+GIT binary patch
+literal 932
+zcmeAS@N?(olHy`uVBq!ia0vp^2SAvE4M+yv$zf+;V9xe*aSW-L^Y-q-Jdr?#wu_OQ
+zm||Q#1vut4Es)CM<Uc5^a6sY10<B*fEmyWVnq~;)urdWUu3_$e(&e50Ywlw6*_oI0
+z%a6?8y_@x4(f<!W-=`ip`}Jtv%@3dNNY^RtaAt9s#o!^#kjbRr%dmvA!Gv*w8p9>9
+z;Ot$GAAIZ0%k<kfhrjm!?8T2$m)$)7m<2-}lIG|I(f97HIXk&L`S$FsJAY+xv;04!
+zEr7*ru%6ugId|T?J^Ny>$zs3r(?Wm#D|_>qUrsK+D*FjOTejT2w%wM!e;#k`|Ml~y
+zpPseNIr}zK?%e9egobbhh|`gr1oh9Yyw|tq1@_P1H|N*i`*wTduchRE|8VBsw>vTM
+zJb(SI8L<Ze)S26I&%arFE@$(0pUvA%{LS{sN<GEvz=yg4XZwL}yJYrKYnyBl6Ff+<
+zxT`LA|3lMVdvE@-bz1E9|K8gCnQ6s%H9ULIdh6G<rQ1@Yq}8!S8_W*g{6@aG+8MuQ
+z2XB5ayDE2P-QPVvf1h2~Afzd7zr^o9FO9b8Zj{}1`}Vxm2Xk+L63nf`7K|%CbGhJ3
+zEw}sgbnnT?{+Ijt=j8Oyp}Fnb@^Wv_TZ`W>AND$IKD)2HV|VTO^Y|U+dq4G#eT`j7
+z|AiG7tJ~A8ZKK0dzwPxj*S`I&2Y&!BE0_77oV}$q`u?jk&+tXt(l`85tg0H<-CG(5
+P%zX@=u6{1-oD!M<KqYFF
+
+literal 0
+HcmV?d00001
+
+diff --git a/browser/branding/dosfox/content/about-logo.svg b/browser/branding/dosfox/content/about-logo.svg
+new file mode 100644
+index 0000000000..ac8e5f4741
+--- /dev/null
++++ b/browser/branding/dosfox/content/about-logo.svg
+@@ -0,0 +1,185 @@
++<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 16 16" shape-rendering="crispEdges">
++<rect x="11" y="0" width="1.02" height="1.02" fill="#081440"/>
++<rect x="14" y="0" width="1.02" height="1.02" fill="#081440"/>
++<rect x="10" y="1" width="1.02" height="1.02" fill="#081440"/>
++<rect x="11" y="1" width="1.02" height="1.02" fill="#96d6ff"/>
++<rect x="12" y="1" width="1.02" height="1.02" fill="#081440"/>
++<rect x="13" y="1" width="1.02" height="1.02" fill="#081440"/>
++<rect x="14" y="1" width="1.02" height="1.02" fill="#96d6ff"/>
++<rect x="15" y="1" width="1.02" height="1.02" fill="#081440"/>
++<rect x="7" y="2" width="1.02" height="1.02" fill="#081440"/>
++<rect x="8" y="2" width="1.02" height="1.02" fill="#081440"/>
++<rect x="9" y="2" width="1.02" height="1.02" fill="#081440"/>
++<rect x="10" y="2" width="1.02" height="1.02" fill="#081440"/>
++<rect x="11" y="2" width="1.02" height="1.02" fill="#288cff"/>
++<rect x="12" y="2" width="1.02" height="1.02" fill="#288cff"/>
++<rect x="13" y="2" width="1.02" height="1.02" fill="#288cff"/>
++<rect x="14" y="2" width="1.02" height="1.02" fill="#288cff"/>
++<rect x="15" y="2" width="1.02" height="1.02" fill="#081440"/>
++<rect x="4" y="3" width="1.02" height="1.02" fill="#081440"/>
++<rect x="5" y="3" width="1.02" height="1.02" fill="#081440"/>
++<rect x="6" y="3" width="1.02" height="1.02" fill="#96d6ff"/>
++<rect x="7" y="3" width="1.02" height="1.02" fill="#96d6ff"/>
++<rect x="8" y="3" width="1.02" height="1.02" fill="#288cff"/>
++<rect x="9" y="3" width="1.02" height="1.02" fill="#288cff"/>
++<rect x="10" y="3" width="1.02" height="1.02" fill="#288cff"/>
++<rect x="11" y="3" width="1.02" height="1.02" fill="#ffffff"/>
++<rect x="12" y="3" width="1.02" height="1.02" fill="#081440"/>
++<rect x="13" y="3" width="1.02" height="1.02" fill="#288cff"/>
++<rect x="14" y="3" width="1.02" height="1.02" fill="#288cff"/>
++<rect x="15" y="3" width="1.02" height="1.02" fill="#081440"/>
++<rect x="3" y="4" width="1.02" height="1.02" fill="#081440"/>
++<rect x="4" y="4" width="1.02" height="1.02" fill="#182c78"/>
++<rect x="5" y="4" width="1.02" height="1.02" fill="#081440"/>
++<rect x="6" y="4" width="1.02" height="1.02" fill="#081440"/>
++<rect x="7" y="4" width="1.02" height="1.02" fill="#96d6ff"/>
++<rect x="8" y="4" width="1.02" height="1.02" fill="#288cff"/>
++<rect x="9" y="4" width="1.02" height="1.02" fill="#288cff"/>
++<rect x="10" y="4" width="1.02" height="1.02" fill="#288cff"/>
++<rect x="11" y="4" width="1.02" height="1.02" fill="#288cff"/>
++<rect x="12" y="4" width="1.02" height="1.02" fill="#288cff"/>
++<rect x="13" y="4" width="1.02" height="1.02" fill="#288cff"/>
++<rect x="14" y="4" width="1.02" height="1.02" fill="#288cff"/>
++<rect x="15" y="4" width="1.02" height="1.02" fill="#081440"/>
++<rect x="2" y="5" width="1.02" height="1.02" fill="#081440"/>
++<rect x="3" y="5" width="1.02" height="1.02" fill="#182c78"/>
++<rect x="4" y="5" width="1.02" height="1.02" fill="#182c78"/>
++<rect x="5" y="5" width="1.02" height="1.02" fill="#3462c4"/>
++<rect x="6" y="5" width="1.02" height="1.02" fill="#3462c4"/>
++<rect x="7" y="5" width="1.02" height="1.02" fill="#081440"/>
++<rect x="8" y="5" width="1.02" height="1.02" fill="#081440"/>
++<rect x="9" y="5" width="1.02" height="1.02" fill="#081440"/>
++<rect x="10" y="5" width="1.02" height="1.02" fill="#288cff"/>
++<rect x="11" y="5" width="1.02" height="1.02" fill="#288cff"/>
++<rect x="12" y="5" width="1.02" height="1.02" fill="#288cff"/>
++<rect x="13" y="5" width="1.02" height="1.02" fill="#288cff"/>
++<rect x="14" y="5" width="1.02" height="1.02" fill="#081440"/>
++<rect x="1" y="6" width="1.02" height="1.02" fill="#081440"/>
++<rect x="2" y="6" width="1.02" height="1.02" fill="#182c78"/>
++<rect x="3" y="6" width="1.02" height="1.02" fill="#3462c4"/>
++<rect x="4" y="6" width="1.02" height="1.02" fill="#3462c4"/>
++<rect x="5" y="6" width="1.02" height="1.02" fill="#3462c4"/>
++<rect x="6" y="6" width="1.02" height="1.02" fill="#3462c4"/>
++<rect x="7" y="6" width="1.02" height="1.02" fill="#182c78"/>
++<rect x="8" y="6" width="1.02" height="1.02" fill="#182c78"/>
++<rect x="9" y="6" width="1.02" height="1.02" fill="#182c78"/>
++<rect x="10" y="6" width="1.02" height="1.02" fill="#081440"/>
++<rect x="11" y="6" width="1.02" height="1.02" fill="#288cff"/>
++<rect x="12" y="6" width="1.02" height="1.02" fill="#288cff"/>
++<rect x="13" y="6" width="1.02" height="1.02" fill="#288cff"/>
++<rect x="14" y="6" width="1.02" height="1.02" fill="#081440"/>
++<rect x="1" y="7" width="1.02" height="1.02" fill="#081440"/>
++<rect x="2" y="7" width="1.02" height="1.02" fill="#182c78"/>
++<rect x="3" y="7" width="1.02" height="1.02" fill="#3462c4"/>
++<rect x="4" y="7" width="1.02" height="1.02" fill="#3462c4"/>
++<rect x="5" y="7" width="1.02" height="1.02" fill="#3462c4"/>
++<rect x="6" y="7" width="1.02" height="1.02" fill="#182c78"/>
++<rect x="7" y="7" width="1.02" height="1.02" fill="#182c78"/>
++<rect x="8" y="7" width="1.02" height="1.02" fill="#182c78"/>
++<rect x="9" y="7" width="1.02" height="1.02" fill="#182c78"/>
++<rect x="10" y="7" width="1.02" height="1.02" fill="#182c78"/>
++<rect x="11" y="7" width="1.02" height="1.02" fill="#081440"/>
++<rect x="12" y="7" width="1.02" height="1.02" fill="#288cff"/>
++<rect x="13" y="7" width="1.02" height="1.02" fill="#288cff"/>
++<rect x="14" y="7" width="1.02" height="1.02" fill="#081440"/>
++<rect x="0" y="8" width="1.02" height="1.02" fill="#081440"/>
++<rect x="1" y="8" width="1.02" height="1.02" fill="#182c78"/>
++<rect x="2" y="8" width="1.02" height="1.02" fill="#182c78"/>
++<rect x="3" y="8" width="1.02" height="1.02" fill="#182c78"/>
++<rect x="4" y="8" width="1.02" height="1.02" fill="#3462c4"/>
++<rect x="5" y="8" width="1.02" height="1.02" fill="#3462c4"/>
++<rect x="6" y="8" width="1.02" height="1.02" fill="#182c78"/>
++<rect x="7" y="8" width="1.02" height="1.02" fill="#182c78"/>
++<rect x="8" y="8" width="1.02" height="1.02" fill="#182c78"/>
++<rect x="9" y="8" width="1.02" height="1.02" fill="#3462c4"/>
++<rect x="10" y="8" width="1.02" height="1.02" fill="#182c78"/>
++<rect x="11" y="8" width="1.02" height="1.02" fill="#081440"/>
++<rect x="12" y="8" width="1.02" height="1.02" fill="#288cff"/>
++<rect x="13" y="8" width="1.02" height="1.02" fill="#288cff"/>
++<rect x="14" y="8" width="1.02" height="1.02" fill="#081440"/>
++<rect x="0" y="9" width="1.02" height="1.02" fill="#081440"/>
++<rect x="1" y="9" width="1.02" height="1.02" fill="#182c78"/>
++<rect x="2" y="9" width="1.02" height="1.02" fill="#182c78"/>
++<rect x="3" y="9" width="1.02" height="1.02" fill="#182c78"/>
++<rect x="4" y="9" width="1.02" height="1.02" fill="#182c78"/>
++<rect x="5" y="9" width="1.02" height="1.02" fill="#182c78"/>
++<rect x="6" y="9" width="1.02" height="1.02" fill="#182c78"/>
++<rect x="7" y="9" width="1.02" height="1.02" fill="#182c78"/>
++<rect x="8" y="9" width="1.02" height="1.02" fill="#3462c4"/>
++<rect x="9" y="9" width="1.02" height="1.02" fill="#3462c4"/>
++<rect x="10" y="9" width="1.02" height="1.02" fill="#182c78"/>
++<rect x="11" y="9" width="1.02" height="1.02" fill="#081440"/>
++<rect x="12" y="9" width="1.02" height="1.02" fill="#288cff"/>
++<rect x="13" y="9" width="1.02" height="1.02" fill="#288cff"/>
++<rect x="14" y="9" width="1.02" height="1.02" fill="#081440"/>
++<rect x="0" y="10" width="1.02" height="1.02" fill="#081440"/>
++<rect x="1" y="10" width="1.02" height="1.02" fill="#288cff"/>
++<rect x="2" y="10" width="1.02" height="1.02" fill="#081440"/>
++<rect x="3" y="10" width="1.02" height="1.02" fill="#182c78"/>
++<rect x="4" y="10" width="1.02" height="1.02" fill="#182c78"/>
++<rect x="5" y="10" width="1.02" height="1.02" fill="#182c78"/>
++<rect x="6" y="10" width="1.02" height="1.02" fill="#182c78"/>
++<rect x="7" y="10" width="1.02" height="1.02" fill="#182c78"/>
++<rect x="8" y="10" width="1.02" height="1.02" fill="#182c78"/>
++<rect x="9" y="10" width="1.02" height="1.02" fill="#182c78"/>
++<rect x="10" y="10" width="1.02" height="1.02" fill="#081440"/>
++<rect x="11" y="10" width="1.02" height="1.02" fill="#288cff"/>
++<rect x="12" y="10" width="1.02" height="1.02" fill="#288cff"/>
++<rect x="13" y="10" width="1.02" height="1.02" fill="#288cff"/>
++<rect x="14" y="10" width="1.02" height="1.02" fill="#081440"/>
++<rect x="0" y="11" width="1.02" height="1.02" fill="#081440"/>
++<rect x="1" y="11" width="1.02" height="1.02" fill="#96d6ff"/>
++<rect x="2" y="11" width="1.02" height="1.02" fill="#288cff"/>
++<rect x="3" y="11" width="1.02" height="1.02" fill="#081440"/>
++<rect x="4" y="11" width="1.02" height="1.02" fill="#182c78"/>
++<rect x="5" y="11" width="1.02" height="1.02" fill="#182c78"/>
++<rect x="6" y="11" width="1.02" height="1.02" fill="#182c78"/>
++<rect x="7" y="11" width="1.02" height="1.02" fill="#182c78"/>
++<rect x="8" y="11" width="1.02" height="1.02" fill="#182c78"/>
++<rect x="9" y="11" width="1.02" height="1.02" fill="#081440"/>
++<rect x="10" y="11" width="1.02" height="1.02" fill="#288cff"/>
++<rect x="11" y="11" width="1.02" height="1.02" fill="#288cff"/>
++<rect x="12" y="11" width="1.02" height="1.02" fill="#288cff"/>
++<rect x="13" y="11" width="1.02" height="1.02" fill="#081440"/>
++<rect x="1" y="12" width="1.02" height="1.02" fill="#081440"/>
++<rect x="2" y="12" width="1.02" height="1.02" fill="#96d6ff"/>
++<rect x="3" y="12" width="1.02" height="1.02" fill="#288cff"/>
++<rect x="4" y="12" width="1.02" height="1.02" fill="#081440"/>
++<rect x="5" y="12" width="1.02" height="1.02" fill="#081440"/>
++<rect x="6" y="12" width="1.02" height="1.02" fill="#081440"/>
++<rect x="7" y="12" width="1.02" height="1.02" fill="#081440"/>
++<rect x="8" y="12" width="1.02" height="1.02" fill="#081440"/>
++<rect x="9" y="12" width="1.02" height="1.02" fill="#288cff"/>
++<rect x="10" y="12" width="1.02" height="1.02" fill="#288cff"/>
++<rect x="11" y="12" width="1.02" height="1.02" fill="#288cff"/>
++<rect x="12" y="12" width="1.02" height="1.02" fill="#288cff"/>
++<rect x="13" y="12" width="1.02" height="1.02" fill="#081440"/>
++<rect x="1" y="13" width="1.02" height="1.02" fill="#081440"/>
++<rect x="2" y="13" width="1.02" height="1.02" fill="#96d6ff"/>
++<rect x="3" y="13" width="1.02" height="1.02" fill="#96d6ff"/>
++<rect x="4" y="13" width="1.02" height="1.02" fill="#288cff"/>
++<rect x="5" y="13" width="1.02" height="1.02" fill="#288cff"/>
++<rect x="6" y="13" width="1.02" height="1.02" fill="#288cff"/>
++<rect x="7" y="13" width="1.02" height="1.02" fill="#288cff"/>
++<rect x="8" y="13" width="1.02" height="1.02" fill="#288cff"/>
++<rect x="9" y="13" width="1.02" height="1.02" fill="#288cff"/>
++<rect x="10" y="13" width="1.02" height="1.02" fill="#288cff"/>
++<rect x="11" y="13" width="1.02" height="1.02" fill="#288cff"/>
++<rect x="12" y="13" width="1.02" height="1.02" fill="#081440"/>
++<rect x="2" y="14" width="1.02" height="1.02" fill="#081440"/>
++<rect x="3" y="14" width="1.02" height="1.02" fill="#081440"/>
++<rect x="4" y="14" width="1.02" height="1.02" fill="#96d6ff"/>
++<rect x="5" y="14" width="1.02" height="1.02" fill="#96d6ff"/>
++<rect x="6" y="14" width="1.02" height="1.02" fill="#96d6ff"/>
++<rect x="7" y="14" width="1.02" height="1.02" fill="#288cff"/>
++<rect x="8" y="14" width="1.02" height="1.02" fill="#288cff"/>
++<rect x="9" y="14" width="1.02" height="1.02" fill="#288cff"/>
++<rect x="10" y="14" width="1.02" height="1.02" fill="#081440"/>
++<rect x="11" y="14" width="1.02" height="1.02" fill="#081440"/>
++<rect x="4" y="15" width="1.02" height="1.02" fill="#081440"/>
++<rect x="5" y="15" width="1.02" height="1.02" fill="#081440"/>
++<rect x="6" y="15" width="1.02" height="1.02" fill="#081440"/>
++<rect x="7" y="15" width="1.02" height="1.02" fill="#081440"/>
++<rect x="8" y="15" width="1.02" height="1.02" fill="#081440"/>
++<rect x="9" y="15" width="1.02" height="1.02" fill="#081440"/>
++</svg>
+diff --git a/browser/branding/dosfox/content/about-logo@2x.png b/browser/branding/dosfox/content/about-logo@2x.png
+new file mode 100644
+index 0000000000000000000000000000000000000000..f890aba91d25febf209e2cf00729dd7c3f2d3a88
+GIT binary patch
+literal 1949
+zcmeAS@N?(olHy`uVBq!ia0y~yU~B+k4mP03lH*(VGcd5Hc)B=-RLpsMT{kZ#oT2TZ
+z_0<MV;~8FTjB&0hA!jdWbid$Y3Q7vN=g1c4CED7TDk2%KB`YA1Adq1e>&Pr58+(7>
+z`OOXQ<?jBhEDaMrP=6z*{P{%v=RaT8ZGAF*f8>wfKQo_LFz8QbU~u7NaF{|B>Ppr-
+zW`_IuoA1tb-?#sE`{NToU;bVHJM(0o_`kY43=E4{7!<syMuip2Gwe$R+O>D#&zQS1
+zd;dw!<@>$xcOC;nAQOXtD%GghJNW~)-+XuOa?@QqndPdxe_MR#jN4XUC%^muXMLcB
+z;pV6R)%87Nqo$oe4{V+Fn?e6>+HULqJNtL+k+Za~{rf31Y7;P2FZ|uz@BI8>`y9UC
+znJVTC4H}FL9YWNiR$SduF#GL0o1*`ZK2=3+3SWQU&->f=`1&)oE#hxqJ+t^Oc*(E*
+z?}fk5m;YY)|04AR`yxL$q5c-1eqH(ba-j8mchm2kFMkQPboK1V7iyn9rFu}$`^}(p
+z`}uMHVtK{4KySbJ_i}^$uKLnqnO*0%?_{K61_5QWwdS|)Rz6|Y(_6n>_4l72i7)=G
+zzMkLy&UpRB`R`x6SO1?+{Xhk#;O{>_9=_x5QT_GT+dJ+JH+N9oSMK%?9&NX8e>WeL
+z34yWa{C(ziV32nI<JedC)1>4-FzuAgucUrx0`0v!d*ko&%Z1QrE3C8yS_H~1FaBLU
+zd*l88OTGX8+S%V-zl^n*nTk0Dl<lJIf#$l|Jph(+pHKXSlz4ekyX&pqfFgAD?2Y&3
+ze+bedK0jRATWwtSKhLVKmSIoA^22p6{(ZjuH|qtn*g0Nm7P7z+JIhq}4zL*V=PvtQ
+zFy}Xi{;j*mclv+W1T1VbPtKeFPW-?8mK3UcaW%BiEuP=_w5o2`cj;%lshxCueE%~^
+YM%FNX<yANYtaceZUHx3vIVCg!0JmWl&Hw-a
+
+literal 0
+HcmV?d00001
+
+diff --git a/browser/branding/dosfox/content/about-wordmark.svg b/browser/branding/dosfox/content/about-wordmark.svg
+new file mode 100644
+index 0000000000..e3f7d6cda5
+--- /dev/null
++++ b/browser/branding/dosfox/content/about-wordmark.svg
+@@ -0,0 +1,3 @@
++<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 372 99">
++  <text x="0" y="78" font-family="sans-serif" font-weight="bold" font-size="84" fill="context-fill">DOSfox</text>
++</svg>
+diff --git a/browser/branding/dosfox/content/about.png b/browser/branding/dosfox/content/about.png
+new file mode 100644
+index 0000000000000000000000000000000000000000..f08d88af7fc5983c66f1aa4f98d5436bc7f5b346
+GIT binary patch
+literal 1234
+zcmeAS@N?(olHy`uVBq!ia0y~yVAKJ!-*B)2$#aipmohN0%=C0|45^s&_RhjQS$BrE
+zi>0CuHZg>AaeN4Nah&M8*v4hPf`TgBQ&Xc4i$g+J=q_HdBWR_gV}s*@ncP7UCZF!^
+zzJI6qN0xi|$>oMO>LY>X0zt#!qAl;457^1hpJUr=^ZiG`?pOckp0X@|+dg+c<Aa$T
+zViOc29NH2XC7W1NaC3aVs+zZFmz;g@>RsB4+WGh9>Sss&p3^TKTUl_J$%uvfgn*8M
+z^M(eVgZMaRKV8lKinerJ?%oI_e|u;1GE_hGcOtA2Xnw`U_slY@wuTF=dv`5Xb;rLw
+zDu4c-zEN!d&tzMZ!EdW0>vkp*@B+ef?!WC0EL^9zr{-(fi`x79>LR(c`KNAeyLmUh
+zZ>^V&-JQHmym>@~3B<r-YWq*vwOnltTz|hN;%jaF-+!-z3aSjZX$2bIesxI0oQQCN
+z1mEMMMl-jDi(iZLkGOp+TO@nE<e7b+45W!SAbHnTwtx5S>;D;k^*7$7mH2ewQC{LA
+z2IznrZ=w!=JbCl-toXO<_cnd_b+$d-{xpwU{q&pHHGZ5U&73!B@!}iY4(jb7K1wdH
+zHQn>)=k|rq-|3$}e((FMw-<^xM_2bgx_w>W`TX3tJ2t-~Z^)7q6m9+QkI&m3cWmFS
+z?VmpENsEt_`1}3SkAmtiZ`wJFNJz80uNnL*{k6ROxxe!H*t>UC!sODzBV!Zn?+{Au
+z@J!KjcAaTRP0ju_yFMK->sgoEvu?tNxzfbtJ75}nc>3di8DQpJ`}1)8UDIn)>+JP|
+z*Q@tz+O<KR_*B}qwT(Hlea76cEr%bp;mhcVT++k}DL@!>Zhz5VR@}5<#{^SbkdUXV
+KpUXO@geCw4j@WMi
+
+literal 0
+HcmV?d00001
+
+diff --git a/browser/branding/dosfox/content/aboutDialog.css b/browser/branding/dosfox/content/aboutDialog.css
+new file mode 100644
+index 0000000000..be57b002fc
+--- /dev/null
++++ b/browser/branding/dosfox/content/aboutDialog.css
+@@ -0,0 +1,25 @@
++/* This Source Code Form is subject to the terms of the Mozilla Public
++ * License, v. 2.0. If a copy of the MPL was not distributed with this
++ * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
++
++@media not ((prefers-contrast) and (prefers-color-scheme: light)) {
++  #aboutDialogContainer {
++    background-color: #130829;
++    color: #fff;
++    color-scheme: dark;
++  }
++
++  #bottomBox {
++    background-color: hsla(235, 43%, 10%, 0.5);
++  }
++}
++
++#rightBox {
++  background-size: auto 44px;
++  margin-inline: 30px;
++  padding-top: 64px;
++}
++
++#bottomBox {
++  padding: 15px 10px;
++}
+diff --git a/browser/branding/dosfox/content/document_pdf.svg b/browser/branding/dosfox/content/document_pdf.svg
+new file mode 100644
+index 0000000000..dbdf71a9b7
+--- /dev/null
++++ b/browser/branding/dosfox/content/document_pdf.svg
+@@ -0,0 +1,11 @@
++<!-- This Source Code Form is subject to the terms of the Mozilla Public↩
++  - License, v. 2.0. If a copy of the MPL was not distributed with this↩
++  - file, You can obtain one at http://mozilla.org/MPL/2.0/. -->
++<svg width="256" height="256" viewBox="0 0 256 256" fill="none" xmlns="http://www.w3.org/2000/svg">
++<path d="M37.5 9.53709C37.5 9.26178 37.7226 9.03827 37.9979 9.0371L163.745 8.50244L218.5 62.7469V247.317C218.5 247.593 218.276 247.817 218 247.817H38C37.7239 247.817 37.5 247.593 37.5 247.317V9.53709Z" fill="#FAFAFA" stroke="#80808E" stroke-width="3"/>
++<path d="M228 136H28V236H228V136Z" fill="#FF0000"/>
++<path d="M226.5 137.5H29.5V234.5H226.5V137.5Z" stroke="black" stroke-opacity="0.25" stroke-width="3"/>
++<path d="M65.4878 194.342V213.441H53V158H72.5629C86.5327 158 93.5176 163.889 93.5176 175.668C93.5176 181.236 91.5072 185.746 87.4864 189.2C83.4913 192.628 78.1431 194.342 71.4417 194.342H65.4878ZM65.4878 167.588V184.87H70.3978C77.0477 184.87 80.3726 181.957 80.3726 176.132C80.3726 170.436 77.0477 167.588 70.3978 167.588H65.4878Z" fill="white"/>
++<path d="M107.767 213.441V158H127.407C147.099 158 156.945 167.008 156.945 185.025C156.945 193.659 154.251 200.554 148.864 205.709C143.503 210.864 136.351 213.441 127.407 213.441H107.767ZM120.255 168.168V203.312H126.441C131.853 203.312 136.093 201.688 139.16 198.44C142.253 195.193 143.8 190.772 143.8 185.179C143.8 179.896 142.266 175.746 139.199 172.73C136.158 169.689 131.879 168.168 126.363 168.168H120.255Z" fill="white"/>
++<path d="M203.051 168.624H183.488V182.233H201.466V192.362H183.488V213.897H171V158.456H203.051V168.624Z" fill="white"/>
++</svg>
+diff --git a/browser/branding/dosfox/content/firefox-wordmark.svg b/browser/branding/dosfox/content/firefox-wordmark.svg
+new file mode 100644
+index 0000000000..8a9b4bb5a2
+--- /dev/null
++++ b/browser/branding/dosfox/content/firefox-wordmark.svg
+@@ -0,0 +1,3 @@
++<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 372 99">
++  <text x="0" y="78" font-family="sans-serif" font-weight="bold" font-size="84" fill="context-fill light-dark(#20123a, #fbfbfe)">DOSfox</text>
++</svg>
+diff --git a/browser/branding/dosfox/content/jar.mn b/browser/branding/dosfox/content/jar.mn
+new file mode 100644
+index 0000000000..6ca32b3400
+--- /dev/null
++++ b/browser/branding/dosfox/content/jar.mn
+@@ -0,0 +1,21 @@
++# This Source Code Form is subject to the terms of the Mozilla Public
++# License, v. 2.0. If a copy of the MPL was not distributed with this
++# file, You can obtain one at http://mozilla.org/MPL/2.0/.
++
++browser.jar:
++% content branding %content/branding/ contentaccessible=yes
++  content/branding/about.png
++  content/branding/about-logo.png
++  content/branding/about-logo.svg
++  content/branding/about-logo@2x.png
++  content/branding/about-wordmark.svg
++  content/branding/about-logo-private.png
++  content/branding/about-logo-private@2x.png
++  content/branding/document_pdf.svg
++  content/branding/firefox-wordmark.svg
++  content/branding/icon16.png                    (../default16.png)
++  content/branding/icon32.png                    (../default32.png)
++  content/branding/icon48.png                    (../default48.png)
++  content/branding/icon64.png                    (../default64.png)
++  content/branding/icon128.png                   (../default128.png)
++  content/branding/aboutDialog.css
+diff --git a/browser/branding/dosfox/content/moz.build b/browser/branding/dosfox/content/moz.build
+new file mode 100644
+index 0000000000..527b359d11
+--- /dev/null
++++ b/browser/branding/dosfox/content/moz.build
+@@ -0,0 +1,5 @@
++# This Source Code Form is subject to the terms of the Mozilla Public
++# License, v. 2.0. If a copy of the MPL was not distributed with this
++# file, You can obtain one at http://mozilla.org/MPL/2.0/.
++
++JAR_MANIFESTS += ["jar.mn"]
+diff --git a/browser/branding/dosfox/default128.png b/browser/branding/dosfox/default128.png
+new file mode 100644
+index 0000000000000000000000000000000000000000..b8fcb0f3404ea1a663bd3168df8002db4d35c436
+GIT binary patch
+literal 711
+zcmeAS@N?(olHy`uVBq!ia0vp^4Is?H1|$#LC7xzrVCwU9aSW-L^Y-pSzuAc*4G;gv
+z*Bz8;Qtjx9JKCglMQ=C9x&$VkBsq~q)19W>61rlvH)UHAlVM;ad-(_1!f#Kv)ZRaC
+zHl=mX&soL4*2=P%mKK$Ly;fE8{e9({nt%K=<JTQdXDDD}KoHYsIhwW<|9E_Q*U$7_
+zJ7bpo>$&;-J4=Hxg9S4ZA^ozrD*yBDZ*%V5es<8dL8^umNz#~M$IA=Pzr6VS;Y5*X
+z$=B!G{{A@b-+jrpNu6O1;{iz|;!cF^^ZE1QP3r4@|0;g5Q$3>W9&^ZNyM|fl=54Gx
+z*MG*Y-uLgH_sici|GfAA+<DHBZhb}+r<;GB_jz-1O;{QK#JPu8e`gW&M|CvNU7yag
+zpZN9r_3^m(l4jNW)IVT&Y<AWC*Zt4Fy!y>F@x}e{z3nGHVJOkw&mUmxe*Rkx|HauD
+zK8o4FZn1Zt|J~~MfB%18{axVpgWo)>-v4#CVSK>DaE<|qIAnWZyZ+nb(+~ez@tx)N
+zBTM_=wG3EXtT{_LUr+q(dH#x;$nv|wA+z8A{QWa>9%`fkqwlW0yh8Q-2RCx9_TQKP
+zh~a4O^D{1f=XF{1n<ese==J6Do4!j{o&Sl&zDtr{>fZ>idfWB<hYn`=m5VZ0F>bS2
+R*9c6Y44$rjF6*2UngDjmB*y>%
+
+literal 0
+HcmV?d00001
+
+diff --git a/browser/branding/dosfox/default16.png b/browser/branding/dosfox/default16.png
+new file mode 100644
+index 0000000000000000000000000000000000000000..05b0312c9e5885c5c74340a559165d2700c415e2
+GIT binary patch
+literal 296
+zcmV+@0oVSCP)<h;3K|Lk000e1NJLTq000mG000mO1^@s6AM^iV0002*Nkl<Zc${Nk
+zAOUcQIQ+-PCJKNwOuP2~KZr(VGZNB-%vY$`k0Sq|!;ygnm!`f$5XF<WA>^(XGca(9
+zI-(fFgsxdY!UD`LvU9|6k!CNZD;Tk9mND}I(^odt;C23wHwPG5kTt_J!T`)bm<Du1
+zFuZ^ao}Ai(VHn5|bijn{baYKHfbKG6z=AG-ZU{cjU>7ieoR`qf@ZrS?tO`H|f-p!P
+zXBgypK|&dqA?TW6F#z_$k2ePxi|ic#gA&dphW%Ir3Y*O^fD#5Emw*hx2as(C0hELU
+uqG3rG1dx+4%w@=$Q4Byg2pynngaH5?8FNs)&pY-20000<MNUMnLSTaCIdkOz
+
+literal 0
+HcmV?d00001
+
+diff --git a/browser/branding/dosfox/default22.png b/browser/branding/dosfox/default22.png
+new file mode 100644
+index 0000000000000000000000000000000000000000..3c3d91cddab3b9b0838e8efdf2b006b1a63fb2f5
+GIT binary patch
+literal 307
+zcmV-30nGl1P)<h;3K|Lk000e1NJLTq000&M000&U1^@s6#I$TX0002`Nkl<Zc${Nk
+z7zLC94iSg{*w_>sI_=v3{~#KfjjV=|92bIsLdAXtWbmNFk>SUi190<L7>F>e?-0b0
+zN!t)|*NYh#I7J;XEPw$fe1-~0Sb*6@c8(bGn!T8=CKwbPNQTOo`GDywn`(#-2CPBB
+z0W}n6APm4Pf*FL*wRnR989X_)1;Y}M;Y1tEffNMjhQR>3PjCUesp1Km;lvt>H7EoU
+z+8I8)IDyk55C+MU9L9NGkXXlMIJ%+OQUpd&{CIPKvB=KxKPW>?V%U#0f(W@3tHJ0l
+z2N{kJ;BqbA48nkvmC>^^%qO@E#c431;t-#KqksV&004;`b@lbK$=3h?002ovPDHLk
+FV1m$%df)&6
+
+literal 0
+HcmV?d00001
+
+diff --git a/browser/branding/dosfox/default24.png b/browser/branding/dosfox/default24.png
+new file mode 100644
+index 0000000000000000000000000000000000000000..da2466177c0c88a6258948a28afb437202e03e71
+GIT binary patch
+literal 306
+zcmV-20nPr2P)<h;3K|Lk000e1NJLTq000;O000;W1^@s6;CDUv0002_Nkl<Zc${Nk
+z7zINbaELhk$Hu0b;nS}D{|};(+34yRNi~!K2`E(TN0EQf;mGjg%>fiMS%@{X?-0bW
+zN!t)|*NYh#I7J;XEJ6lMgbWvuumH1*>>M%VHG46AL39uy8!lt!1E#NRsv#+Oa0U^~
+zaG1d`0J9KgAR*Ti3?gLk<kS`n%RrWpYyoo6pc@JU=sv>-2&SSZXqJ#-IL;svNN8vH
+z@Ztnc3!j|Y0+uH`4)VMpsRWlL=!WA;L0E$bq_D`&@jobIO=8%OH6n>|IZg}EeKLsw
+zzhU@XPcWl_Xjl<}UQEDzhR<-k7NA>%4hR`M3I-1V0NN&X^{ct!8~^|S07*qoM6N<$
+Eg5?r+%>V!Z
+
+literal 0
+HcmV?d00001
+
+diff --git a/browser/branding/dosfox/default256.png b/browser/branding/dosfox/default256.png
+new file mode 100644
+index 0000000000000000000000000000000000000000..47c348f1cae57c3579d6004225e5a2ef16cf3776
+GIT binary patch
+literal 1216
+zcmeAS@N?(olHy`uVBq!ia0y~yU<5K5893O0R7}x|GzJEic25__kcv5P?<(fSgo`vh
+ze4f>Cnn^}e;lS#SCZ*YKkuKo^6NH*SNl8{{hKgpL*3eofVzofwfWn0{cb)y0++P0w
+z_m8X9Qm6O7Ybbt}(kyFjySrlEocgLg_BRi`|9|<3!G?S$hD0KfclyFaEB^Y=1?Im5
+z?Dy`D`Q;w*_g@}^fEv*#P2QnqUfuh1>(f4esV?8Mji2F1e+_Gc0V7dp!(p-QRrBh8
+z{r(WVeg5{?-@jhJ`Ey=h|MG8+I}8dwM58w;-RD2=ulQQ_<<I;3`*N!9sc-mR%TRj!
+z^-Viwa|RA!qLKB=^Pm0q)_qQV`T769$J=wy1O4@z=hf#w{{7z<|4$^%tT(mu>c86j
+z%Ub<iam~E;_3wpe6fqMODv-e2@X?MT?cdMW=fAjH+)YoIf1pR2p@oxZB<puxZ{GJm
+zzrS3r{B=Fw?$3sD%~^GIUu!v5?__kC!9Xm!k=VWZ{Nmf~7oM>ZovMI|?{O`Ie%;U7
+zl7AJomev1OZ(sbm6c`LO|G%Y{{QL9jUHe||i6r@^_d8=vjlFgK?z7K!z7>vGZFjz2
+z=H2EBP^uRrEmRMe$o;&$`}FgZKWDe^j(sn@;`VQw`ne=IMt0lW-#_Z2clkHeTJwE(
+z^!c8-hP2Q*oj%ha7(3y1|DPq^|ILtRpZ~J*&&uU<fr*c#$cd;D`}KcA|AKXP{rhK;
+e;)R^p|4ahEsu^RZ6-ok2CI(MeKbLh*2~7aQl83<n
+
+literal 0
+HcmV?d00001
+
+diff --git a/browser/branding/dosfox/default32.png b/browser/branding/dosfox/default32.png
+new file mode 100644
+index 0000000000000000000000000000000000000000..542de48b1123ee9b9cf5e0ab92e44da39e4544fb
+GIT binary patch
+literal 359
+zcmV-t0hs=YP)<h;3K|Lk000e1NJLTq001BW001Be1^@s6b9#F80003lNkl<Zc${Nk
+zpb_8@arh6ygv6N`1{g3>+d!D_`VQ>}^NZ{pQRLCZnHYv@2ykGDUu2+A0r4p=@StOm
+zga8YvK83|03{2XFUElR$2+b+#h&M!-7zS$^;DGvEK*9pd|M21j1GbRB6#|67ph*La
+zgnSMIGG;y~{41MkC`$c5-W*^Y6d}NZ%jf7mMhEC2gziH^AprwS41>KKKnG7wZDAlL
+zWQYw3CWZk9EVxoV%%_CX0t~>^5elKf7Xl0f03ja{8$yFW1OyV=QBp6id`>8YV0FgO
+zD+lttAoL`L{bYp%A)lky0fQ$5en4GRWao&|nne!@LV(yfM+Zy{gS8yULrW9n0$g!F
+zXhMLI)K)MI;A#t^rx{#6AG{%e4hZ#t&;cPIqk{nt0RVxmcC2LhIM@IH002ovPDHLk
+FV1hBag!lje
+
+literal 0
+HcmV?d00001
+
+diff --git a/browser/branding/dosfox/default48.png b/browser/branding/dosfox/default48.png
+new file mode 100644
+index 0000000000000000000000000000000000000000..e7df4ea9930bed4d1eb854de7bc17150fc8bfa6e
+GIT binary patch
+literal 426
+zcmV;b0agBqP)<h;3K|Lk000e1NJLTq001xm001xu1^@s6R|5Hm0004TNkl<Zc%1E-
+zp>D%K42B&m;Km9zX<#5vQ4LiKo%RrWf`X0|jIU^*k5W~oorb32NuvP;0|SF$Eox&B
+ztM<~Uu`eGwovulx|BHReCC~xF<=u8aE`Q$=%^C#bAQ&e(*Nv$XukY)_{A85ZuIJX6
+zPXNI<N!xlz$flJZ5{g-`P<KdAr3bANl=<rTHNT&#@x@iHQp@~9j1WT=3PhX1_3dH)
+z@8<)K=_FA|OJ9XdC=?iNC^y50+WD`=bF0m(?6=chZDfJbhEs)uQ;t(2Q|jcZ4<N+0
+z7vk7_F5$nL6%BMUp8$e!Qc1(2dT1*Wh5lBnoZAEtVyi+MW%Nyyiy{F8PYMklUuv6+
+zWN)KYj=s%h{a(n6LgV{tJcsqkb<%26FmGY59%2OJq%@kzD6c(q;B?Z`q}sSm03n9G
+z(3q)CZBPg*kE;X_V)(QuImn<$zDRS`tQ2VDDglJpj#-292$e&tirWP6+<%}cJ6Y0s
+UVUmeR-2eap07*qoM6N<$f&>-5RsaA1
+
+literal 0
+HcmV?d00001
+
+diff --git a/browser/branding/dosfox/default64.png b/browser/branding/dosfox/default64.png
+new file mode 100644
+index 0000000000000000000000000000000000000000..307f808d2711c136d1a248002a09cc8d5f65535b
+GIT binary patch
+literal 453
+zcmeAS@N?(olHy`uVBq!ia0vp^4j|0I1|(Ny7T#lEVC?a9aSW-L^Y-?7zat3(EFXTV
+z&1WcQ5@KmuuCRi8YfJkBPJwpE2abyG0yz%KISQI^iZwbYOt9Ec;%YuScm0Hy=fD1X
+zf5zwgt+<2sn>UvJ_*?z+_2Ydh+tiN;KH?~3t)FxD!`H*Bw$>TuTYdiy6-|BP<NkK;
+zc4OJERi>p5+=_hy;qB+P?B$C-z5B+`xO2Bo&%W)uN|~du#lk7(WLn*};tNs#fBx(6
+zP<OFb$ezW_<0PZFF2y+i?K}DMb@lsp9+<KDe~JGE1)z;tCZFSu*~Yb3NS-Tea_vwC
+z3cb3ZUQxa4?N;Mo?^u8ufp#t4yzgvDncjvsA2-Q9QUtrxw7Mb3?f1J08W0t4**8x<
+zeeS09uWGy7ir*{`m)I{z2RUY|{2aNh)2BzQ-736k=J$Eb5kNtpTW<B}JoA0NduN<_
+z%GcVt-vxjkZ`mPr_uy>dYr0i;w?jN4`71U-`&Zlo^K=*Ed{Ef5>@fOP-(YjIry8W7
+e?=S1IZ_K^ZD;xjs=THSk4}+(xpUXO@geCw9hR{O*
+
+literal 0
+HcmV?d00001
+
+diff --git a/browser/branding/dosfox/locales/en-US/brand.ftl b/browser/branding/dosfox/locales/en-US/brand.ftl
+new file mode 100644
+index 0000000000..9c4da9b6ac
+--- /dev/null
++++ b/browser/branding/dosfox/locales/en-US/brand.ftl
+@@ -0,0 +1,14 @@
++# This Source Code Form is subject to the terms of the Mozilla Public
++# License, v. 2.0. If a copy of the MPL was not distributed with this
++# file, You can obtain one at http://mozilla.org/MPL/2.0/.
++
++## DOSfox: the DOS-XC build of Mozilla's browser source.
++
++-brand-shorter-name = DOSfox
++-brand-short-name = DOSfox
++-brand-shortcut-name = DOSfox
++-brand-full-name = DOSfox
++# The product, in strings such as "{ -brand-product-name } account".
++-brand-product-name = DOSfox
++-vendor-short-name = DOS-XC
++trademarkInfo = DOSfox is built from Mozilla source code. It is not Firefox and is not made or endorsed by Mozilla.
+diff --git a/browser/branding/dosfox/locales/en-US/brand.properties b/browser/branding/dosfox/locales/en-US/brand.properties
+new file mode 100644
+index 0000000000..fbac040652
+--- /dev/null
++++ b/browser/branding/dosfox/locales/en-US/brand.properties
+@@ -0,0 +1,7 @@
++# This Source Code Form is subject to the terms of the Mozilla Public
++# License, v. 2.0. If a copy of the MPL was not distributed with this
++# file, You can obtain one at http://mozilla.org/MPL/2.0/.
++
++brandShorterName=DOSfox
++brandShortName=DOSfox
++brandFullName=DOSfox
+diff --git a/browser/branding/dosfox/locales/jar.mn b/browser/branding/dosfox/locales/jar.mn
+new file mode 100644
+index 0000000000..e67add60f5
+--- /dev/null
++++ b/browser/branding/dosfox/locales/jar.mn
+@@ -0,0 +1,12 @@
++#filter substitution
++# This Source Code Form is subject to the terms of the Mozilla Public
++# License, v. 2.0. If a copy of the MPL was not distributed with this
++# file, You can obtain one at http://mozilla.org/MPL/2.0/.
++
++[localization] @AB_CD@.jar:
++  branding                                          (en-US/**/*.ftl)
++
++@AB_CD@.jar:
++% locale branding @AB_CD@ %locale/branding/
++# Unofficial branding only exists in en-US
++  locale/branding/brand.properties (en-US/brand.properties)
+diff --git a/browser/branding/dosfox/locales/moz.build b/browser/branding/dosfox/locales/moz.build
+new file mode 100644
+index 0000000000..527b359d11
+--- /dev/null
++++ b/browser/branding/dosfox/locales/moz.build
+@@ -0,0 +1,5 @@
++# This Source Code Form is subject to the terms of the Mozilla Public
++# License, v. 2.0. If a copy of the MPL was not distributed with this
++# file, You can obtain one at http://mozilla.org/MPL/2.0/.
++
++JAR_MANIFESTS += ["jar.mn"]
+diff --git a/browser/branding/dosfox/moz.build b/browser/branding/dosfox/moz.build
+new file mode 100644
+index 0000000000..d7bba4be7a
+--- /dev/null
++++ b/browser/branding/dosfox/moz.build
+@@ -0,0 +1,11 @@
++# This Source Code Form is subject to the terms of the Mozilla Public
++# License, v. 2.0. If a copy of the MPL was not distributed with this
++# file, You can obtain one at http://mozilla.org/MPL/2.0/.
++
++DIRS += ["content", "locales"]
++
++DIST_SUBDIR = "browser"
++export("DIST_SUBDIR")
++
++include("../branding-common.mozbuild")
++FirefoxBranding()
+diff --git a/browser/branding/dosfox/pref/firefox-branding.js b/browser/branding/dosfox/pref/firefox-branding.js
+new file mode 100644
+index 0000000000..cc26a15c9b
+--- /dev/null
++++ b/browser/branding/dosfox/pref/firefox-branding.js
+@@ -0,0 +1,32 @@
++/* This Source Code Form is subject to the terms of the Mozilla Public
++ * License, v. 2.0. If a copy of the MPL was not distributed with this
++ * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
++
++// This file contains branding-specific prefs.
++
++pref("startup.homepage_override_url", "");
++pref("startup.homepage_welcome_url", "");
++pref("startup.homepage_welcome_url.additional", "");
++// The time interval between checks for a new version (in seconds)
++pref("app.update.interval", 86400); // 24 hours
++// Give the user x seconds to react before showing the big UI. default=24 hours
++pref("app.update.promptWaitTime", 86400);
++// URL user can browse to manually if for some reason all update installation
++// attempts fail.
++pref("app.update.url.manual", "about:blank");
++// A default value for the "More information about this update" link
++// supplied in the "An update is available" page of the update wizard.
++pref("app.update.url.details", "about:blank");
++
++// The number of days a binary is permitted to be old
++// without checking for an update.  This assumes that
++// app.update.checkInstallTime is true.
++pref("app.update.checkInstallTime.days", 2);
++
++// Give the user x seconds to reboot before showing a badge on the hamburger
++// button. default=immediately
++pref("app.update.badgeWaitTime", 0);
++
++// Number of usages of the web console.
++// If this is less than 5, then pasting code into the web console is disabled
++pref("devtools.selfxss.count", 5);
+diff --git a/browser/components/shell/HeadlessShell.sys.mjs b/browser/components/shell/HeadlessShell.sys.mjs
+index f043cc4d47..2af2bc7a76 100644
+--- a/browser/components/shell/HeadlessShell.sys.mjs
++++ b/browser/components/shell/HeadlessShell.sys.mjs
+@@ -90,13 +90,17 @@ async function takeScreenshot(
+ 
+     let doc = windowlessBrowser.document;
+     let browser = doc.createXULElement("browser");
+-    browser.setAttribute("remote", "true");
++    if (Services.appinfo.browserTabsRemoteAutostart) {
++      browser.setAttribute("remote", "true");
++    }
+     browser.setAttribute("type", "content");
+     browser.style.width = `${contentWidth}px`;
+     browser.style.minWidth = `${contentWidth}px`;
+     browser.style.height = `${contentHeight}px`;
+     browser.style.minHeight = `${contentHeight}px`;
+-    browser.setAttribute("maychangeremoteness", "true");
++    if (Services.appinfo.browserTabsRemoteAutostart) {
++      browser.setAttribute("maychangeremoteness", "true");
++    }
+     // Suppress initial about:blank so it can't race any explicit load below.
+     browser.setAttribute("nodefaultsrc", "true");
+     doc.documentElement.appendChild(browser);
+diff --git a/build/gecko_templates.mozbuild b/build/gecko_templates.mozbuild
+index fa2cabfdcf..6e96e86210 100644
+--- a/build/gecko_templates.mozbuild
++++ b/build/gecko_templates.mozbuild
+@@ -42,7 +42,7 @@ def GeckoBinary(linkage="dependent", mozglue=None):
+                 USE_LIBS += ["sanitizer-options"]
+             DEFINES["MOZ_HAS_MOZGLUE"] = True
+             if CONFIG["MOZ_GLUE_IN_PROGRAM"] and CONFIG["CC_TYPE"] in ("clang", "gcc"):
+-                LDFLAGS += ["-rdynamic"]
++                LDFLAGS += ["-Wl,--export-dynamic"]
+         elif mozglue == "library":
+             LIBRARY_DEFINES["MOZ_HAS_MOZGLUE"] = True
+             if not CONFIG["MOZ_GLUE_IN_PROGRAM"]:
+diff --git a/build/moz.configure/flags.configure b/build/moz.configure/flags.configure
+index 6d3d1269c2..de9d31ec71 100644
+--- a/build/moz.configure/flags.configure
++++ b/build/moz.configure/flags.configure
+@@ -33,6 +33,8 @@ def link_libstdcxx_statically(
+     linker_ldflags,
+     llvm_objdump,
+ ):
++    # DOS-XC's GCC has no shared libstdc++; each library has its own copy.
++    return False
+     with create_temporary_file(suffix=".out") as bin_path:
+         # This test is quite conservative: it assumes dynamic linkage if the
+         # compilation step fails or if the binary format is not supported. But
+diff --git a/config/rules.mk b/config/rules.mk
+index 895d5c7979..188e637c97 100644
+--- a/config/rules.mk
++++ b/config/rules.mk
+@@ -287,6 +287,7 @@ ifeq (clang-cl_WINNT,$(CC_TYPE)_$(OS_ARCH))
+ 	$(LINKER) -OUT:$@ -PDB:$(LINK_PDBFILE) -IMPLIB:$(basename $(@F)).lib $(WIN32_EXE_LDFLAGS) $(COMPUTED_PROGRAM_LDFLAGS) $(LDFLAGS) $(MOZ_PROGRAM_LDFLAGS) $($(notdir $@)_OBJS) $(filter %.res,$^) $(STATIC_LIBS) $(SHARED_LIBS) $(OS_LIBS)
+ else # !WINNT || !clang-cl
+ 	$(call EXPAND_CC_OR_CXX,$@) -o $@ $(COMPUTED_CXX_LDFLAGS) $($(notdir $@)_OBJS) $(filter %.res,$^) $(WIN32_EXE_LDFLAGS) $(LDFLAGS) $(STATIC_LIBS) $(COMPUTED_PROGRAM_LDFLAGS) $(MOZ_PROGRAM_LDFLAGS) $(SHARED_LIBS) $(OS_LIBS)
++	@test ! -f $@.exe || mv -f $@.exe $@
+ 	$(call py_action,check_binary $(@F),$@)
+ endif # WINNT && clang-cl
+ 
+@@ -329,6 +330,7 @@ ifeq (clang-cl_WINNT,$(CC_TYPE)_$(OS_ARCH))
+ 	$(LINKER) -out:$@ -pdb:$(LINK_PDBFILE) $($@_OBJS) $(filter %.res,$^) $(WIN32_EXE_LDFLAGS) $(COMPUTED_PROGRAM_LDFLAGS) $(LDFLAGS) $(MOZ_PROGRAM_LDFLAGS) $(STATIC_LIBS) $(SHARED_LIBS) $(OS_LIBS)
+ else
+ 	$(call EXPAND_CC_OR_CXX,$@) $(COMPUTED_CXX_LDFLAGS) -o $@ $($@_OBJS) $(filter %.res,$^) $(WIN32_EXE_LDFLAGS) $(LDFLAGS) $(STATIC_LIBS) $(COMPUTED_PROGRAM_LDFLAGS) $(MOZ_PROGRAM_LDFLAGS) $(SHARED_LIBS) $(OS_LIBS)
++	@test ! -f $@.exe || mv -f $@.exe $@
+ 	$(call py_action,check_binary $(@F),$@)
+ endif # WINNT && clang-cl
+ 
+diff --git a/dom/gamepad/moz.build b/dom/gamepad/moz.build
+index ad946302dd..5c3ae36ab1 100644
+--- a/dom/gamepad/moz.build
++++ b/dom/gamepad/moz.build
+@@ -57,7 +57,7 @@ elif CONFIG["MOZ_WIDGET_TOOLKIT"] == "windows":
+     UNIFIED_SOURCES += ["windows/WindowsGamepad.cpp"]
+ elif CONFIG["MOZ_WIDGET_TOOLKIT"] == "android":
+     UNIFIED_SOURCES += ["android/AndroidGamepad.cpp"]
+-elif CONFIG["OS_ARCH"] in ("Linux", "FreeBSD", "DragonFly"):
++elif CONFIG["OS_ARCH"] in ("Linux", "FreeBSD", "DragonFly") and CONFIG["MOZ_WIDGET_TOOLKIT"] != "dosxc":
+     UNIFIED_SOURCES += ["linux/LinuxGamepad.cpp"]
+ else:
+     UNIFIED_SOURCES += ["fallback/FallbackGamepad.cpp"]
+diff --git a/dom/ipc/PContent.ipdl b/dom/ipc/PContent.ipdl
+index 352a103bba..bd6984ff70 100644
+--- a/dom/ipc/PContent.ipdl
++++ b/dom/ipc/PContent.ipdl
+@@ -208,7 +208,7 @@ namespace dom {
+ // SetXPCOMProcessAttributes passes an array of font data to the child,
+ // but each platform needs different details so we have platform-specific
+ // versions of the SystemFontListEntry type:
+-#if defined(ANDROID)
++#if defined(ANDROID) || defined(MOZ_WIDGET_DOSXC)
+ // Used on Android to pass the list of fonts on the device
+ // to the child process
+ struct SystemFontListEntry {
+diff --git a/dom/webgpu/SharedTexture.cpp b/dom/webgpu/SharedTexture.cpp
+index b3dd05dbbd..5e91ec60b6 100644
+--- a/dom/webgpu/SharedTexture.cpp
++++ b/dom/webgpu/SharedTexture.cpp
+@@ -12,7 +12,7 @@
+ #  include "mozilla/webgpu/SharedTextureD3D11.h"
+ #endif
+ 
+-#if defined(XP_LINUX) && !defined(MOZ_WIDGET_ANDROID)
++#if defined(XP_LINUX) && !defined(MOZ_WIDGET_ANDROID) && !defined(MOZ_WIDGET_DOSXC)
+ #  include "mozilla/webgpu/SharedTextureDMABuf.h"
+ #endif
+ 
+@@ -34,7 +34,7 @@ UniquePtr<SharedTexture> SharedTexture::Create(
+ #ifdef XP_WIN
+   texture = SharedTextureD3D11::Create(aParent, aDeviceId, aWidth, aHeight,
+                                        aFormat, aUsage);
+-#elif defined(XP_LINUX) && !defined(MOZ_WIDGET_ANDROID)
++#elif defined(XP_LINUX) && !defined(MOZ_WIDGET_ANDROID) && !defined(MOZ_WIDGET_DOSXC)
+   texture = SharedTextureDMABuf::Create(aParent, aDeviceId, aWidth, aHeight,
+                                         aFormat, aUsage);
+ #elif defined(XP_MACOSX)
+diff --git a/dom/webgpu/ipc/WebGPUParent.cpp b/dom/webgpu/ipc/WebGPUParent.cpp
+index 746f5842f3..53ff57159a 100644
+--- a/dom/webgpu/ipc/WebGPUParent.cpp
++++ b/dom/webgpu/ipc/WebGPUParent.cpp
+@@ -26,7 +26,7 @@
+ #  include "mozilla/webgpu/SharedTextureD3D11.h"
+ #endif
+ 
+-#if defined(XP_LINUX) && !defined(MOZ_WIDGET_ANDROID)
++#if defined(XP_LINUX) && !defined(MOZ_WIDGET_ANDROID) && !defined(MOZ_WIDGET_DOSXC)
+ #  include "mozilla/webgpu/SharedTextureDMABuf.h"
+ #endif
+ 
+@@ -105,7 +105,7 @@ extern void* wgpu_server_get_shared_texture_handle(WGPUWebGPUParentPtr aParent,
+ }
+ #endif
+ 
+-#if defined(XP_LINUX) && !defined(MOZ_WIDGET_ANDROID)
++#if defined(XP_LINUX) && !defined(MOZ_WIDGET_ANDROID) && !defined(MOZ_WIDGET_DOSXC)
+ extern int32_t wgpu_server_get_dma_buf_fd(WGPUWebGPUParentPtr aParent,
+                                           WGPUTextureId aId) {
+   auto* parent = static_cast<WebGPUParent*>(aParent);
+@@ -148,7 +148,7 @@ extern "C" bool wgpu_server_get_linux_dmabuf_modifiers(
+ }
+ #endif
+ 
+-#if defined(XP_LINUX) && !defined(MOZ_WIDGET_ANDROID)
++#if defined(XP_LINUX) && !defined(MOZ_WIDGET_ANDROID) && !defined(MOZ_WIDGET_DOSXC)
+ extern ffi::WGPUDMABufInfo wgpu_server_get_dma_buf_info(
+     WGPUWebGPUParentPtr aParent, WGPUTextureId aId) {
+   ffi::WGPUDMABufInfo info = {};
+diff --git a/dom/webgpu/moz.build b/dom/webgpu/moz.build
+index 99afb55461..62f434f51f 100644
+--- a/dom/webgpu/moz.build
++++ b/dom/webgpu/moz.build
+@@ -85,7 +85,7 @@ if CONFIG["MOZ_WIDGET_TOOLKIT"] == "windows":
+         "SharedTextureD3D11.cpp",
+     ]
+ 
+-if CONFIG["OS_TARGET"] == "Linux":
++if CONFIG["OS_TARGET"] == "Linux" and CONFIG["MOZ_WIDGET_TOOLKIT"] != "dosxc":
+     EXPORTS.mozilla.webgpu += [
+         "SharedTextureDMABuf.h",
+     ]
+diff --git a/dom/webserial/SerialPlatformService.cpp b/dom/webserial/SerialPlatformService.cpp
+index 5a9bfdc922..48a3fc4fa7 100644
+--- a/dom/webserial/SerialPlatformService.cpp
++++ b/dom/webserial/SerialPlatformService.cpp
+@@ -15,7 +15,8 @@
+ namespace mozilla::dom {
+ 
+ #if !defined(XP_WIN) && !defined(XP_MACOSX) && \
+-    !(defined(XP_LINUX) && !defined(ANDROID)) && !defined(XP_FREEBSD)
++    (!(defined(XP_LINUX) && !defined(ANDROID)) || defined(MOZ_WIDGET_DOSXC)) && \
++    !defined(XP_FREEBSD)
+ already_AddRefed<SerialPlatformService>
+ SerialPlatformService::GetInstanceImpl() {
+   return MakeAndAddRef<TestSerialPlatformService>();
+diff --git a/dom/webserial/moz.build b/dom/webserial/moz.build
+index 511f59dc5b..641f97641b 100644
+--- a/dom/webserial/moz.build
++++ b/dom/webserial/moz.build
+@@ -35,7 +35,7 @@ if CONFIG["OS_TARGET"] == "WINNT":
+ elif (
+     (CONFIG["OS_TARGET"] == "Darwin" and CONFIG["TARGET_OS"] != "iOS")
+     or CONFIG["OS_TARGET"] == "FreeBSD"
+-    or CONFIG["OS_TARGET"] == "Linux"
++    or (CONFIG["OS_TARGET"] == "Linux" and CONFIG["MOZ_WIDGET_TOOLKIT"] != "dosxc")
+ ):
+     UNIFIED_SOURCES += [
+         "PosixSerialPlatformService.cpp",
+diff --git a/gfx/2d/2D.h b/gfx/2d/2D.h
+index b44630358e..c5464c32f1 100644
+--- a/gfx/2d/2D.h
++++ b/gfx/2d/2D.h
+@@ -35,7 +35,7 @@
+ #include "mozilla/gfx/FontData.h"
+ #include "nsRegionFwd.h"
+ 
+-#if defined(MOZ_WIDGET_ANDROID) || defined(MOZ_WIDGET_GTK)
++#if defined(MOZ_WIDGET_ANDROID) || defined(MOZ_WIDGET_GTK) || defined(MOZ_WIDGET_DOSXC)
+ #  ifndef MOZ_ENABLE_FREETYPE
+ #    define MOZ_ENABLE_FREETYPE
+ #  endif
+@@ -2304,7 +2304,7 @@ class GFX2D_API Factory {
+       RefPtr<SharedFTFace> aFace, FcPattern* aPattern);
+ #endif
+ 
+-#ifdef MOZ_WIDGET_ANDROID
++#if defined(MOZ_WIDGET_ANDROID) || defined(MOZ_WIDGET_DOSXC)
+   static already_AddRefed<ScaledFont> CreateScaledFontForFreeTypeFont(
+       const RefPtr<UnscaledFont>& aUnscaledFont, Float aSize,
+       RefPtr<SharedFTFace> aFace, bool aApplySyntheticBold = false);
+diff --git a/gfx/2d/Factory.cpp b/gfx/2d/Factory.cpp
+index 44e181a203..6869e171ac 100644
+--- a/gfx/2d/Factory.cpp
++++ b/gfx/2d/Factory.cpp
+@@ -29,7 +29,7 @@
+ #  include "UnscaledFontFreeType.h"
+ #endif
+ 
+-#ifdef MOZ_WIDGET_ANDROID
++#if defined(MOZ_WIDGET_ANDROID) || defined(MOZ_WIDGET_DOSXC)
+ #  include "NativeFontResourceFreeType.h"
+ #  include "ScaledFontFreeType.h"
+ #  include "UnscaledFontFreeType.h"
+@@ -395,7 +395,7 @@ already_AddRefed<NativeFontResource> Factory::CreateNativeFontResource(
+ #elif defined(MOZ_WIDGET_GTK)
+     case FontType::FONTCONFIG:
+       return NativeFontResourceFontconfig::Create(aData, aSize);
+-#elif defined(MOZ_WIDGET_ANDROID)
++#elif defined(MOZ_WIDGET_ANDROID) || defined(MOZ_WIDGET_DOSXC)
+     case FontType::FREETYPE:
+       return NativeFontResourceFreeType::Create(aData, aSize);
+ #endif
+@@ -422,7 +422,7 @@ already_AddRefed<UnscaledFont> Factory::CreateUnscaledFontFromFontDescriptor(
+     case FontType::FONTCONFIG:
+       return UnscaledFontFontconfig::CreateFromFontDescriptor(
+           aData, aDataLength, aIndex);
+-#elif defined(MOZ_WIDGET_ANDROID)
++#elif defined(MOZ_WIDGET_ANDROID) || defined(MOZ_WIDGET_DOSXC)
+     case FontType::FREETYPE:
+       return UnscaledFontFreeType::CreateFromFontDescriptor(aData, aDataLength,
+                                                             aIndex);
+@@ -452,7 +452,7 @@ already_AddRefed<ScaledFont> Factory::CreateScaledFontForFontconfigFont(
+ }
+ #endif
+ 
+-#ifdef MOZ_WIDGET_ANDROID
++#if defined(MOZ_WIDGET_ANDROID) || defined(MOZ_WIDGET_DOSXC)
+ already_AddRefed<ScaledFont> Factory::CreateScaledFontForFreeTypeFont(
+     const RefPtr<UnscaledFont>& aUnscaledFont, Float aSize,
+     RefPtr<SharedFTFace> aFace, bool aApplySyntheticBold) {
+diff --git a/gfx/2d/NativeFontResourceFreeType.cpp b/gfx/2d/NativeFontResourceFreeType.cpp
+index 2d6358ad16..5f105503e0 100644
+--- a/gfx/2d/NativeFontResourceFreeType.cpp
++++ b/gfx/2d/NativeFontResourceFreeType.cpp
+@@ -32,7 +32,7 @@ already_AddRefed<T> NativeFontResourceFreeType::CreateInternal(
+   return resource.forget();
+ }
+ 
+-#ifdef MOZ_WIDGET_ANDROID
++#if defined(MOZ_WIDGET_ANDROID) || defined(MOZ_WIDGET_DOSXC)
+ already_AddRefed<NativeFontResourceFreeType> NativeFontResourceFreeType::Create(
+     const uint8_t* aFontData, uint32_t aDataLength) {
+   return CreateInternal<NativeFontResourceFreeType>(aFontData, aDataLength);
+diff --git a/gfx/2d/NativeFontResourceFreeType.h b/gfx/2d/NativeFontResourceFreeType.h
+index 9b65eca3fe..e87f2d687e 100644
+--- a/gfx/2d/NativeFontResourceFreeType.h
++++ b/gfx/2d/NativeFontResourceFreeType.h
+@@ -16,7 +16,7 @@ class NativeFontResourceFreeType : public NativeFontResource {
+  public:
+   MOZ_DECLARE_REFCOUNTED_VIRTUAL_TYPENAME(NativeFontResourceFreeType, override)
+ 
+-#ifdef MOZ_WIDGET_ANDROID
++#if defined(MOZ_WIDGET_ANDROID) || defined(MOZ_WIDGET_DOSXC)
+   static already_AddRefed<NativeFontResourceFreeType> Create(
+       const uint8_t* aFontData, uint32_t aDataLength);
+ 
+diff --git a/gfx/2d/UnscaledFontFreeType.cpp b/gfx/2d/UnscaledFontFreeType.cpp
+index 34ad47d57b..9a50c5e421 100644
+--- a/gfx/2d/UnscaledFontFreeType.cpp
++++ b/gfx/2d/UnscaledFontFreeType.cpp
+@@ -184,7 +184,7 @@ void UnscaledFontFreeType::ApplyVariationsToFace(
+   }
+ }
+ 
+-#ifdef MOZ_WIDGET_ANDROID
++#if defined(MOZ_WIDGET_ANDROID) || defined(MOZ_WIDGET_DOSXC)
+ 
+ already_AddRefed<ScaledFont> UnscaledFontFreeType::CreateScaledFont(
+     Float aGlyphSize, const uint8_t* aInstanceData,
+diff --git a/gfx/2d/UnscaledFontFreeType.h b/gfx/2d/UnscaledFontFreeType.h
+index adc0e98efa..8fc7b989ca 100644
+--- a/gfx/2d/UnscaledFontFreeType.h
++++ b/gfx/2d/UnscaledFontFreeType.h
+@@ -46,7 +46,7 @@ class UnscaledFontFreeType : public UnscaledFont {
+ 
+   RefPtr<SharedFTFace> InitFace();
+ 
+-#ifdef MOZ_WIDGET_ANDROID
++#if defined(MOZ_WIDGET_ANDROID) || defined(MOZ_WIDGET_DOSXC)
+   static already_AddRefed<UnscaledFont> CreateFromFontDescriptor(
+       const uint8_t* aData, uint32_t aDataLength, uint32_t aIndex);
+ 
+diff --git a/gfx/2d/moz.build b/gfx/2d/moz.build
+index 058076fbf8..c3e7dacc5e 100644
+--- a/gfx/2d/moz.build
++++ b/gfx/2d/moz.build
+@@ -97,7 +97,7 @@ elif CONFIG["MOZ_WIDGET_TOOLKIT"] == "windows":
+         "ScaledFontDWrite.h",
+     ]
+ 
+-if CONFIG["MOZ_WIDGET_TOOLKIT"] in ("android", "gtk"):
++if CONFIG["MOZ_WIDGET_TOOLKIT"] in ("android", "dosxc", "gtk"):
+     EXPORTS.mozilla.gfx += [
+         "UnscaledFontFreeType.h",
+     ]
+@@ -118,7 +118,7 @@ if CONFIG["MOZ_WIDGET_TOOLKIT"] == "gtk":
+         "ScaledFontFontconfig.h",
+     ]
+ 
+-if CONFIG["MOZ_WIDGET_TOOLKIT"] == "android":
++if CONFIG["MOZ_WIDGET_TOOLKIT"] in ("android", "dosxc"):
+     SOURCES += [
+         "ScaledFontFreeType.cpp",
+     ]
+@@ -224,12 +224,12 @@ FINAL_LIBRARY = "xul"
+ for var in ("USE_CAIRO", "MOZ2D_HAS_MOZ_CAIRO"):
+     DEFINES[var] = True
+ 
+-if CONFIG["MOZ_WIDGET_TOOLKIT"] in ("android", "gtk"):
++if CONFIG["MOZ_WIDGET_TOOLKIT"] in ("android", "dosxc", "gtk"):
+     DEFINES["MOZ_ENABLE_FREETYPE"] = True
+ 
+ COMPILE_FLAGS["WARNINGS_CXXFLAGS"] += ["-Werror=switch"]
+ 
+-if CONFIG["MOZ_WIDGET_TOOLKIT"] in ("android", "gtk"):
++if CONFIG["MOZ_WIDGET_TOOLKIT"] in ("android", "dosxc", "gtk"):
+     CXXFLAGS += CONFIG["CAIRO_FT_CFLAGS"]
+ 
+ LOCAL_INCLUDES += CONFIG["SKIA_INCLUDES"]
+diff --git a/gfx/cairo/cairo/src/moz.build b/gfx/cairo/cairo/src/moz.build
+index 8e3722ad22..9dcc0a9ddb 100644
+--- a/gfx/cairo/cairo/src/moz.build
++++ b/gfx/cairo/cairo/src/moz.build
+@@ -13,7 +13,7 @@ EXPORTS.cairo += [
+     'pixman-rename.h',
+ ]
+ 
+-if CONFIG['MOZ_WIDGET_TOOLKIT'] not in ('cocoa', 'uikit'):
++if CONFIG['MOZ_WIDGET_TOOLKIT'] not in ('cocoa', 'dosxc', 'uikit'):
+     EXPORTS.cairo += [
+         'cairo-pdf.h',
+     ]
+diff --git a/gfx/skia/moz.build b/gfx/skia/moz.build
+index 5dacf12c57..b1d3461086 100644
+--- a/gfx/skia/moz.build
++++ b/gfx/skia/moz.build
+@@ -558,7 +558,7 @@ if CONFIG['MOZ_WIDGET_TOOLKIT'] in ('cocoa', 'uikit'):
+     SOURCES += [
+         'skia/src/ports/SkTypeface_mac_ct.cpp',
+     ]
+-if CONFIG['MOZ_WIDGET_TOOLKIT'] == 'gtk':
++if CONFIG['MOZ_WIDGET_TOOLKIT'] in ('dosxc', 'gtk'):
+     UNIFIED_SOURCES += [
+         'skia/src/ports/SkLog_stdio.cpp',
+         'skia/src/ports/SkOSFile_posix.cpp',
+@@ -653,7 +653,7 @@ LOCAL_INCLUDES += [
+     "/gfx/harfbuzz/src",
+ ]
+ 
+-if CONFIG['MOZ_WIDGET_TOOLKIT'] in ('gtk', 'android'):
++if CONFIG['MOZ_WIDGET_TOOLKIT'] in ('dosxc', 'gtk', 'android'):
+     LOCAL_INCLUDES += [
+         "/gfx/cairo/cairo/src",
+     ]
+diff --git a/gfx/thebes/gfxDosxcPlatform.cpp b/gfx/thebes/gfxDosxcPlatform.cpp
+new file mode 100644
+index 0000000000..e5dc63211c
+--- /dev/null
++++ b/gfx/thebes/gfxDosxcPlatform.cpp
+@@ -0,0 +1,58 @@
++/* This Source Code Form is subject to the terms of the Mozilla Public
++ * License, v. 2.0. If a copy of the MPL was not distributed with this
++ * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
++
++#include "gfxDosxcPlatform.h"
++
++#include "VsyncSource.h"
++#include "ft2build.h"
++#include "gfx2DGlue.h"
++#include "gfxFT2FontList.h"
++#include "gfxImageSurface.h"
++#include "mozilla/gfx/2D.h"
++#include FT_FREETYPE_H
++#include FT_MODULE_H
++
++using namespace mozilla;
++using namespace mozilla::dom;
++using namespace mozilla::gfx;
++
++static FT_Library gPlatformFTLibrary = nullptr;
++
++gfxDosxcPlatform::gfxDosxcPlatform() {
++  FT_Init_FreeType(&gPlatformFTLibrary);
++  Factory::SetFTLibrary(gPlatformFTLibrary);
++}
++
++gfxDosxcPlatform::~gfxDosxcPlatform() {
++  FT_Done_FreeType(gPlatformFTLibrary);
++  gPlatformFTLibrary = nullptr;
++}
++
++already_AddRefed<gfxASurface> gfxDosxcPlatform::CreateOffscreenSurface(
++    const IntSize& aSize, gfxImageFormat aFormat) {
++  if (!Factory::AllowedSurfaceSize(aSize)) {
++    return nullptr;
++  }
++  RefPtr<gfxASurface> surface = new gfxImageSurface(aSize, aFormat);
++  return surface.forget();
++}
++
++void gfxDosxcPlatform::GetCommonFallbackFonts(
++    uint32_t aCh, Script aRunScript, FontPresentation aPresentation,
++    nsTArray<const char*>& aFontList) {
++  if (PrefersColor(aPresentation)) {
++    aFontList.AppendElement("Twemoji Mozilla");
++  }
++  aFontList.AppendElement("DejaVu Sans");
++  aFontList.AppendElement("DejaVu Serif");
++  aFontList.AppendElement("DejaVu Sans Mono");
++}
++
++bool gfxDosxcPlatform::CreatePlatformFontList() {
++  return gfxPlatformFontList::Initialize(new gfxFT2FontList);
++}
++
++void gfxDosxcPlatform::ReadSystemFontList(SystemFontList* aFontList) {
++  gfxFT2FontList::PlatformFontList()->ReadSystemFontList(aFontList);
++}
+diff --git a/gfx/thebes/gfxDosxcPlatform.h b/gfx/thebes/gfxDosxcPlatform.h
+new file mode 100644
+index 0000000000..9135bb9b88
+--- /dev/null
++++ b/gfx/thebes/gfxDosxcPlatform.h
+@@ -0,0 +1,43 @@
++/* This Source Code Form is subject to the terms of the Mozilla Public
++ * License, v. 2.0. If a copy of the MPL was not distributed with this
++ * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
++
++#ifndef GFX_PLATFORM_DOSXC_H
++#define GFX_PLATFORM_DOSXC_H
++
++#include "gfxPlatform.h"
++#include "gfxUserFontSet.h"
++#include "nsCOMPtr.h"
++#include "nsTArray.h"
++
++// DOS-XC: software rendering, with FreeType and the fonts in the package.
++class gfxDosxcPlatform final : public gfxPlatform {
++ public:
++  gfxDosxcPlatform();
++  virtual ~gfxDosxcPlatform();
++
++  already_AddRefed<gfxASurface> CreateOffscreenSurface(
++      const IntSize& aSize, gfxImageFormat aFormat) override;
++
++  gfxImageFormat GetOffscreenFormat() override {
++    return mozilla::gfx::SurfaceFormat::X8R8G8B8_UINT32;
++  }
++
++  bool CreatePlatformFontList() override;
++  void ReadSystemFontList(mozilla::dom::SystemFontList*) override;
++  void GetCommonFallbackFonts(uint32_t aCh, Script aRunScript,
++                              FontPresentation aPresentation,
++                              nsTArray<const char*>& aFontList) override;
++
++  already_AddRefed<mozilla::gfx::VsyncSource> CreateGlobalHardwareVsyncSource()
++      override {
++    return GetSoftwareVsyncSource();
++  }
++
++  static bool CheckVariationFontSupport() { return true; }
++
++ protected:
++  bool AccelerateLayersByDefault() override { return false; }
++};
++
++#endif /* GFX_PLATFORM_DOSXC_H */
+diff --git a/gfx/thebes/gfxFT2FontList.cpp b/gfx/thebes/gfxFT2FontList.cpp
+index fcc0be86a4..4ac858da7e 100644
+--- a/gfx/thebes/gfxFT2FontList.cpp
++++ b/gfx/thebes/gfxFT2FontList.cpp
+@@ -2,12 +2,16 @@
+  * License, v. 2.0. If a copy of the MPL was not distributed with this
+  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
+ 
+-#include <android/log.h>
++#ifdef ANDROID
++#  include <android/log.h>
++#endif
+ #include <dirent.h>
+ 
+ #include <memory>
+ 
+-#include "gfxAndroidPlatform.h"
++#ifdef ANDROID
++#  include "gfxAndroidPlatform.h"
++#endif
+ #include "mozilla/Base64.h"
+ #include "mozilla/EndianUtils.h"
+ #include "mozilla/MemoryReporting.h"
+@@ -110,7 +114,8 @@ already_AddRefed<SharedFTFace> FT2FontEntry::GetFTFace(bool aCommit) {
+       cursor.Copy(&bufSize);
+       NS_ASSERTION(bufSize == item->RealSize(), "error reading bundled font");
+       // fontData takes ownership of fontDataBuf
+-      auto fontData = MakeRefPtr<FontData>(std::move(fontDataBuf), bufSize);
++      const uint8_t* ownedData = fontDataBuf;
++      auto fontData = MakeRefPtr<FontData>(std::move(ownedData), bufSize);
+       face = Factory::NewSharedFTFaceFromData(fontData, mFTFontIndex);
+       if (!face) {
+         NS_WARNING("failed to create freetype face");
+@@ -1580,6 +1585,16 @@ void gfxFT2FontList::FindFonts() {
+   }
+ 
+   if (!useSystemFontAPI)
++#elif defined(MOZ_WIDGET_DOSXC)
++  // The package puts its fonts in "fonts" next to the program.
++  nsAutoCString androidFontsRoot("/Programs/dosfox/fonts");
++  {
++    nsCOMPtr<nsIFile> greDir;
++    if (NS_SUCCEEDED(NS_GetSpecialDirectory(NS_GRE_DIR, getter_AddRefs(greDir))) &&
++        NS_SUCCEEDED(greDir->AppendNative("fonts"_ns))) {
++      greDir->GetNativePath(androidFontsRoot);
++    }
++  }
+ #endif
+   {
+     FindFontsInDir(androidFontsRoot, mFontNameCache.get());
+@@ -1911,6 +1926,8 @@ FontFamily gfxFT2FontList::GetDefaultFontForPlatform(
+   if (ff.IsNull()) {
+     ff = FindFamily(aFontVisibilityProvider, "Droid Sans"_ns);
+   }
++#elif defined(MOZ_WIDGET_DOSXC)
++  ff = FindFamily(aFontVisibilityProvider, "DejaVu Sans"_ns);
+ #endif
+   /* TODO: what about Qt or other platforms that may use this? */
+   return ff;
+diff --git a/gfx/thebes/gfxPlatform.cpp b/gfx/thebes/gfxPlatform.cpp
+index 38a9bd3690..aeefb695d4 100644
+--- a/gfx/thebes/gfxPlatform.cpp
++++ b/gfx/thebes/gfxPlatform.cpp
+@@ -82,6 +82,8 @@
+ #  include "gfxPlatformGtk.h"
+ #elif defined(ANDROID)
+ #  include "gfxAndroidPlatform.h"
++#elif defined(MOZ_WIDGET_DOSXC)
++#  include "gfxDosxcPlatform.h"
+ #endif
+ #if defined(MOZ_WIDGET_ANDROID)
+ #  include "mozilla/java/HardwareCodecCapabilityUtilsWrappers.h"
+@@ -790,6 +792,8 @@ bool gfxPlatform::HasVariationFontSupport() {
+     sHasVariationFontSupport = gfxPlatformGtk::CheckVariationFontSupport();
+ #elif defined(ANDROID)
+     sHasVariationFontSupport = gfxAndroidPlatform::CheckVariationFontSupport();
++#elif defined(MOZ_WIDGET_DOSXC)
++    sHasVariationFontSupport = gfxDosxcPlatform::CheckVariationFontSupport();
+ #else
+ #  error "No gfxPlatform implementation available"
+ #endif
+@@ -925,6 +929,8 @@ void gfxPlatform::Init() {
+   gPlatform = new gfxPlatformGtk;
+ #elif defined(ANDROID)
+   gPlatform = new gfxAndroidPlatform;
++#elif defined(MOZ_WIDGET_DOSXC)
++  gPlatform = new gfxDosxcPlatform;
+ #else
+ #  error "No gfxPlatform implementation available"
+ #endif
+diff --git a/gfx/thebes/moz.build b/gfx/thebes/moz.build
+index fdc0eefd50..db32998dbd 100644
+--- a/gfx/thebes/moz.build
++++ b/gfx/thebes/moz.build
+@@ -100,6 +100,24 @@ if CONFIG["MOZ_WIDGET_TOOLKIT"] == "android":
+     SOURCE_HEADERS += [
+         "AndroidSystemFontIterator.h",
+     ]
++elif CONFIG["MOZ_WIDGET_TOOLKIT"] == "dosxc":
++    EXPORTS += [
++        "gfxDosxcPlatform.h",
++        "gfxFT2FontBase.h",
++        "gfxFT2Fonts.h",
++    ]
++    SOURCES += [
++        "gfxDosxcPlatform.cpp",
++        "gfxFT2FontBase.cpp",
++        "gfxFT2FontList.cpp",
++        "gfxFT2Fonts.cpp",
++        "gfxFT2Utils.cpp",
++    ]
++
++    SOURCE_HEADERS += [
++        "gfxFT2FontList.h",
++        "gfxFT2Utils.h",
++    ]
+ elif CONFIG["MOZ_WIDGET_TOOLKIT"] in ("cocoa", "uikit"):
+     EXPORTS += [
+         "gfxMacUtils.h",
+@@ -271,10 +289,10 @@ LOCAL_INCLUDES += [
+     "/widget/gtk",
+ ]
+ 
+-if CONFIG["MOZ_WIDGET_TOOLKIT"] in ("android", "gtk"):
++if CONFIG["MOZ_WIDGET_TOOLKIT"] in ("android", "dosxc", "gtk"):
+     DEFINES["MOZ_ENABLE_FREETYPE"] = True
+ 
+-if CONFIG["MOZ_WIDGET_TOOLKIT"] in ("android"):
++if CONFIG["MOZ_WIDGET_TOOLKIT"] in ("android", "dosxc"):
+     CXXFLAGS += CONFIG["CAIRO_FT_CFLAGS"]
+ 
+ if CONFIG["MOZ_WIDGET_TOOLKIT"] == "gtk":
+diff --git a/gfx/webrender_bindings/moz.build b/gfx/webrender_bindings/moz.build
+index eab40809e8..446e8e6016 100644
+--- a/gfx/webrender_bindings/moz.build
++++ b/gfx/webrender_bindings/moz.build
+@@ -109,7 +109,7 @@ if CONFIG["MOZ_WAYLAND"]:
+         "RenderWaylandTextureHost.cpp",
+     ]
+ 
+-if CONFIG["MOZ_WIDGET_TOOLKIT"] in ("android", "gtk"):
++if CONFIG["MOZ_WIDGET_TOOLKIT"] in ("android", "dosxc", "gtk"):
+     CXXFLAGS += CONFIG["CAIRO_FT_CFLAGS"]
+ 
+ if CONFIG["COMPILE_ENVIRONMENT"]:
+diff --git a/intl/locale/dosxc/OSPreferences_dosxc.cpp b/intl/locale/dosxc/OSPreferences_dosxc.cpp
+new file mode 100644
+index 0000000000..e9f8487523
+--- /dev/null
++++ b/intl/locale/dosxc/OSPreferences_dosxc.cpp
+@@ -0,0 +1,31 @@
++/* This Source Code Form is subject to the terms of the Mozilla Public
++ * License, v. 2.0. If a copy of the MPL was not distributed with this
++ * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
++
++#include "OSPreferences.h"
++
++using namespace mozilla::intl;
++
++OSPreferences::OSPreferences() {}
++
++// DOS-XC has no locale setting.
++bool OSPreferences::ReadSystemLocales(nsTArray<nsCString>& aLocaleList) {
++  aLocaleList.AppendElement("en-US"_ns);
++  return true;
++}
++
++bool OSPreferences::ReadRegionalPrefsLocales(nsTArray<nsCString>& aLocaleList) {
++  return ReadSystemLocales(aLocaleList);
++}
++
++bool OSPreferences::ReadDateTimePattern(DateTimeFormatStyle aDateStyle,
++                                        DateTimeFormatStyle aTimeStyle,
++                                        const nsACString& aLocale,
++                                        nsACString& aRetVal) {
++  nsAutoCString skeleton;
++  return GetDateTimeSkeletonForStyle(aDateStyle, aTimeStyle, aLocale,
++                                     skeleton) &&
++         GetPatternForSkeleton(skeleton, aLocale, aRetVal);
++}
++
++void OSPreferences::RemoveObservers() {}
+diff --git a/intl/locale/dosxc/moz.build b/intl/locale/dosxc/moz.build
+new file mode 100644
+index 0000000000..43add34760
+--- /dev/null
++++ b/intl/locale/dosxc/moz.build
+@@ -0,0 +1,12 @@
++# -*- Mode: python; indent-tabs-mode: nil; tab-width: 40 -*-
++# This Source Code Form is subject to the terms of the Mozilla Public
++# License, v. 2.0. If a copy of the MPL was not distributed with this
++# file, You can obtain one at http://mozilla.org/MPL/2.0/.
++
++SOURCES += ["OSPreferences_dosxc.cpp"]
++
++FINAL_LIBRARY = "xul"
++
++LOCAL_INCLUDES += [
++    "..",
++]
+diff --git a/intl/locale/moz.build b/intl/locale/moz.build
+index 4d6ff0428d..8074a86d0c 100644
+--- a/intl/locale/moz.build
++++ b/intl/locale/moz.build
+@@ -18,6 +18,8 @@ elif toolkit == "gtk":
+     DIRS += ["gtk"]
+ elif toolkit == "android":
+     DIRS += ["android"]
++elif toolkit == "dosxc":
++    DIRS += ["dosxc"]
+ 
+ XPIDL_SOURCES += [
+     "mozILocaleService.idl",
+diff --git a/ipc/chromium/src/base/message_loop.cc b/ipc/chromium/src/base/message_loop.cc
+index 80350aa641..96fbf437a5 100644
+--- a/ipc/chromium/src/base/message_loop.cc
++++ b/ipc/chromium/src/base/message_loop.cc
+@@ -280,6 +280,8 @@ MessageLoop::MessageLoop(Type type, nsISerialEventTarget* aEventTarget)
+   if (type_ == TYPE_UI) {
+ #  if defined(XP_DARWIN)
+     pump_ = base::MessagePumpMac::Create();
++#  elif defined(MOZ_WIDGET_DOSXC)
++    pump_ = new base::MessagePumpDefault();
+ #  elif defined(XP_LINUX) || defined(__DragonFly__) || defined(XP_FREEBSD) || \
+       defined(XP_NETBSD) || defined(XP_OPENBSD)
+     pump_ = new base::MessagePumpForUI();
+diff --git a/ipc/glue/GeckoChildProcessHost.cpp b/ipc/glue/GeckoChildProcessHost.cpp
+index 00dda54373..add2d094a5 100644
+--- a/ipc/glue/GeckoChildProcessHost.cpp
++++ b/ipc/glue/GeckoChildProcessHost.cpp
+@@ -346,6 +346,8 @@ class LinuxProcessLauncher : public PosixProcessLauncher {
+   virtual Result<Ok, LaunchError> DoSetup() override;
+ };
+ typedef LinuxProcessLauncher ProcessLauncher;
++#  elif defined(MOZ_WIDGET_DOSXC)
++typedef PosixProcessLauncher ProcessLauncher;
+ #  elif defined(MOZ_WIDGET_UIKIT)
+ class IosProcessLauncher : public PosixProcessLauncher {
+  public:
+diff --git a/layout/base/nsLayoutUtils.cpp b/layout/base/nsLayoutUtils.cpp
+index cda2d9cf38..acc2a14469 100644
+--- a/layout/base/nsLayoutUtils.cpp
++++ b/layout/base/nsLayoutUtils.cpp
+@@ -9882,6 +9882,9 @@ static void GetSpoofedSystemFontForRFP(LookAndFeel::FontID aFontID,
+   // Keep consistency with nsLookAndFeel::NativeGetFont.
+   aName = u"Roboto"_ns;
+   aStyle.size = 12;
++#elif defined(MOZ_WIDGET_DOSXC)
++  aName = u"sans-serif"_ns;
++  aStyle.size = 15;
+ #elif defined(MOZ_WIDGET_GTK)
+   // On Linux, there is not a default. For example, GNOME on Debian uses
+   // Cantarell, 14.667px. Ubuntu Mate uses the Ubuntu font, but also 14.667px.
+diff --git a/layout/style/nsMediaFeatures.cpp b/layout/style/nsMediaFeatures.cpp
+index bc737614fe..05509bb6d7 100644
+--- a/layout/style/nsMediaFeatures.cpp
++++ b/layout/style/nsMediaFeatures.cpp
+@@ -256,7 +256,7 @@ bool Gecko_MediaFeatures_MatchesPlatform(StylePlatform aPlatform) {
+ #elif defined(ANDROID)
+     case StylePlatform::Android:
+       return true;
+-#elif defined(MOZ_WIDGET_GTK)
++#elif defined(MOZ_WIDGET_GTK) || defined(MOZ_WIDGET_DOSXC)
+     case StylePlatform::Linux:
+       return true;
+ #elif defined(XP_MACOSX)
+diff --git a/media/libcubeb/src/cubeb.c b/media/libcubeb/src/cubeb.c
+index c47d4b804d..f5febe9744 100644
+--- a/media/libcubeb/src/cubeb.c
++++ b/media/libcubeb/src/cubeb.c
+@@ -76,6 +76,10 @@ opensl_init(cubeb ** context, char const * context_name);
+ int
+ oss_init(cubeb ** context, char const * context_name);
+ #endif
++#if defined(USE_DOSXC)
++int
++dosxc_init(cubeb ** context, char const * context_name);
++#endif
+ #if defined(USE_AAUDIO)
+ int
+ aaudio_init(cubeb ** context, char const * context_name);
+@@ -244,6 +248,9 @@ cubeb_init(cubeb ** context, char const * context_name,
+ #if defined(USE_OSS)
+       oss_init,
+ #endif
++#if defined(USE_DOSXC)
++      dosxc_init,
++#endif
+ #if defined(USE_AUDIOUNIT_RUST)
+       audiounit_rust_init,
+ #endif
+@@ -345,6 +352,9 @@ cubeb_get_backend_names()
+ #if defined(USE_OSS)
+       "oss",
+ #endif
++#if defined(USE_DOSXC)
++      "dosxc",
++#endif
+ #if defined(USE_AAUDIO)
+       "aaudio",
+ #endif
+diff --git a/media/libcubeb/src/cubeb_dosxc.c b/media/libcubeb/src/cubeb_dosxc.c
+new file mode 100644
+index 0000000000..7005333388
+--- /dev/null
++++ b/media/libcubeb/src/cubeb_dosxc.c
+@@ -0,0 +1,386 @@
++/*
++ * Copyright (c) 2026 Ben Daws
++ *
++ * This program is made available under an ISC-style license.  See the
++ * accompanying file LICENSE for details.
++ *
++ * Output on DOS-XC through its audio system call.  The device plays one
++ * 48 kHz stereo 16-bit stream, so a single thread mixes every running stream
++ * into it.  Gecko resamples to that rate before it gets here
++ * (media.resampling.enabled).
++ */
++#include "cubeb-internal.h"
++#include "cubeb/cubeb.h"
++#include <dosxc/abi.h>
++#include <dosxc/syscall.h>
++#include <pthread.h>
++#include <stdint.h>
++#include <stdlib.h>
++#include <string.h>
++#include <unistd.h>
++
++#define DOSXC_RATE 48000
++#define DOSXC_CHANNELS 2
++#define DOSXC_PERIOD 1024
++#define DOSXC_TARGET 4096
++#define DOSXC_MAX_STREAMS 8
++
++struct cubeb {
++  struct cubeb_ops const * ops;
++  pthread_mutex_t lock;
++  pthread_cond_t wake;
++  pthread_t thread;
++  int thread_started, quit, device_open;
++  struct cubeb_stream * streams[DOSXC_MAX_STREAMS];
++  uint64_t written;
++  uint64_t buffered;
++};
++
++struct cubeb_stream {
++  struct cubeb * context;
++  void * user_ptr;
++  cubeb_data_callback data_callback;
++  cubeb_state_callback state_callback;
++  cubeb_sample_format format;
++  unsigned channels;
++  float volume;
++  int running;
++  uint64_t frames_written;
++  uint64_t last_position;
++};
++
++static struct cubeb_ops const dosxc_ops;
++
++static void
++mix_stream(cubeb_stream * s, int32_t * mix, void * scratch)
++{
++  long got = s->data_callback(s, s->user_ptr, NULL, scratch, DOSXC_PERIOD);
++  if (got < 0) {
++    s->running = 0;
++    s->state_callback(s, s->user_ptr, CUBEB_STATE_ERROR);
++    return;
++  }
++  for (long i = 0; i < got; ++i) {
++    for (unsigned c = 0; c < DOSXC_CHANNELS; ++c) {
++      unsigned from = s->channels == 1 ? (unsigned)i : (unsigned)i * 2 + c;
++      float v = s->format == CUBEB_SAMPLE_FLOAT32NE
++                    ? ((float *)scratch)[from] * 32767.0f
++                    : (float)((int16_t *)scratch)[from];
++      mix[i * 2 + c] += (int32_t)(v * s->volume);
++    }
++  }
++  s->frames_written += (uint64_t)got;
++  if (got < DOSXC_PERIOD) {
++    s->running = 0;
++    s->state_callback(s, s->user_ptr, CUBEB_STATE_DRAINED);
++  }
++}
++
++static void
++fail_all(cubeb * ctx)
++{
++  for (int i = 0; i < DOSXC_MAX_STREAMS; ++i) {
++    cubeb_stream * s = ctx->streams[i];
++    if (s && s->running) {
++      s->running = 0;
++      s->state_callback(s, s->user_ptr, CUBEB_STATE_ERROR);
++    }
++  }
++}
++
++static void
++close_device(cubeb * ctx)
++{
++  if (ctx->device_open) {
++    dosxc_sys_audio(DOSXC_AUDIO_CLOSE, 0, 0);
++    ctx->device_open = 0;
++  }
++}
++
++static void *
++mixer_thread(void * arg)
++{
++  cubeb * ctx = arg;
++  static int32_t mix[DOSXC_PERIOD * DOSXC_CHANNELS];
++  static int16_t out[DOSXC_PERIOD * DOSXC_CHANNELS];
++  static float scratch[DOSXC_PERIOD * DOSXC_CHANNELS];
++
++  pthread_mutex_lock(&ctx->lock);
++  while (!ctx->quit) {
++    int any = 0;
++    for (int i = 0; i < DOSXC_MAX_STREAMS; ++i) {
++      any |= ctx->streams[i] && ctx->streams[i]->running;
++    }
++    if (!any) {
++      close_device(ctx);
++      pthread_cond_wait(&ctx->wake, &ctx->lock);
++      continue;
++    }
++    if (!ctx->device_open) {
++      if (dosxc_sys_audio(DOSXC_AUDIO_OPEN, DOSXC_RATE, DOSXC_CHANNELS) < 0) {
++        fail_all(ctx);
++        continue;
++      }
++      ctx->device_open = 1;
++      ctx->written = 0;
++      ctx->buffered = 0;
++    }
++    uint64_t played = 0;
++    dosxc_sys_audio(DOSXC_AUDIO_POSITION, (__dosxc_word)&played, 0);
++    ctx->buffered = ctx->written > played ? ctx->written - played : 0;
++    if (ctx->buffered >= DOSXC_TARGET) {
++      pthread_mutex_unlock(&ctx->lock);
++      usleep(4000);
++      pthread_mutex_lock(&ctx->lock);
++      continue;
++    }
++
++    memset(mix, 0, sizeof(mix));
++    for (int i = 0; i < DOSXC_MAX_STREAMS; ++i) {
++      if (ctx->streams[i] && ctx->streams[i]->running) {
++        mix_stream(ctx->streams[i], mix, scratch);
++      }
++    }
++    for (int i = 0; i < DOSXC_PERIOD * DOSXC_CHANNELS; ++i) {
++      int32_t v = mix[i];
++      out[i] = (int16_t)(v > 32767 ? 32767 : v < -32768 ? -32768 : v);
++    }
++    int done = 0;
++    while (done < DOSXC_PERIOD && !ctx->quit) {
++      long taken = dosxc_sys_audio(DOSXC_AUDIO_WRITE,
++                                   (__dosxc_word)(out + done * DOSXC_CHANNELS),
++                                   DOSXC_PERIOD - done);
++      if (taken < 0) {
++        ctx->device_open = 0;
++        fail_all(ctx);
++        break;
++      }
++      done += (int)taken;
++      if (done < DOSXC_PERIOD) {
++        pthread_mutex_unlock(&ctx->lock);
++        usleep(2000);
++        pthread_mutex_lock(&ctx->lock);
++      }
++    }
++    ctx->written += (uint64_t)done;
++  }
++  close_device(ctx);
++  pthread_mutex_unlock(&ctx->lock);
++  return NULL;
++}
++
++int
++dosxc_init(cubeb ** context, char const * context_name)
++{
++  (void)context_name;
++  long r = dosxc_sys_audio(DOSXC_AUDIO_OPEN, DOSXC_RATE, DOSXC_CHANNELS);
++  if (r < 0 && r != -DOSXC_EBUSY) {
++    return CUBEB_ERROR;                 /* no sound device */
++  }
++  if (r == 0) {
++    dosxc_sys_audio(DOSXC_AUDIO_CLOSE, 0, 0);
++  }
++  cubeb * ctx = calloc(1, sizeof(*ctx));
++  if (!ctx) {
++    return CUBEB_ERROR;
++  }
++  ctx->ops = &dosxc_ops;
++  pthread_mutex_init(&ctx->lock, NULL);
++  pthread_cond_init(&ctx->wake, NULL);
++  if (pthread_create(&ctx->thread, NULL, mixer_thread, ctx)) {
++    free(ctx);
++    return CUBEB_ERROR;
++  }
++  ctx->thread_started = 1;
++  *context = ctx;
++  return CUBEB_OK;
++}
++
++static char const *
++dosxc_get_backend_id(cubeb * ctx)
++{
++  (void)ctx;
++  return "dosxc";
++}
++
++static int
++dosxc_get_max_channel_count(cubeb * ctx, uint32_t * channels)
++{
++  (void)ctx;
++  *channels = DOSXC_CHANNELS;
++  return CUBEB_OK;
++}
++
++static int
++dosxc_get_min_latency(cubeb * ctx, cubeb_stream_params params, uint32_t * frames)
++{
++  (void)ctx;
++  (void)params;
++  *frames = DOSXC_PERIOD;
++  return CUBEB_OK;
++}
++
++static int
++dosxc_get_preferred_sample_rate(cubeb * ctx, uint32_t * rate)
++{
++  (void)ctx;
++  *rate = DOSXC_RATE;
++  return CUBEB_OK;
++}
++
++static void
++dosxc_destroy(cubeb * ctx)
++{
++  pthread_mutex_lock(&ctx->lock);
++  ctx->quit = 1;
++  pthread_cond_signal(&ctx->wake);
++  pthread_mutex_unlock(&ctx->lock);
++  if (ctx->thread_started) {
++    pthread_join(ctx->thread, NULL);
++  }
++  pthread_mutex_destroy(&ctx->lock);
++  pthread_cond_destroy(&ctx->wake);
++  free(ctx);
++}
++
++static int
++dosxc_stream_init(cubeb * ctx, cubeb_stream ** stream, char const * name,
++                  cubeb_devid input_device, cubeb_stream_params * input,
++                  cubeb_devid output_device, cubeb_stream_params * output,
++                  unsigned int latency, cubeb_data_callback data_callback,
++                  cubeb_state_callback state_callback, void * user_ptr)
++{
++  (void)name;
++  (void)input_device;
++  (void)output_device;
++  (void)latency;
++  if (input || !output) {
++    return CUBEB_ERROR_NOT_SUPPORTED;
++  }
++  if (output->rate != DOSXC_RATE || output->channels < 1 ||
++      output->channels > DOSXC_CHANNELS ||
++      (output->format != CUBEB_SAMPLE_S16NE &&
++       output->format != CUBEB_SAMPLE_FLOAT32NE)) {
++    return CUBEB_ERROR_INVALID_FORMAT;
++  }
++  cubeb_stream * s = calloc(1, sizeof(*s));
++  if (!s) {
++    return CUBEB_ERROR;
++  }
++  s->context = ctx;
++  s->user_ptr = user_ptr;
++  s->data_callback = data_callback;
++  s->state_callback = state_callback;
++  s->format = output->format;
++  s->channels = output->channels;
++  s->volume = 1.0f;
++
++  int result = CUBEB_ERROR;
++  pthread_mutex_lock(&ctx->lock);
++  for (int i = 0; i < DOSXC_MAX_STREAMS; ++i) {
++    if (!ctx->streams[i]) {
++      ctx->streams[i] = s;
++      result = CUBEB_OK;
++      break;
++    }
++  }
++  pthread_mutex_unlock(&ctx->lock);
++  if (result != CUBEB_OK) {
++    free(s);
++    return result;
++  }
++  *stream = s;
++  return CUBEB_OK;
++}
++
++static void
++dosxc_stream_destroy(cubeb_stream * s)
++{
++  cubeb * ctx = s->context;
++  pthread_mutex_lock(&ctx->lock);
++  for (int i = 0; i < DOSXC_MAX_STREAMS; ++i) {
++    if (ctx->streams[i] == s) {
++      ctx->streams[i] = NULL;
++    }
++  }
++  pthread_mutex_unlock(&ctx->lock);
++  free(s);
++}
++
++static int
++dosxc_stream_start(cubeb_stream * s)
++{
++  cubeb * ctx = s->context;
++  pthread_mutex_lock(&ctx->lock);
++  s->running = 1;
++  pthread_cond_signal(&ctx->wake);
++  pthread_mutex_unlock(&ctx->lock);
++  s->state_callback(s, s->user_ptr, CUBEB_STATE_STARTED);
++  return CUBEB_OK;
++}
++
++static int
++dosxc_stream_stop(cubeb_stream * s)
++{
++  cubeb * ctx = s->context;
++  pthread_mutex_lock(&ctx->lock);
++  s->running = 0;
++  pthread_mutex_unlock(&ctx->lock);
++  s->state_callback(s, s->user_ptr, CUBEB_STATE_STOPPED);
++  return CUBEB_OK;
++}
++
++/* Called from inside the data callback too, so it takes no lock. */
++static int
++dosxc_stream_get_position(cubeb_stream * s, uint64_t * position)
++{
++  uint64_t buffered = s->context->buffered;
++  uint64_t now = s->frames_written > buffered ? s->frames_written - buffered : 0;
++  if (now < s->last_position) {
++    now = s->last_position;
++  }
++  s->last_position = now;
++  *position = now;
++  return CUBEB_OK;
++}
++
++static int
++dosxc_stream_get_latency(cubeb_stream * s, uint32_t * latency)
++{
++  (void)s;
++  *latency = DOSXC_TARGET;
++  return CUBEB_OK;
++}
++
++static int
++dosxc_stream_set_volume(cubeb_stream * s, float volume)
++{
++  s->volume = volume;
++  return CUBEB_OK;
++}
++
++static struct cubeb_ops const dosxc_ops = {
++    .init = dosxc_init,
++    .get_backend_id = dosxc_get_backend_id,
++    .get_max_channel_count = dosxc_get_max_channel_count,
++    .get_min_latency = dosxc_get_min_latency,
++    .get_preferred_sample_rate = dosxc_get_preferred_sample_rate,
++    .get_supported_input_processing_params = NULL,
++    .enumerate_devices = NULL,
++    .device_collection_destroy = NULL,
++    .destroy = dosxc_destroy,
++    .stream_init = dosxc_stream_init,
++    .stream_destroy = dosxc_stream_destroy,
++    .stream_start = dosxc_stream_start,
++    .stream_stop = dosxc_stream_stop,
++    .stream_get_position = dosxc_stream_get_position,
++    .stream_get_latency = dosxc_stream_get_latency,
++    .stream_get_input_latency = NULL,
++    .stream_set_volume = dosxc_stream_set_volume,
++    .stream_set_name = NULL,
++    .stream_get_current_device = NULL,
++    .stream_set_input_mute = NULL,
++    .stream_set_input_processing_params = NULL,
++    .stream_device_destroy = NULL,
++    .stream_register_device_changed_callback = NULL,
++    .register_device_collection_changed = NULL};
+diff --git a/media/libcubeb/src/moz.build b/media/libcubeb/src/moz.build
+index 124908573c..8230abad70 100644
+--- a/media/libcubeb/src/moz.build
++++ b/media/libcubeb/src/moz.build
+@@ -20,6 +20,10 @@ if CONFIG['MOZ_ALSA']:
+     ]
+     DEFINES['USE_ALSA'] = True
+ 
++if CONFIG['MOZ_WIDGET_TOOLKIT'] == 'dosxc':
++    SOURCES += ['cubeb_dosxc.c']
++    DEFINES['USE_DOSXC'] = True
++
+ if CONFIG['MOZ_SUNAUDIO']:
+     SOURCES += [
+         'cubeb_sun.c',
+diff --git a/memory/mozalloc/mozalloc_abort.cpp b/memory/mozalloc/mozalloc_abort.cpp
+index 23c581f416..100a7ab62c 100644
+--- a/memory/mozalloc/mozalloc_abort.cpp
++++ b/memory/mozalloc/mozalloc_abort.cpp
+@@ -76,6 +76,41 @@ void fillAbortMessage(char (&msg)[N], uintptr_t retAddress) {
+ // When building for fuzzing without ASan or TSan, we automatically pull in the
+ // UndefinedBehaviorSanitizer runtime which also requires the same workaround
+ // as with ASan or TSan.
++#  ifdef MOZ_WIDGET_DOSXC
++#    include <dlfcn.h>
++#    include <stdio.h>
++#    include <unistd.h>
++// Writing to address 0, which is how MOZ_CRASH stops the program elsewhere,
++// does not fault here.  Say why we stopped and what was on the stack.
++extern "C" void abort(void) {
++  static int aborting;
++  if (aborting++) {
++    _exit(127);
++  }
++  char line[300];
++  auto say = [&line]() {
++    fputs(line, stderr);
++    for (const char* c = line; *c; ++c) {
++      __asm__("outb %b0, $0xe9" : : "a"(*c));
++    }
++  };
++  snprintf(line, sizeof(line), "Firefox stopped: %s\n",
++           gMozCrashReason ? gMozCrashReason : "abort()");
++  say();
++  void** stack = reinterpret_cast<void**>(__builtin_frame_address(0));
++  int shown = 0;
++  for (int i = 0; i < 1024 && shown < 40; i++) {
++    Dl_info info;
++    if (stack[i] && dladdr(stack[i], &info) && info.dli_fname) {
++      snprintf(line, sizeof(line), "  %s+0x%lx\n", info.dli_fname,
++               (unsigned long)((char*)stack[i] - (char*)info.dli_fbase));
++      say();
++      shown++;
++    }
++  }
++  _exit(127);
++}
++#  else
+ extern "C" void abort(void) {
+ #  ifdef MOZ_WIDGET_ANDROID
+   char msg[64] = {};
+@@ -92,4 +127,5 @@ extern "C" void abort(void) {
+   // warning.
+   MOZ_ASSUME_UNREACHABLE_MARKER();
+ }
++#  endif  // MOZ_WIDGET_DOSXC
+ #endif
+diff --git a/modules/libpref/init/StaticPrefList.yaml b/modules/libpref/init/StaticPrefList.yaml
+index d5ad87d5bc..a12e2e6e5e 100644
+--- a/modules/libpref/init/StaticPrefList.yaml
++++ b/modules/libpref/init/StaticPrefList.yaml
+@@ -8111,7 +8111,7 @@
+   value: false
+   mirror: always
+ 
+-#if defined(MOZ_WIDGET_GTK) || defined(MOZ_WIDGET_ANDROID)
++#if defined(MOZ_WIDGET_GTK) || defined(MOZ_WIDGET_ANDROID) || defined(MOZ_WIDGET_DOSXC)
+   # -1 = disabled (no preblend, original behavior)
+   #  0 = sRGB transfer
+   # >0 = value/100.0 exponent
+diff --git a/netwerk/base/nsNetUtil.cpp b/netwerk/base/nsNetUtil.cpp
+index 1a62eada8b..480a388f78 100644
+--- a/netwerk/base/nsNetUtil.cpp
++++ b/netwerk/base/nsNetUtil.cpp
+@@ -100,7 +100,7 @@
+ #include "nsStringStream.h"
+ #include "nsSyncStreamListener.h"
+ #include "nsViewSourceHandler.h"
+-#ifndef XP_IOS
++#if !defined(XP_IOS) && !defined(MOZ_WIDGET_DOSXC)
+ #  include "nsIconURI.h"
+ #endif
+ #include "DecoderTraits.h"
+@@ -2015,7 +2015,7 @@ nsresult NS_NewURI(nsIURI** aURI, const nsACString& aSpec,
+         .Finalize(aURI);
+   }
+ 
+-#ifndef XP_IOS
++#if !defined(XP_IOS) && !defined(MOZ_WIDGET_DOSXC)
+   if (scheme.EqualsLiteral("moz-icon")) {
+     return NS_MutateURI(new nsMozIconURI::Mutator())
+         .SetSpec(aSpec)
+diff --git a/netwerk/build/components.conf b/netwerk/build/components.conf
+index fa718393c5..c8f9aba0af 100644
+--- a/netwerk/build/components.conf
++++ b/netwerk/build/components.conf
+@@ -874,7 +874,7 @@ elif toolkit == 'android':
+         'headers': ['/netwerk/system/android/nsAndroidNetworkLinkService.h'],
+         'init_method': 'Init',
+     }
+-elif buildconfig.substs['OS_ARCH'] == 'Linux':
++elif buildconfig.substs['OS_ARCH'] == 'Linux' and toolkit != 'dosxc':
+     link_service = {
+         'type': 'nsNetworkLinkService',
+         'headers': ['/netwerk/system/linux/nsNetworkLinkService.h'],
+diff --git a/netwerk/system/moz.build b/netwerk/system/moz.build
+index e5689da9b4..535f19c63b 100644
+--- a/netwerk/system/moz.build
++++ b/netwerk/system/moz.build
+@@ -14,7 +14,7 @@ if CONFIG["TARGET_OS"] == "iOS":
+ if CONFIG["MOZ_WIDGET_TOOLKIT"] == "android":
+     DIRS += ["android", "netlink"]
+ 
+-elif CONFIG["OS_ARCH"] == "Linux":
++elif CONFIG["OS_ARCH"] == "Linux" and CONFIG["MOZ_WIDGET_TOOLKIT"] != "dosxc":
+     DIRS += ["linux", "netlink"]
+ 
+ SOURCES += [
+diff --git a/nsprpub/pr/include/md/_linux.h b/nsprpub/pr/include/md/_linux.h
+index 9d3f0028a3..877d949646 100644
+--- a/nsprpub/pr/include/md/_linux.h
++++ b/nsprpub/pr/include/md/_linux.h
+@@ -339,7 +339,14 @@ _MD_ATOMIC_SET(PRInt32* ptr, PRInt32 nv)
+ #else
+ #define _PR_NO_LARGE_FILES
+ #endif
+-#if (__GLIBC__ > 2) || (__GLIBC__ == 2 && __GLIBC_MINOR__ >= 1) || \
++#if defined(__dosxc__)
++/* DOS-XC's C library has native IPv6 sockets and getaddrinfo. */
++#define _PR_INET6
++#define _PR_HAVE_INET_NTOP
++#define _PR_HAVE_GETADDRINFO
++#define _PR_HAVE_GETHOSTBYNAME2
++#define _PR_INET6_PROBE
++#elif (__GLIBC__ > 2) || (__GLIBC__ == 2 && __GLIBC_MINOR__ >= 1) || \
+     defined(ANDROID)
+ #define _PR_INET6
+ #define _PR_HAVE_INET_NTOP
+diff --git a/python/mozbuild/mozbuild/configure/constants.py b/python/mozbuild/mozbuild/configure/constants.py
+index 3bb9f69eae..6ed8b6d8df 100644
+--- a/python/mozbuild/mozbuild/configure/constants.py
++++ b/python/mozbuild/mozbuild/configure/constants.py
+@@ -139,7 +139,7 @@ kernel_preprocessor_checks = {
+     "DragonFly": "__DragonFly__",
+     "FreeBSD": "__FreeBSD__",
+     "kFreeBSD": "__FreeBSD_kernel__",
+-    "Linux": "__linux__",
++    "Linux": "__linux__ || __dosxc__",
+     "NetBSD": "__NetBSD__",
+     "OpenBSD": "__OpenBSD__",
+     "SunOS": "__sun__",
+diff --git a/security/nss/lib/freebl/unix_urandom.c b/security/nss/lib/freebl/unix_urandom.c
+index 3f92920bfe..5f893a8384 100644
+--- a/security/nss/lib/freebl/unix_urandom.c
++++ b/security/nss/lib/freebl/unix_urandom.c
+@@ -33,7 +33,7 @@ RNG_SystemRNG(void *dest, size_t maxLen)
+     size_t fileBytes = 0;
+     unsigned char *buffer = dest;
+ 
+-#if defined(__OpenBSD__) || (defined(__FreeBSD__) && __FreeBSD_version >= 1200000) || (defined(LINUX) && defined(__GLIBC__) && ((__GLIBC__ > 2) || ((__GLIBC__ == 2) && (__GLIBC_MINOR__ >= 25))))
++#if defined(__dosxc__) || defined(__OpenBSD__) || (defined(__FreeBSD__) && __FreeBSD_version >= 1200000) || (defined(LINUX) && defined(__GLIBC__) && ((__GLIBC__ > 2) || ((__GLIBC__ == 2) && (__GLIBC_MINOR__ >= 25))))
+     int result;
+ 
+     while (fileBytes < maxLen) {
+diff --git a/toolkit/components/processtools/ProcInfo_dosxc.cpp b/toolkit/components/processtools/ProcInfo_dosxc.cpp
+new file mode 100644
+index 0000000000..c3a5ae6758
+--- /dev/null
++++ b/toolkit/components/processtools/ProcInfo_dosxc.cpp
+@@ -0,0 +1,41 @@
++/* This Source Code Form is subject to the terms of the Mozilla Public
++ * License, v. 2.0. If a copy of the MPL was not distributed with this
++ * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
++
++#include "mozilla/ProcInfo.h"
++
++#include <time.h>
++
++#include "prtime.h"
++
++namespace mozilla {
++
++int GetCycleTimeFrequencyMHz() { return 0; }
++
++nsresult GetCpuTimeSinceProcessStartInMs(uint64_t* aResult) {
++  timespec t;
++  if (clock_gettime(CLOCK_PROCESS_CPUTIME_ID, &t) != 0) {
++    return NS_ERROR_FAILURE;
++  }
++  *aResult = (uint64_t(t.tv_sec) * 1'000'000'000u + uint64_t(t.tv_nsec)) /
++             PR_NSEC_PER_MSEC;
++  return NS_OK;
++}
++
++nsresult GetCurrentProcessMemoryUsage(uint64_t* aResult) {
++  return NS_ERROR_NOT_IMPLEMENTED;
++}
++
++nsresult GetGpuTimeSinceProcessStartInMs(uint64_t* aResult) {
++  return NS_ERROR_NOT_IMPLEMENTED;
++}
++
++// One process, and DOS-XC has no way to ask about another.
++ProcInfoPromise::ResolveOrRejectValue GetProcInfoSync(
++    nsTArray<ProcInfoRequest>&& aRequests) {
++  ProcInfoPromise::ResolveOrRejectValue result;
++  result.SetResolve(HashMap<base::ProcessId, ProcInfo>());
++  return result;
++}
++
++}  // namespace mozilla
+diff --git a/toolkit/components/processtools/moz.build b/toolkit/components/processtools/moz.build
+index 7b5eef9853..d74ec9fcdb 100644
+--- a/toolkit/components/processtools/moz.build
++++ b/toolkit/components/processtools/moz.build
+@@ -37,7 +37,9 @@ MOCHITEST_MANIFESTS += ["tests/mochitest/mochitest.toml"]
+ 
+ # Platform-specific implementations of `ProcInfo`.
+ toolkit = CONFIG["MOZ_WIDGET_TOOLKIT"]
+-if toolkit == "gtk":
++if toolkit == "dosxc":
++    UNIFIED_SOURCES += ["ProcInfo_dosxc.cpp"]
++elif toolkit == "gtk":
+     if CONFIG["OS_TARGET"] in ("FreeBSD", "OpenBSD"):
+         UNIFIED_SOURCES += ["ProcInfo_bsd.cpp"]
+     elif CONFIG["OS_TARGET"] == "SunOS":
+diff --git a/toolkit/moz.configure b/toolkit/moz.configure
+index f604763b24..ba47d128de 100644
+--- a/toolkit/moz.configure
++++ b/toolkit/moz.configure
+@@ -359,6 +359,8 @@ imply_option("--enable-replace-malloc", dmd, when=compile_environment)
+ # ==============================================================
+ @depends(target)
+ def midir_linux_support(target):
++    if target.raw_os.endswith("musl"):      # DOS-XC: no ALSA
++        return False
+     return (
+         target.kernel == "Linux" and target.os != "Android" and target.cpu != "riscv64"
+     )
+@@ -658,6 +660,7 @@ def toolkit_choices(target):
+             "cairo-gtk3-x11-wayland",
+             "cairo-gtk3-wayland-only",
+             "cairo-gtk3-x11-only",
++            "cairo-dosxc",
+         )
+ 
+ 
+@@ -1355,9 +1358,9 @@ set_config("MOZ_SYSTEM_WEBP", depends(when=system_webp)(lambda: True))
+ 
+ # Build Freetype in the tree
+ # ==============================================================
+-@depends(target)
+-def tree_freetype(target):
+-    if target.os == "Android":
++@depends(target, toolkit)
++def tree_freetype(target, toolkit):
++    if target.os == "Android" or toolkit == "dosxc":
+         return True
+ 
+ 
+diff --git a/toolkit/profile/nsToolkitProfileService.cpp b/toolkit/profile/nsToolkitProfileService.cpp
+index 4f38180206..6f8edeb776 100644
+--- a/toolkit/profile/nsToolkitProfileService.cpp
++++ b/toolkit/profile/nsToolkitProfileService.cpp
+@@ -3033,6 +3033,16 @@ nsresult XRE_GetFileFromPath(const char* aPath, nsIFile** aResult) {
+ 
+   if (!realpath(aPath, fullPath)) return NS_ERROR_FAILURE;
+ 
++#  ifdef MOZ_WIDGET_DOSXC
++  // realpath() gives X:\\DIR; Gecko's paths are /-rooted on the current drive.
++  if (fullPath[0] && fullPath[1] == ':') {
++    memmove(fullPath, fullPath + 2, strlen(fullPath + 2) + 1);
++    for (char* c = fullPath; *c; ++c) {
++      if (*c == '\\') *c = '/';
++    }
++  }
++#  endif
++
+   return NS_NewNativeLocalFile(nsDependentCString(fullPath), aResult);
+ #elif defined(XP_WIN)
+   WCHAR fullPath[MAXPATHLEN];
+diff --git a/toolkit/xre/nsAppRunner.cpp b/toolkit/xre/nsAppRunner.cpp
+index 48ef322d56..7b1d2a781c 100644
+--- a/toolkit/xre/nsAppRunner.cpp
++++ b/toolkit/xre/nsAppRunner.cpp
+@@ -4749,7 +4749,8 @@ int XREMain::XRE_mainInit(bool* aExitFlag) {
+   }
+ 
+   if (gfxPlatform::IsHeadless()) {
+-#if defined(XP_WIN) || defined(MOZ_WIDGET_GTK) || defined(XP_MACOSX)
++#if defined(XP_WIN) || defined(MOZ_WIDGET_GTK) || defined(XP_MACOSX) || \
++    defined(MOZ_WIDGET_DOSXC)
+     printf_stderr("*** You are running in headless mode.\n");
+ #else
+     Output(
+diff --git a/toolkit/xre/nsXREDirProvider.cpp b/toolkit/xre/nsXREDirProvider.cpp
+index f6437f0a8b..e561d2b75f 100644
+--- a/toolkit/xre/nsXREDirProvider.cpp
++++ b/toolkit/xre/nsXREDirProvider.cpp
+@@ -1181,7 +1181,7 @@ nsresult nsXREDirProvider::GetUserDataDirectoryHome(nsIFile** aFile,
+   const char* homeDir = PR_GetEnv("HOME");
+   if (!homeDir || !*homeDir) return NS_ERROR_FAILURE;
+ 
+-#  ifdef ANDROID /* We want (ProfD == ProfLD) on Android. */
++#  if defined(ANDROID) || defined(MOZ_WIDGET_DOSXC) /* ProfD == ProfLD */
+   MOZ_TRY(NS_NewNativeLocalFile(nsDependentCString(homeDir),
+                                 getter_AddRefs(localDir)));
+ #  else
+diff --git a/tools/power/moz.build b/tools/power/moz.build
+index 68da44f3a9..46bbe89ec9 100644
+--- a/tools/power/moz.build
++++ b/tools/power/moz.build
+@@ -10,6 +10,7 @@ if CONFIG["OS_ARCH"] == "Darwin" and CONFIG["TARGET_CPU"] == "x86_64":
+ if (
+     CONFIG["OS_ARCH"] == "Linux"
+     and CONFIG["OS_TARGET"] != "Android"
++    and CONFIG["MOZ_WIDGET_TOOLKIT"] != "dosxc"
+     and CONFIG["TARGET_CPU"] in ("x86", "x86_64")
+ ):
+     do_rapl = True
+diff --git a/tools/profiler/core/PowerCounters.h b/tools/profiler/core/PowerCounters.h
+index 896a2398b6..ccd4e7ba69 100644
+--- a/tools/profiler/core/PowerCounters.h
++++ b/tools/profiler/core/PowerCounters.h
+@@ -51,7 +51,7 @@ bool GetRailEnergyData(RailEnergyData*, size_t* size_of_arr);
+ class PowerCounters {
+  public:
+ #if defined(GP_OS_windows) || defined(GP_OS_darwin) || \
+-    defined(GP_PLAT_amd64_linux) || defined(GP_PLAT_arm64_android)
++    (defined(GP_PLAT_amd64_linux) && !defined(MOZ_WIDGET_DOSXC)) || defined(GP_PLAT_arm64_android)
+   explicit PowerCounters();
+ #else
+   explicit PowerCounters() {};
+diff --git a/tools/profiler/moz.build b/tools/profiler/moz.build
+index 82466320fe..2180831fa0 100644
+--- a/tools/profiler/moz.build
++++ b/tools/profiler/moz.build
+@@ -101,7 +101,7 @@ elif CONFIG["OS_TARGET"] == "Linux" and CONFIG["TARGET_CPU"] in (
+         "lul/LulMain.cpp",
+         "lul/platform-linux-lul.cpp",
+     ]
+-    if CONFIG["TARGET_CPU"] == "x86_64":
++    if CONFIG["TARGET_CPU"] == "x86_64" and CONFIG["MOZ_WIDGET_TOOLKIT"] != "dosxc":
+         UNIFIED_SOURCES += [
+             "core/PowerCounters-linux.cpp",
+         ]
+diff --git a/uriloader/exthandler/moz.build b/uriloader/exthandler/moz.build
+index 9a40d20138..d159884775 100644
+--- a/uriloader/exthandler/moz.build
++++ b/uriloader/exthandler/moz.build
+@@ -82,7 +82,7 @@ else:
+         osdir + "/nsOSHelperAppService.cpp",
+     ]
+ 
+-if CONFIG["MOZ_WIDGET_TOOLKIT"] == "gtk":
++if CONFIG["MOZ_WIDGET_TOOLKIT"] in ("dosxc", "gtk"):
+     UNIFIED_SOURCES += [
+         "unix/nsGNOMERegistry.cpp",
+         "unix/nsMIMEInfoUnix.cpp",
+diff --git a/widget/Theme.cpp b/widget/Theme.cpp
+index c8779441a8..a6ac41d623 100644
+--- a/widget/Theme.cpp
++++ b/widget/Theme.cpp
+@@ -115,7 +115,7 @@ static StaticRefPtr<Theme> gRDMInstance;
+ 
+ }  // namespace
+ 
+-#ifdef ANDROID
++#if defined(ANDROID) || defined(MOZ_WIDGET_DOSXC)
+ already_AddRefed<Theme> do_CreateNativeThemeDoNotUseDirectly() {
+   // Android doesn't have a native theme.
+   return do_AddRef(new Theme(Theme::ScrollbarStyle()));
+@@ -1507,7 +1507,7 @@ UniquePtr<ScrollbarDrawing> Theme::ScrollbarStyle() {
+   return std::make_unique<ScrollbarDrawingWin>();
+ #elif defined(MOZ_WIDGET_COCOA) || defined(MOZ_WIDGET_UIKIT)
+   return std::make_unique<ScrollbarDrawingCocoa>();
+-#elif MOZ_WIDGET_GTK
++#elif defined(MOZ_WIDGET_GTK) || defined(MOZ_WIDGET_DOSXC)
+   return std::make_unique<ScrollbarDrawingGTK>();
+ #elif ANDROID
+   return std::make_unique<ScrollbarDrawingAndroid>();
+diff --git a/widget/dosxc/DosxcBoard.c b/widget/dosxc/DosxcBoard.c
+new file mode 100644
+index 0000000000..b14e1fc281
+--- /dev/null
++++ b/widget/dosxc/DosxcBoard.c
+@@ -0,0 +1,171 @@
++/* This Source Code Form is subject to the terms of the Mozilla Public
++ * License, v. 2.0. If a copy of the MPL was not distributed with this
++ * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
++
++#include "DosxcBoard.h"
++
++#include "wm.h"
++
++static struct gui_board* board;
++static struct gui_client* self;
++
++int dosxc_gui_connect(void) {
++  board = (struct gui_board*)dosxc_sys_task(DOSXC_TASK_SHARE_GET, 0, 0, 0);
++  if (!board || board->magic != GUI_MAGIC) {
++    board = 0;
++    return -1;
++  }
++  int pid = dosxc_sys_getpid();
++  for (int i = 0; i < GUI_CLIENTS; ++i) {
++    if (__sync_bool_compare_and_swap(&board->clients[i].pid, 0, pid)) {
++      self = &board->clients[i];
++      return 0;
++    }
++  }
++  board = 0;
++  return -1;
++}
++
++void dosxc_gui_screen(int* w, int* h) {
++  *w = board ? board->screen_w : 0;
++  *h = board ? board->screen_h : 0;
++}
++
++static void request(const struct gui_request* r) {
++  u32 next = (self->rq_write + 1) % GUI_REQUESTS;
++  while (next == self->rq_read) {
++    dosxc_sys_sleep(2000000);
++  }
++  self->requests[self->rq_write] = *r;
++  __sync_synchronize();
++  self->rq_write = next;
++}
++
++static void simple(int type, struct window* w, int x, int y) {
++  struct gui_request r;
++  memset(&r, 0, sizeof(r));
++  r.type = type;
++  r.window = (uintptr_t)w;
++  r.x = x;
++  r.y = y;
++  request(&r);
++}
++
++// The desktop may still be drawing an old buffer, and the renderer filling
++// one: buffers are freed a few resizes later.
++#define RETIRED 6
++struct pixels {
++  u32* old[RETIRED];
++  int next;
++};
++
++static int replace_pixels(struct window* w, int width, int height) {
++  u32* px = calloc((size_t)width * (size_t)height, sizeof(u32));
++  if (!px) {
++    return -1;
++  }
++  struct pixels* held = w->data;
++  free(held->old[held->next]);
++  held->old[held->next] = w->content.px;
++  held->next = (held->next + 1) % RETIRED;
++  w->content.w = width;
++  w->content.h = height;
++  w->content.capacity = width * height;
++  __sync_synchronize();
++  w->content.px = px;
++  return 0;
++}
++
++void* dosxc_gui_open(int x, int y, int width, int height, const char* title,
++                     int popup) {
++  if (!self) {
++    return 0;
++  }
++  struct window* w = calloc(1, sizeof(*w));
++  if (!w) {
++    return 0;
++  }
++  w->data = calloc(1, sizeof(struct pixels));
++  if (!w->data || replace_pixels(w, width, height)) {
++    free(w->data);
++    free(w);
++    return 0;
++  }
++  w->r = (struct rect){x, y, width, height};
++  snprintf(w->title, sizeof(w->title), "%s", title);
++  w->icon = ICON_DOSFOX;
++  w->resizable = !popup;
++  w->popup = popup;
++  w->track_mouse = 1;
++  simple(RQ_OPEN, w, 0, 0);
++  return w;
++}
++
++void dosxc_gui_close(void* window) { simple(RQ_CLOSE, window, 0, 0); }
++
++void dosxc_gui_title(void* window, const char* title) {
++  struct window* w = window;
++  snprintf(w->title, sizeof(w->title), "%s", title);
++}
++
++void dosxc_gui_accept_size(void* window, int width, int height) {
++  struct window* w = window;
++  if (w->content.w == width && w->content.h == height) {
++    return;
++  }
++  if (!replace_pixels(w, width, height)) {
++    w->r.w = width;
++    w->r.h = height;
++    ++w->seq;
++  }
++}
++
++void dosxc_gui_size(void* window, int width, int height) {
++  struct window* w = window;
++  if (w->content.w == width && w->content.h == height) {
++    return;
++  }
++  if (!replace_pixels(w, width, height)) {
++    w->r.w = width;
++    w->r.h = height;
++    simple(RQ_RESIZE, w, width, height);
++    ++w->seq;
++  }
++}
++
++void dosxc_gui_place(void* window, int x, int y) {
++  struct window* w = window;
++  w->r.x = x;
++  w->r.y = y;
++}
++
++void dosxc_gui_position(void* window, int* x, int* y) {
++  struct window* w = window;
++  *x = w->r.x;
++  *y = w->r.y;
++}
++
++uint32_t* dosxc_gui_pixels(void* window, int* width, int* height) {
++  struct window* w = window;
++  *width = w->content.w;
++  *height = w->content.h;
++  return w->content.px;
++}
++
++void dosxc_gui_presented(void* window) { ++((struct window*)window)->seq; }
++
++int dosxc_gui_next_event(struct dosxc_gui_event* out) {
++  if (!self || self->ev_read == self->ev_write) {
++    return 0;
++  }
++  __sync_synchronize();
++  struct gui_event e = self->events[self->ev_read];
++  self->ev_read = (self->ev_read + 1) % GUI_RING;
++  out->type = e.type;
++  out->x = e.x;
++  out->y = e.y;
++  out->kind = e.kind;
++  out->value = e.value;
++  out->window = (void*)e.window;
++  return 1;
++}
+diff --git a/widget/dosxc/DosxcBoard.h b/widget/dosxc/DosxcBoard.h
+new file mode 100644
+index 0000000000..965e451622
+--- /dev/null
++++ b/widget/dosxc/DosxcBoard.h
+@@ -0,0 +1,54 @@
++/* This Source Code Form is subject to the terms of the Mozilla Public
++ * License, v. 2.0. If a copy of the MPL was not distributed with this
++ * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
++
++// The DOS-XC desktop's client protocol (desktop/wm.h and gui.c in the DOS-XC
++// repository), behind plain C so that its names stay out of Gecko's.
++
++#ifndef widget_dosxc_DosxcBoard_h
++#define widget_dosxc_DosxcBoard_h
++
++#include <stdint.h>
++
++#ifdef __cplusplus
++extern "C" {
++#endif
++
++struct dosxc_gui_event {
++  int type, x, y, kind, value;
++  void* window;
++};
++enum {
++  DOSXC_EV_MOUSE = 1,
++  DOSXC_EV_KEY,
++  DOSXC_EV_CLOSE,
++  DOSXC_EV_RESIZE,
++  DOSXC_EV_POPUP
++};
++enum {
++  DOSXC_M_DOWN,
++  DOSXC_M_UP,
++  DOSXC_M_MOVE,
++  DOSXC_M_DOUBLE,
++  DOSXC_M_WHEEL,
++  DOSXC_M_RIGHT
++};
++
++int dosxc_gui_connect(void);
++void dosxc_gui_screen(int* w, int* h);
++void* dosxc_gui_open(int x, int y, int w, int h, const char* title, int popup);
++void dosxc_gui_close(void* window);
++void dosxc_gui_title(void* window, const char* title);
++void dosxc_gui_size(void* window, int w, int h);       // new pixels, and tell the desktop
++void dosxc_gui_accept_size(void* window, int w, int h);  // new pixels, the desktop already knows
++void dosxc_gui_place(void* window, int x, int y);        // a popup
++void dosxc_gui_position(void* window, int* x, int* y);
++uint32_t* dosxc_gui_pixels(void* window, int* w, int* h);
++void dosxc_gui_presented(void* window);
++int dosxc_gui_next_event(struct dosxc_gui_event* event);
++
++#ifdef __cplusplus
++}
++#endif
++
++#endif
+diff --git a/widget/dosxc/DosxcDesktop.cpp b/widget/dosxc/DosxcDesktop.cpp
+new file mode 100644
+index 0000000000..ea8265993d
+--- /dev/null
++++ b/widget/dosxc/DosxcDesktop.cpp
+@@ -0,0 +1,373 @@
++/* This Source Code Form is subject to the terms of the Mozilla Public
++ * License, v. 2.0. If a copy of the MPL was not distributed with this
++ * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
++
++#include "DosxcDesktop.h"
++
++#include "DosxcBoard.h"
++#include "HeadlessWidget.h"
++#include "mozilla/MouseEvents.h"
++#include "mozilla/TextEvents.h"
++#include "mozilla/dom/WheelEventBinding.h"
++#include "mozilla/gfx/2D.h"
++#include "nsIRollupListener.h"
++#include "nsIWidgetListener.h"
++#include "nsTArray.h"
++
++namespace mozilla::widget::dosxc {
++
++namespace {
++
++struct Entry {
++  void* mGui;
++  RefPtr<HeadlessWidget> mWidget;
++  int mX, mY;
++};
++
++nsTArray<Entry> sWindows;
++int sConnected = -1;
++int16_t sButtons = 0;
++
++Entry* Find(void* aGui) {
++  for (auto& entry : sWindows) {
++    if (entry.mGui == aGui) {
++      return &entry;
++    }
++  }
++  return nullptr;
++}
++
++void RollupIfOutside(HeadlessWidget* aWidget, const LayoutDeviceIntPoint& aAt) {
++  nsIRollupListener* listener = nsIWidget::GetActiveRollupListener();
++  if (!listener) {
++    return;
++  }
++  nsCOMPtr<nsIWidget> rollup = listener->GetRollupWidget();
++  if (!rollup || rollup == aWidget) {
++    return;
++  }
++  AutoTArray<nsIWidget*, 8> chain;
++  listener->GetSubmenuWidgetChain(&chain);
++  if (chain.Contains(aWidget)) {
++    return;
++  }
++  LayoutDeviceIntPoint point = aAt + aWidget->WidgetToScreenOffset();
++  nsIRollupListener::RollupOptions options;
++  options.mPoint = &point;
++  listener->Rollup(options);
++}
++
++void SendButton(HeadlessWidget* aWidget, EventMessage aMessage,
++                const LayoutDeviceIntPoint& aAt, MouseButton aButton,
++                int aClicks) {
++  WidgetMouseEvent event(true, aMessage, aWidget, WidgetMouseEvent::eReal);
++  event.mRefPoint = aAt;
++  event.mButton = aButton;
++  event.mButtons = sButtons;
++  event.mClickCount = aClicks;
++  event.AssignEventTime(WidgetEventTime());
++  aWidget->DispatchInputEvent(&event);
++}
++
++void HandleMouse(HeadlessWidget* aWidget, const dosxc_gui_event& aEvent) {
++  LayoutDeviceIntPoint at(aEvent.x, aEvent.y);
++  switch (aEvent.kind) {
++    case DOSXC_M_MOVE: {
++      WidgetMouseEvent event(true, eMouseMove, aWidget, WidgetMouseEvent::eReal);
++      event.mRefPoint = at;
++      event.mButtons = sButtons;
++      event.AssignEventTime(WidgetEventTime());
++      aWidget->DispatchInputEvent(&event);
++      break;
++    }
++    case DOSXC_M_DOWN:
++    case DOSXC_M_DOUBLE:
++      RollupIfOutside(aWidget, at);
++      sButtons = MouseButtonsFlag::ePrimaryFlag;
++      SendButton(aWidget, eMouseDown, at, MouseButton::ePrimary,
++                 aEvent.kind == DOSXC_M_DOUBLE ? 2 : 1);
++      break;
++    case DOSXC_M_UP:
++      sButtons = 0;
++      SendButton(aWidget, eMouseUp, at, MouseButton::ePrimary, 1);
++      break;
++    case DOSXC_M_RIGHT: {
++      RollupIfOutside(aWidget, at);
++      sButtons = MouseButtonsFlag::eSecondaryFlag;
++      SendButton(aWidget, eMouseDown, at, MouseButton::eSecondary, 1);
++      sButtons = 0;
++      SendButton(aWidget, eMouseUp, at, MouseButton::eSecondary, 1);
++      WidgetPointerEvent menu(true, eContextMenu, aWidget);
++      menu.mRefPoint = at;
++      menu.mButton = MouseButton::eSecondary;
++      menu.AssignEventTime(WidgetEventTime());
++      aWidget->DispatchInputEvent(&menu);
++      break;
++    }
++    case DOSXC_M_WHEEL: {
++      WidgetWheelEvent event(true, eWheel, aWidget);
++      event.mRefPoint = at;
++      event.mDeltaMode = dom::WheelEvent_Binding::DOM_DELTA_LINE;
++      event.mDeltaY = -aEvent.value * 3;
++      event.mLineOrPageDeltaY = -aEvent.value * 3;
++      event.AssignEventTime(WidgetEventTime());
++      aWidget->DispatchInputEvent(&event);
++      break;
++    }
++  }
++}
++
++void SendKey(HeadlessWidget* aWidget, uint32_t aKeyCode, KeyNameIndex aName,
++             char16_t aChar, Modifiers aModifiers) {
++  for (EventMessage message : {eKeyDown, eKeyPress, eKeyUp}) {
++    WidgetKeyboardEvent event(true, message, aWidget);
++    event.mModifiers = aModifiers;
++    event.mKeyCode = aKeyCode;
++    event.mKeyNameIndex = aName;
++    if (aChar) {
++      event.mKeyNameIndex = KEY_NAME_INDEX_USE_STRING;
++      event.mKeyValue.Assign(aChar);
++      if (message == eKeyPress) {
++        event.mCharCode = aChar;
++        event.mKeyCode = 0;
++      }
++    }
++    event.AssignEventTime(WidgetEventTime());
++    aWidget->DispatchInputEvent(&event);
++  }
++}
++
++void HandleKey(HeadlessWidget* aWindow, int aKey, int aHeld) {
++  // Text goes to the window Gecko considers active, whichever desktop window
++  // (a popup, say) has the keyboard.
++  RefPtr<HeadlessWidget> target = HeadlessWidget::GetActiveWindow();
++  if (!target) {
++    target = aWindow;
++  }
++  Modifiers held = 0;
++  if (aHeld & 1) {
++    held |= MODIFIER_SHIFT;
++  }
++  if (aHeld & 2) {
++    held |= MODIFIER_CONTROL;
++  }
++  if (aHeld & 4) {
++    held |= MODIFIER_ALT;
++  }
++  static const struct {
++    int mKey;
++    uint32_t mCode;
++    KeyNameIndex mName;
++  } kSpecial[] = {
++      {0x101, NS_VK_UP, KEY_NAME_INDEX_ArrowUp},
++      {0x102, NS_VK_DOWN, KEY_NAME_INDEX_ArrowDown},
++      {0x103, NS_VK_RIGHT, KEY_NAME_INDEX_ArrowRight},
++      {0x104, NS_VK_LEFT, KEY_NAME_INDEX_ArrowLeft},
++      {0x105, NS_VK_HOME, KEY_NAME_INDEX_Home},
++      {0x106, NS_VK_END, KEY_NAME_INDEX_End},
++      {0x107, NS_VK_INSERT, KEY_NAME_INDEX_Insert},
++      {0x108, NS_VK_DELETE, KEY_NAME_INDEX_Delete},
++      {0x109, NS_VK_PAGE_UP, KEY_NAME_INDEX_PageUp},
++      {0x10a, NS_VK_PAGE_DOWN, KEY_NAME_INDEX_PageDown},
++      {8, NS_VK_BACK, KEY_NAME_INDEX_Backspace},
++      {9, NS_VK_TAB, KEY_NAME_INDEX_Tab},
++      {10, NS_VK_RETURN, KEY_NAME_INDEX_Enter},
++      {13, NS_VK_RETURN, KEY_NAME_INDEX_Enter},
++      {27, NS_VK_ESCAPE, KEY_NAME_INDEX_Escape},
++  };
++  for (const auto& special : kSpecial) {
++    if (special.mKey == aKey) {
++      SendKey(target, special.mCode, special.mName, 0, held);
++      return;
++    }
++  }
++  if (aKey >= 0x10b && aKey <= 0x116) {  // F1 to F12
++    SendKey(target, NS_VK_F1 + uint32_t(aKey - 0x10b),
++            KeyNameIndex(KEY_NAME_INDEX_F1 + (aKey - 0x10b)), 0, held);
++    return;
++  }
++  if (aKey >= 1 && aKey <= 26) {  // Ctrl and a letter
++    SendKey(target, NS_VK_A + uint32_t(aKey - 1), KEY_NAME_INDEX_USE_STRING,
++            char16_t(((aHeld & 1) ? 'A' : 'a') + aKey - 1),
++            held | MODIFIER_CONTROL);
++    return;
++  }
++  if (aKey >= 32 && aKey < 256) {
++    uint32_t code = 0;
++    if (aKey >= 'a' && aKey <= 'z') {
++      code = NS_VK_A + uint32_t(aKey - 'a');
++    } else if (aKey >= 'A' && aKey <= 'Z') {
++      code = NS_VK_A + uint32_t(aKey - 'A');
++    } else if (aKey >= '0' && aKey <= '9') {
++      code = NS_VK_0 + uint32_t(aKey - '0');
++    } else if (aKey == ' ') {
++      code = NS_VK_SPACE;
++    }
++    SendKey(target, code, KEY_NAME_INDEX_USE_STRING, char16_t(aKey), held);
++  }
++}
++
++void Handle(const dosxc_gui_event& aEvent) {
++  Entry* entry = Find(aEvent.window);
++  if (!entry) {
++    return;
++  }
++  RefPtr<HeadlessWidget> widget = entry->mWidget;
++  switch (aEvent.type) {
++    case DOSXC_EV_MOUSE:
++      HandleMouse(widget, aEvent);
++      break;
++    case DOSXC_EV_KEY:
++      HandleKey(widget, aEvent.value, aEvent.kind);
++      break;
++    case DOSXC_EV_CLOSE:
++      if (nsIWidgetListener* listener = widget->GetWidgetListener()) {
++        listener->RequestWindowClose(widget);
++      }
++      break;
++    case DOSXC_EV_RESIZE:
++      dosxc_gui_accept_size(entry->mGui, aEvent.x, aEvent.y);
++      widget->Resize(DesktopSize(aEvent.x, aEvent.y), true);
++      break;
++  }
++}
++
++}  // namespace
++
++bool Available() {
++  if (sConnected < 0) {
++    sConnected = dosxc_gui_connect() == 0 ? 1 : 0;
++  }
++  return sConnected == 1;
++}
++
++void ScreenSize(int* aWidth, int* aHeight) { dosxc_gui_screen(aWidth, aHeight); }
++
++void ShowWindow(HeadlessWidget* aWidget, bool aShow, bool aPopup) {
++  if (!Available()) {
++    return;
++  }
++  if (!aShow) {
++    CloseWindow(aWidget);
++    return;
++  }
++  if (aWidget->mDesktopWindow) {
++    return;
++  }
++  LayoutDeviceIntRect bounds = aWidget->GetBounds();
++  if (!aPopup) {
++    // Fit the screen, leaving room for the frame and taskbar.
++    int screenWidth, screenHeight;
++    ScreenSize(&screenWidth, &screenHeight);
++    if (screenWidth > 0) {
++      int width = std::min(bounds.width, screenWidth - 8);
++      int height = std::min(bounds.height, screenHeight - 60);
++      if (width != bounds.width || height != bounds.height) {
++        aWidget->Resize(DesktopSize(width, height), true);
++        bounds = aWidget->GetBounds();
++      }
++    }
++  }
++  if (bounds.width <= 0 || bounds.height <= 0) {
++    return;
++  }
++  void* gui = dosxc_gui_open(bounds.x, bounds.y, bounds.width, bounds.height,
++                             aPopup                            ? ""
++                             : aWidget->mDesktopTitle.IsEmpty() ? "DOSfox"
++                                                                : aWidget->mDesktopTitle.get(),
++                             aPopup ? 1 : 0);
++  if (gui) {
++    aWidget->mDesktopWindow = gui;
++    sWindows.AppendElement(Entry{gui, aWidget, bounds.x, bounds.y});
++  }
++}
++
++void CloseWindow(HeadlessWidget* aWidget) {
++  if (!aWidget->mDesktopWindow) {
++    return;
++  }
++  void* gui = aWidget->mDesktopWindow;
++  aWidget->mDesktopWindow = nullptr;
++  sWindows.RemoveElementsBy(
++      [gui](const Entry& aEntry) { return aEntry.mGui == gui; });
++  dosxc_gui_close(gui);
++}
++
++void SetTitle(HeadlessWidget* aWidget, const nsAString& aTitle) {
++  // The desktop's title font has only ASCII.
++  nsAutoCString title;
++  for (uint32_t i = 0; i < aTitle.Length(); ++i) {
++    char16_t c = aTitle[i];
++    title.Append(c >= 32 && c < 127 ? char(c) : '-');
++  }
++  aWidget->mDesktopTitle = title;
++  if (aWidget->mDesktopWindow) {
++    dosxc_gui_title(aWidget->mDesktopWindow, title.get());
++  }
++}
++
++void WidgetResized(HeadlessWidget* aWidget, int aWidth, int aHeight) {
++  if (aWidget->mDesktopWindow && aWidth > 0 && aHeight > 0) {
++    dosxc_gui_size(aWidget->mDesktopWindow, aWidth, aHeight);
++  }
++}
++
++void WidgetMoved(HeadlessWidget* aWidget, int aX, int aY) {
++  if (!aWidget->mDesktopWindow) {
++    return;
++  }
++  if (Entry* entry = Find(aWidget->mDesktopWindow)) {
++    entry->mX = aX;
++    entry->mY = aY;
++  }
++  dosxc_gui_place(aWidget->mDesktopWindow, aX, aY);
++}
++
++already_AddRefed<gfx::DrawTarget> StartDrawing(HeadlessWidget* aWidget,
++                                               const gfx::IntSize& aClient) {
++  void* gui = aWidget->mDesktopWindow;
++  if (!gui) {
++    return nullptr;
++  }
++  int width, height;
++  uint32_t* pixels = dosxc_gui_pixels(gui, &width, &height);
++  if (!pixels || width != aClient.width || height != aClient.height) {
++    return nullptr;  // mid-resize: the next frame will fit
++  }
++  return gfx::Factory::CreateDrawTargetForData(
++      gfx::BackendType::SKIA, reinterpret_cast<uint8_t*>(pixels),
++      gfx::IntSize(width, height), width * 4, gfx::SurfaceFormat::B8G8R8X8);
++}
++
++void EndDrawing(HeadlessWidget* aWidget) {
++  if (void* gui = aWidget->mDesktopWindow) {
++    dosxc_gui_presented(gui);
++  }
++}
++
++bool Pump() {
++  if (!Available()) {
++    return false;
++  }
++  bool did = false;
++  dosxc_gui_event event;
++  while (dosxc_gui_next_event(&event)) {
++    Handle(event);
++    did = true;
++  }
++  // The user moves windows on the desktop; Gecko places popups from this.
++  for (uint32_t i = 0; i < sWindows.Length(); ++i) {
++    Entry& entry = sWindows[i];
++    int x, y;
++    dosxc_gui_position(entry.mGui, &x, &y);
++    if (x != entry.mX || y != entry.mY) {
++      entry.mX = x;
++      entry.mY = y;
++      RefPtr<HeadlessWidget> widget = entry.mWidget;
++      widget->Move(DesktopPoint(x, y));
++    }
++  }
++  return did;
++}
++
++}  // namespace mozilla::widget::dosxc
+diff --git a/widget/dosxc/DosxcDesktop.h b/widget/dosxc/DosxcDesktop.h
+new file mode 100644
+index 0000000000..7e0c5b72d2
+--- /dev/null
++++ b/widget/dosxc/DosxcDesktop.h
+@@ -0,0 +1,41 @@
++/* This Source Code Form is subject to the terms of the Mozilla Public
++ * License, v. 2.0. If a copy of the MPL was not distributed with this
++ * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
++
++// Windows on the DOS-XC desktop for the headless widget, which does
++// everything else: Gecko believes it is headless and these show the result.
++
++#ifndef widget_dosxc_DosxcDesktop_h
++#define widget_dosxc_DosxcDesktop_h
++
++#include "mozilla/AlreadyAddRefed.h"
++#include "mozilla/gfx/Point.h"
++#include "nsString.h"
++
++namespace mozilla {
++namespace gfx {
++class DrawTarget;
++}
++namespace widget {
++class HeadlessWidget;
++namespace dosxc {
++
++// Connects on the first call; false when the desktop is not running.
++bool Available();
++void ScreenSize(int* aWidth, int* aHeight);
++void ShowWindow(HeadlessWidget* aWidget, bool aShow, bool aPopup);
++void CloseWindow(HeadlessWidget* aWidget);
++void SetTitle(HeadlessWidget* aWidget, const nsAString& aTitle);
++void WidgetResized(HeadlessWidget* aWidget, int aWidth, int aHeight);
++void WidgetMoved(HeadlessWidget* aWidget, int aX, int aY);
++already_AddRefed<gfx::DrawTarget> StartDrawing(HeadlessWidget* aWidget,
++                                               const gfx::IntSize& aClient);
++void EndDrawing(HeadlessWidget* aWidget);
++// Handles waiting input on the main thread; true if there was any.
++bool Pump();
++
++}  // namespace dosxc
++}  // namespace widget
++}  // namespace mozilla
++
++#endif
+diff --git a/widget/dosxc/GfxInfo.cpp b/widget/dosxc/GfxInfo.cpp
+new file mode 100644
+index 0000000000..2ff40276d6
+--- /dev/null
++++ b/widget/dosxc/GfxInfo.cpp
+@@ -0,0 +1,211 @@
++/* This Source Code Form is subject to the terms of the Mozilla Public
++ * License, v. 2.0. If a copy of the MPL was not distributed with this
++ * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
++
++#include "GfxInfo.h"
++
++#include "nsServiceManagerUtils.h"
++
++namespace mozilla {
++namespace widget {
++
++#ifdef DEBUG
++NS_IMPL_ISUPPORTS_INHERITED(GfxInfo, GfxInfoBase, nsIGfxInfoDebug)
++#endif
++
++GfxInfo::GfxInfo() {}
++
++GfxInfo::~GfxInfo() {}
++
++NS_IMETHODIMP
++GfxInfo::GetDWriteEnabled(bool* aEnabled) { return NS_ERROR_FAILURE; }
++
++NS_IMETHODIMP
++GfxInfo::GetHasBattery(bool* aHasBattery) { return NS_ERROR_NOT_IMPLEMENTED; }
++
++NS_IMETHODIMP
++GfxInfo::GetDWriteVersion(nsAString& aDwriteVersion) {
++  return NS_ERROR_FAILURE;
++}
++
++NS_IMETHODIMP
++GfxInfo::GetCleartypeParameters(nsAString& aCleartypeParams) {
++  return NS_ERROR_FAILURE;
++}
++
++NS_IMETHODIMP
++GfxInfo::GetWindowProtocol(nsAString& aWindowProtocol) {
++  return NS_ERROR_NOT_IMPLEMENTED;
++}
++
++NS_IMETHODIMP
++GfxInfo::GetTestType(nsAString& aTestType) { return NS_ERROR_NOT_IMPLEMENTED; }
++
++NS_IMETHODIMP
++GfxInfo::GetAdapterDescription(nsAString& aAdapterDescription) {
++  return NS_ERROR_FAILURE;
++}
++
++NS_IMETHODIMP
++GfxInfo::GetAdapterDescription2(nsAString& aAdapterDescription) {
++  return NS_ERROR_FAILURE;
++}
++
++NS_IMETHODIMP
++GfxInfo::GetAdapterRAM(uint32_t* aAdapterRAM) { return NS_ERROR_FAILURE; }
++
++NS_IMETHODIMP
++GfxInfo::GetAdapterRAM2(uint32_t* aAdapterRAM) { return NS_ERROR_FAILURE; }
++
++NS_IMETHODIMP
++GfxInfo::GetAdapterDriverVendor(nsAString& aAdapterDriverVendor) {
++  aAdapterDriverVendor.AssignLiteral("");
++  return NS_OK;
++}
++
++NS_IMETHODIMP
++GfxInfo::GetAdapterDriverVendor2(nsAString& aAdapterDriverVendor2) {
++  return NS_ERROR_FAILURE;
++}
++
++NS_IMETHODIMP
++GfxInfo::GetAdapterDriver(nsAString& aAdapterDriver) {
++  return NS_ERROR_FAILURE;
++}
++
++NS_IMETHODIMP
++GfxInfo::GetAdapterDriver2(nsAString& aAdapterDriver) {
++  return NS_ERROR_FAILURE;
++}
++
++NS_IMETHODIMP
++GfxInfo::GetAdapterDriverVersion(nsAString& aAdapterDriverVersion) {
++  aAdapterDriverVersion = EmptyString();
++  return NS_OK;
++}
++
++NS_IMETHODIMP
++GfxInfo::GetAdapterDriverVersion2(nsAString& aAdapterDriverVersion) {
++  aAdapterDriverVersion = EmptyString();
++  return NS_OK;
++}
++
++NS_IMETHODIMP
++GfxInfo::GetAdapterDriverDate(nsAString& aAdapterDriverDate) {
++  return NS_ERROR_FAILURE;
++}
++
++NS_IMETHODIMP
++GfxInfo::GetAdapterDriverDate2(nsAString& aAdapterDriverDate) {
++  return NS_ERROR_FAILURE;
++}
++
++NS_IMETHODIMP
++GfxInfo::GetAdapterVendorID(nsAString& aAdapterVendorID) {
++  aAdapterVendorID = EmptyString();
++  return NS_OK;
++}
++
++NS_IMETHODIMP
++GfxInfo::GetAdapterVendorID2(nsAString& aAdapterVendorID) {
++  aAdapterVendorID = EmptyString();
++  return NS_OK;
++}
++
++NS_IMETHODIMP
++GfxInfo::GetAdapterDeviceID(nsAString& aAdapterDeviceID) {
++  aAdapterDeviceID = EmptyString();
++  return NS_OK;
++}
++
++NS_IMETHODIMP
++GfxInfo::GetAdapterDeviceID2(nsAString& aAdapterDeviceID) {
++  aAdapterDeviceID = EmptyString();
++  return NS_OK;
++}
++
++NS_IMETHODIMP
++GfxInfo::GetAdapterSubsysID(nsAString& aAdapterSubsysID) {
++  return NS_ERROR_FAILURE;
++}
++
++NS_IMETHODIMP
++GfxInfo::GetAdapterSubsysID2(nsAString& aAdapterSubsysID) {
++  return NS_ERROR_FAILURE;
++}
++
++NS_IMETHODIMP
++GfxInfo::GetIsGPU2Active(bool* aIsGPU2Active) { return NS_ERROR_FAILURE; }
++
++NS_IMETHODIMP
++GfxInfo::GetDrmRenderDevice(nsACString& aDrmRenderDevice) {
++  return NS_ERROR_NOT_IMPLEMENTED;
++}
++
++const nsTArray<RefPtr<GfxDriverInfo>>& GfxInfo::GetGfxDriverInfo() {
++  if (sDriverInfo->IsEmpty()) {
++    APPEND_TO_DRIVER_BLOCKLIST2(
++        OperatingSystem::Ios, DeviceFamily::All,
++        nsIGfxInfo::FEATURE_OPENGL_LAYERS, nsIGfxInfo::FEATURE_STATUS_OK,
++        DRIVER_COMPARISON_IGNORED, GfxDriverInfo::allDriverVersions,
++        "FEATURE_OK_FORCE_OPENGL");
++  }
++
++  return *sDriverInfo;
++}
++
++nsresult GfxInfo::GetFeatureStatusImpl(
++    int32_t aFeature, int32_t* aStatus, nsAString& aSuggestedDriverVersion,
++    const nsTArray<RefPtr<GfxDriverInfo>>& aDriverInfo, nsACString& aFailureId,
++    OperatingSystem* aOS /* = nullptr */) {
++  NS_ENSURE_ARG_POINTER(aStatus);
++  aSuggestedDriverVersion.SetIsVoid(true);
++  *aStatus = nsIGfxInfo::FEATURE_STATUS_UNKNOWN;
++  if (aOS) *aOS = OperatingSystem::Ios;
++
++  if (sShutdownOccurred) {
++    return NS_OK;
++  }
++
++  // OpenGL layers are never blocklisted on iOS.
++  // This early return is so we avoid potentially slow
++  // GLStrings initialization on startup when we initialize GL layers.
++  if (aFeature == nsIGfxInfo::FEATURE_OPENGL_LAYERS ||
++      aFeature == nsIGfxInfo::FEATURE_WEBGL_OPENGL) {
++    *aStatus = nsIGfxInfo::FEATURE_STATUS_OK;
++    return NS_OK;
++  }
++
++  return GfxInfoBase::GetFeatureStatusImpl(
++      aFeature, aStatus, aSuggestedDriverVersion, aDriverInfo, aFailureId, aOS);
++}
++
++#ifdef DEBUG
++
++// Implement nsIGfxInfoDebug
++
++NS_IMETHODIMP GfxInfo::SpoofVendorID(const nsAString& aVendorID) {
++  return NS_ERROR_FAILURE;
++}
++
++NS_IMETHODIMP GfxInfo::SpoofDeviceID(const nsAString& aDeviceID) {
++  return NS_ERROR_FAILURE;
++}
++
++NS_IMETHODIMP GfxInfo::SpoofDriverVersion(const nsAString& aDriverVersion) {
++  return NS_ERROR_FAILURE;
++}
++
++NS_IMETHODIMP GfxInfo::SpoofOSVersion(uint32_t aVersion) {
++  return NS_ERROR_FAILURE;
++}
++
++NS_IMETHODIMP GfxInfo::SpoofOSVersionEx(uint32_t aMajor, uint32_t aMinor,
++                                        uint32_t aBuild, uint32_t aRevision) {
++  return NS_ERROR_FAILURE;
++}
++
++#endif
++
++}  // namespace widget
++}  // namespace mozilla
+diff --git a/widget/dosxc/GfxInfo.h b/widget/dosxc/GfxInfo.h
+new file mode 100644
+index 0000000000..6dfe24c223
+--- /dev/null
++++ b/widget/dosxc/GfxInfo.h
+@@ -0,0 +1,84 @@
++/*
++ * This Source Code Form is subject to the terms of the Mozilla Public
++ * License, v. 2.0. If a copy of the MPL was not distributed with this
++ * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
++
++#ifndef _mozilla_widget_GfxInfo_h_
++#define _mozilla_widget_GfxInfo_h_
++
++#include "GfxDriverInfo.h"
++#include "GfxInfoBase.h"
++#include "nsString.h"
++
++namespace mozilla {
++
++namespace gl {
++class GLContext;
++}
++
++namespace widget {
++
++class GfxInfo : public GfxInfoBase {
++ private:
++  ~GfxInfo();
++
++ public:
++  GfxInfo();
++
++  OperatingSystem GetOperatingSystem() override { return OperatingSystem::Ios; }
++
++  // We only declare the subset of nsIGfxInfo that we actually implement. The
++  // rest is brought forward from GfxInfoBase.
++  NS_IMETHOD GetDWriteEnabled(bool* aDWriteEnabled) override;
++  NS_IMETHOD GetHasBattery(bool* aHasBattery) override;
++  NS_IMETHOD GetDWriteVersion(nsAString& aDwriteVersion) override;
++  NS_IMETHOD GetCleartypeParameters(nsAString& aCleartypeParams) override;
++  NS_IMETHOD GetWindowProtocol(nsAString& aWindowProtocol) override;
++  NS_IMETHOD GetTestType(nsAString& aTestType) override;
++  NS_IMETHOD GetAdapterDescription(nsAString& aAdapterDescription) override;
++  NS_IMETHOD GetAdapterDriver(nsAString& aAdapterDriver) override;
++  NS_IMETHOD GetAdapterVendorID(nsAString& aAdapterVendorID) override;
++  NS_IMETHOD GetAdapterDeviceID(nsAString& aAdapterDeviceID) override;
++  NS_IMETHOD GetAdapterSubsysID(nsAString& aAdapterSubsysID) override;
++  NS_IMETHOD GetAdapterRAM(uint32_t* aAdapterRAM) override;
++  NS_IMETHOD GetAdapterDriverVendor(nsAString& aAdapterDriverVendor) override;
++  NS_IMETHOD GetAdapterDriverVersion(nsAString& aAdapterDriverVersion) override;
++  NS_IMETHOD GetAdapterDriverDate(nsAString& aAdapterDriverDate) override;
++  NS_IMETHOD GetAdapterDescription2(nsAString& aAdapterDescription) override;
++  NS_IMETHOD GetAdapterDriver2(nsAString& aAdapterDriver) override;
++  NS_IMETHOD GetAdapterVendorID2(nsAString& aAdapterVendorID) override;
++  NS_IMETHOD GetAdapterDeviceID2(nsAString& aAdapterDeviceID) override;
++  NS_IMETHOD GetAdapterSubsysID2(nsAString& aAdapterSubsysID) override;
++  NS_IMETHOD GetAdapterRAM2(uint32_t* aAdapterRAM) override;
++  NS_IMETHOD GetAdapterDriverVendor2(nsAString& aAdapterDriverVendor) override;
++  NS_IMETHOD GetAdapterDriverVersion2(
++      nsAString& aAdapterDriverVersion) override;
++  NS_IMETHOD GetAdapterDriverDate2(nsAString& aAdapterDriverDate) override;
++  NS_IMETHOD GetIsGPU2Active(bool* aIsGPU2Active) override;
++  NS_IMETHOD GetDrmRenderDevice(nsACString& aDrmRenderDevice) override;
++  using GfxInfoBase::GetFeatureStatus;
++  using GfxInfoBase::GetFeatureSuggestedDriverVersion;
++
++#ifdef DEBUG
++  NS_DECL_ISUPPORTS_INHERITED
++
++  NS_IMETHOD SpoofVendorID(const nsAString& aVendorID) override;
++  NS_IMETHOD SpoofDeviceID(const nsAString& aDeviceID) override;
++  NS_IMETHOD SpoofDriverVersion(const nsAString& aDriverVersion) override;
++  NS_IMETHOD SpoofOSVersion(uint32_t aVersion) override;
++  NS_IMETHOD SpoofOSVersionEx(uint32_t aMajor, uint32_t aMinor, uint32_t aBuild,
++                              uint32_t aRevision) override;
++#endif
++
++ protected:
++  nsresult GetFeatureStatusImpl(
++      int32_t aFeature, int32_t* aStatus, nsAString& aSuggestedDriverVersion,
++      const nsTArray<RefPtr<GfxDriverInfo>>& aDriverInfo,
++      nsACString& aFailureId, OperatingSystem* aOS = nullptr) override;
++  const nsTArray<RefPtr<GfxDriverInfo>>& GetGfxDriverInfo() override;
++};
++
++}  // namespace widget
++}  // namespace mozilla
++
++#endif /* _mozilla_widget_GfxInfo_h_ */
+diff --git a/widget/dosxc/PCompositorWidget.ipdl b/widget/dosxc/PCompositorWidget.ipdl
+new file mode 100644
+index 0000000000..6a3b842ff1
+--- /dev/null
++++ b/widget/dosxc/PCompositorWidget.ipdl
+@@ -0,0 +1,30 @@
++/* This Source Code Form is subject to the terms of the Mozilla Public
++ * License, v. 2.0. If a copy of the MPL was not distributed with this
++ * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
++
++include protocol PCompositorBridge;
++
++include "mozilla/GfxMessageUtils.h";
++
++using mozilla::LayoutDeviceIntSize from "Units.h";
++
++namespace mozilla {
++namespace widget {
++
++[ChildImpl=virtual, ParentImpl=virtual]
++sync protocol PCompositorWidget
++{
++  manager PCompositorBridge;
++
++parent:
++  async __delete__();
++
++  async NotifyClientSizeChanged(LayoutDeviceIntSize aClientSize);
++
++child:
++  async ObserveVsync();
++  async UnobserveVsync();
++};
++
++} // namespace widget
++} // namespace mozilla
+diff --git a/widget/dosxc/components.conf b/widget/dosxc/components.conf
+new file mode 100644
+index 0000000000..da179bb19c
+--- /dev/null
++++ b/widget/dosxc/components.conf
+@@ -0,0 +1,69 @@
++# This Source Code Form is subject to the terms of the Mozilla Public
++# License, v. 2.0. If a copy of the MPL was not distributed with this
++# file, You can obtain one at http://mozilla.org/MPL/2.0/.
++
++Headers = '/widget/dosxc/nsWidgetFactory.h',
++
++InitFunc = 'nsWidgetDosxcModuleCtor'
++UnloadFunc = 'nsWidgetDosxcModuleDtor'
++
++Classes = [
++    {
++        'cid': '{49f428e8-baf9-4ba3-b1b0-7d2fd3abbcea}',
++        'contract_ids': ['@mozilla.org/widget/parent/clipboard;1'],
++        'interfaces': ['nsIClipboard'],
++        'type': 'nsIClipboard',
++        'processes': ProcessSelector.MAIN_PROCESS_ONLY,
++    },
++    {
++        'name': 'GfxInfo',
++        'cid': '{d755a760-9f27-11df-0800-200c9a664242}',
++        'contract_ids': ['@mozilla.org/gfx/info;1'],
++        'type': 'mozilla::widget::GfxInfo',
++        'headers': ['/widget/dosxc/GfxInfo.h'],
++        'init_method': 'Init',
++    },
++    {
++        'cid': '{2d96b3df-c051-11d1-a827-0040959a28c9}',
++        'contract_ids': ['@mozilla.org/widget/appshell/dosxc;1'],
++        'legacy_constructor': 'nsAppShellConstructor',
++        'headers': ['/widget/dosxc/nsWidgetFactory.h'],
++        'processes': ProcessSelector.ALLOW_IN_GPU_RDD_VR_AND_UTILITY_PROCESS,
++    },
++    {
++        'cid': '{8b5314bc-db01-11d2-96ce-0060b0fb9956}',
++        'contract_ids': ['@mozilla.org/widget/transferable;1'],
++        'type': 'nsTransferable',
++        'headers': ['/widget/nsTransferable.h'],
++    },
++    {
++        'cid': '{948a0023-e3a7-11d2-96cf-0060b0fb9956}',
++        'contract_ids': ['@mozilla.org/widget/htmlformatconverter;1'],
++        'type': 'nsHTMLFormatConverter',
++        'headers': ['/widget/nsHTMLFormatConverter.h'],
++    },
++    {
++        'cid': '{77221d5a-1dd2-11b2-8c69-c710f15d2ed5}',
++        'contract_ids': ['@mozilla.org/widget/clipboardhelper;1'],
++        'type': 'nsClipboardHelper',
++        'headers': ['/widget/nsClipboardHelper.h'],
++    },
++    {
++        'cid': '{f0ddedd7-e8d5-4f95-a5b4-0f48f1741b36}',
++        'contract_ids': ['@mozilla.org/gfx/parent/screenmanager;1'],
++        'type': 'mozilla::widget::ScreenManager',
++        'headers': ['mozilla/widget/ScreenManager.h'],
++        'constructor': 'mozilla::widget::ScreenManager::GetAddRefedSingleton',
++        'processes': ProcessSelector.MAIN_PROCESS_ONLY,
++        'singleton': True,
++    },
++    {
++        'cid': '{6987230e-0098-4e78-bc5f-1493ee7519fa}',
++        'contract_ids': ['@mozilla.org/widget/useridleservice;1'],
++        'type': 'nsUserIdleServiceDosxc',
++        'headers': ['/widget/dosxc/nsUserIdleServiceDosxc.h'],
++        'constructor': 'nsUserIdleServiceDosxc::GetInstance',
++        'singleton': True,
++        'processes': ProcessSelector.ALLOW_IN_GPU_RDD_VR_AND_UTILITY_PROCESS,
++    },
++]
+diff --git a/widget/dosxc/moz.build b/widget/dosxc/moz.build
+new file mode 100644
+index 0000000000..549c8e88c8
+--- /dev/null
++++ b/widget/dosxc/moz.build
+@@ -0,0 +1,42 @@
++# -*- Mode: python; indent-tabs-mode: nil; tab-width: 40 -*-
++# This Source Code Form is subject to the terms of the Mozilla Public
++# License, v. 2.0. If a copy of the MPL was not distributed with this
++# file, You can obtain one at http://mozilla.org/MPL/2.0/.
++
++# The DOS-XC widget backend, built on the headless one.
++
++UNIFIED_SOURCES += [
++    "GfxInfo.cpp",
++    "nsAppShell.cpp",
++    "nsDosxcStubs.cpp",
++    "nsLookAndFeel.cpp",
++    "nsUserIdleServiceDosxc.cpp",
++    "nsWidgetFactory.cpp",
++    "nsWindow.cpp",
++]
++
++include("/ipc/chromium/chromium-config.mozbuild")
++
++SOURCES += [
++    "DosxcBoard.c",
++    "DosxcDesktop.cpp",
++]
++
++# The desktop's protocol, from the DOS-XC repository.
++SOURCES["DosxcBoard.c"].flags += ["-I%s/../../../desktop" % TOPSRCDIR]
++
++FINAL_LIBRARY = "xul"
++
++LOCAL_INCLUDES += [
++    "/layout/base",
++    "/layout/forms",
++    "/layout/generic",
++    "/layout/xul",
++    "/widget",
++    "/widget/headless",
++    "/xpcom/threads",
++]
++
++XPCOM_MANIFESTS += [
++    "components.conf",
++]
+diff --git a/widget/dosxc/nsAppShell.cpp b/widget/dosxc/nsAppShell.cpp
+new file mode 100644
+index 0000000000..55a9e0fe88
+--- /dev/null
++++ b/widget/dosxc/nsAppShell.cpp
+@@ -0,0 +1,67 @@
++/* This Source Code Form is subject to the terms of the Mozilla Public
++ * License, v. 2.0. If a copy of the MPL was not distributed with this
++ * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
++
++#include "nsAppShell.h"
++
++#include <stdlib.h>
++
++#include "DosxcDesktop.h"
++#include "HeadlessScreenHelper.h"
++#include "mozilla/Hal.h"
++#include "mozilla/Sprintf.h"
++#include "mozilla/UniquePtr.h"
++#include "nsXULAppAPI.h"
++#include "mozilla/widget/ScreenManager.h"
++
++using namespace mozilla;
++namespace dosxc = mozilla::widget::dosxc;
++using mozilla::widget::HeadlessScreenHelper;
++using mozilla::widget::ScreenManager;
++
++nsAppShell::nsAppShell()
++    : mMutex("nsAppShell"), mCondVar(mMutex, "nsAppShell") {}
++
++nsresult nsAppShell::Init() {
++  // Every toolkit starts the hardware layer here; wake locks need it.
++  mozilla::hal::Init();
++  if (XRE_IsParentProcess()) {
++    if (dosxc::Available()) {
++      int width, height;
++      dosxc::ScreenSize(&width, &height);
++      if (width > 0) {
++        char size[16];
++        SprintfLiteral(size, "%d", width);
++        setenv("MOZ_HEADLESS_WIDTH", size, 1);
++        SprintfLiteral(size, "%d", height);
++        setenv("MOZ_HEADLESS_HEIGHT", size, 1);
++      }
++    }
++    ScreenManager& screens = ScreenManager::GetSingleton();
++    screens.SetHelper(std::make_unique<HeadlessScreenHelper>());
++  }
++  return nsBaseAppShell::Init();
++}
++
++void nsAppShell::ScheduleNativeEventCallback() {
++  MutexAutoLock lock(mMutex);
++  mPending = true;
++  mCondVar.Notify();
++}
++
++bool nsAppShell::ProcessNextNativeEvent(bool aMayWait) {
++  bool input = dosxc::Pump();
++  bool run;
++  {
++    MutexAutoLock lock(mMutex);
++    if (aMayWait && !mPending) {
++      mCondVar.Wait(TimeDuration::FromMilliseconds(10));
++    }
++    run = mPending;
++    mPending = false;
++  }
++  if (run) {
++    NativeEventCallback();
++  }
++  return run || input;
++}
+diff --git a/widget/dosxc/nsAppShell.h b/widget/dosxc/nsAppShell.h
+new file mode 100644
+index 0000000000..cf6b8ae74f
+--- /dev/null
++++ b/widget/dosxc/nsAppShell.h
+@@ -0,0 +1,30 @@
++/* This Source Code Form is subject to the terms of the Mozilla Public
++ * License, v. 2.0. If a copy of the MPL was not distributed with this
++ * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
++
++#ifndef nsAppShell_h__
++#define nsAppShell_h__
++
++#include "mozilla/CondVar.h"
++#include "mozilla/Mutex.h"
++#include "nsBaseAppShell.h"
++
++// The main event loop.  DOS-XC has no native event queue to wait on yet, so
++// waiting is a condition variable that other threads signal.
++class nsAppShell final : public nsBaseAppShell {
++ public:
++  nsAppShell();
++  nsresult Init();
++
++ protected:
++  ~nsAppShell() override = default;
++  void ScheduleNativeEventCallback() override;
++  bool ProcessNextNativeEvent(bool aMayWait) override;
++
++ private:
++  mozilla::Mutex mMutex;
++  mozilla::CondVar mCondVar;
++  bool mPending = false;
++};
++
++#endif
+diff --git a/widget/dosxc/nsDosxcStubs.cpp b/widget/dosxc/nsDosxcStubs.cpp
+new file mode 100644
+index 0000000000..bd0823cd0a
+--- /dev/null
++++ b/widget/dosxc/nsDosxcStubs.cpp
+@@ -0,0 +1,35 @@
++/* This Source Code Form is subject to the terms of the Mozilla Public
++ * License, v. 2.0. If a copy of the MPL was not distributed with this
++ * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
++
++// Features DOS-XC does not have, for the parts of Gecko that ask.
++
++#include "MediaKeysEventSourceFactory.h"
++#include "mozilla/RefPtr.h"
++#include "nsINetworkLinkService.h"
++#include "nsPrintSettingsImpl.h"
++
++bool nsINetworkLinkService::HasNonLocalIPv6Address() { return false; }
++
++namespace mozilla::widget {
++
++mozilla::dom::MediaControlKeySource* CreateMediaControlKeySource() {
++  return nullptr;
++}
++
++}  // namespace mozilla::widget
++
++already_AddRefed<nsIPrintSettings> CreatePlatformPrintSettings(
++    const mozilla::PrintSettingsInitializer& aSettings) {
++  auto settings = mozilla::MakeRefPtr<nsPrintSettings>();
++  settings->InitWithInitializer(aSettings);
++  return settings.forget();
++}
++
++// wgpu's Linux code in Rust calls back into these for DMA-BUF textures, which
++// never exist here, so they are never reached.
++extern "C" {
++void wgpu_server_get_linux_dmabuf_modifiers() { MOZ_CRASH("no DMA-BUF"); }
++void wgpu_server_get_dma_buf_info() { MOZ_CRASH("no DMA-BUF"); }
++void wgpu_server_get_dma_buf_fd() { MOZ_CRASH("no DMA-BUF"); }
++}
+diff --git a/widget/dosxc/nsLookAndFeel.cpp b/widget/dosxc/nsLookAndFeel.cpp
+new file mode 100644
+index 0000000000..d8cae56b94
+--- /dev/null
++++ b/widget/dosxc/nsLookAndFeel.cpp
+@@ -0,0 +1,92 @@
++/* This Source Code Form is subject to the terms of the Mozilla Public
++ * License, v. 2.0. If a copy of the MPL was not distributed with this
++ * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
++
++#include "nsLookAndFeel.h"
++
++#include "gfxFont.h"
++
++using namespace mozilla;
++
++nsresult nsLookAndFeel::NativeGetInt(IntID aID, int32_t& aResult) {
++  switch (aID) {
++    case IntID::CaretBlinkTime:
++      aResult = 567;
++      return NS_OK;
++    case IntID::CaretWidth:
++      aResult = 1;
++      return NS_OK;
++    case IntID::SubmenuDelay:
++      aResult = 200;
++      return NS_OK;
++    case IntID::DragThresholdX:
++    case IntID::DragThresholdY:
++      aResult = 4;
++      return NS_OK;
++    default:
++      aResult = 0;
++      return NS_ERROR_FAILURE;
++  }
++}
++
++nsresult nsLookAndFeel::NativeGetFloat(FloatID, float& aResult) {
++  aResult = -1.0f;
++  return NS_ERROR_FAILURE;
++}
++
++// Not yet connected to the desktop's theme.
++nsresult nsLookAndFeel::NativeGetColor(ColorID aID, ColorScheme,
++                                       nscolor& aResult) {
++  switch (aID) {
++    case ColorID::Window:
++    case ColorID::Field:
++    case ColorID::MozCombobox:
++      aResult = NS_RGB(0xff, 0xff, 0xff);
++      break;
++    case ColorID::Highlight:
++    case ColorID::Selecteditem:
++      aResult = NS_RGB(0x33, 0x66, 0xcc);
++      break;
++    case ColorID::Highlighttext:
++    case ColorID::Selecteditemtext:
++      aResult = NS_RGB(0xff, 0xff, 0xff);
++      break;
++    case ColorID::Buttonface:
++    case ColorID::Menu:
++    case ColorID::Activeborder:
++    case ColorID::Threedface:
++    case ColorID::MozDialog:
++      aResult = NS_RGB(0xe0, 0xe0, 0xe0);
++      break;
++    case ColorID::Background:
++    case ColorID::Infobackground:
++      aResult = NS_RGB(0xff, 0xff, 0xe1);
++      break;
++    case ColorID::Scrollbar:
++    case ColorID::ThemedScrollbar:
++      aResult = NS_RGB(0xec, 0xec, 0xec);
++      break;
++    case ColorID::ThemedScrollbarThumb:
++      aResult = NS_RGB(0xa0, 0xa0, 0xa0);
++      break;
++    case ColorID::ThemedScrollbarThumbHover:
++    case ColorID::ThemedScrollbarThumbActive:
++      aResult = NS_RGB(0x80, 0x80, 0x80);
++      break;
++    default:
++      aResult = NS_RGB(0, 0, 0);
++      break;
++  }
++  return NS_OK;
++}
++
++bool nsLookAndFeel::NativeGetFont(FontID, nsString& aFontName,
++                                  gfxFontStyle& aFontStyle) {
++  aFontName.AssignLiteral("sans-serif");
++  aFontStyle.style = FontSlantStyle::NORMAL;
++  aFontStyle.weight = FontWeight::NORMAL;
++  aFontStyle.width = FontWidth::NORMAL;
++  aFontStyle.size = 14;
++  aFontStyle.systemFont = true;
++  return true;
++}
+diff --git a/widget/dosxc/nsLookAndFeel.h b/widget/dosxc/nsLookAndFeel.h
+new file mode 100644
+index 0000000000..abe37bd5fa
+--- /dev/null
++++ b/widget/dosxc/nsLookAndFeel.h
+@@ -0,0 +1,23 @@
++/* This Source Code Form is subject to the terms of the Mozilla Public
++ * License, v. 2.0. If a copy of the MPL was not distributed with this
++ * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
++
++#ifndef nsLookAndFeel_h__
++#define nsLookAndFeel_h__
++
++#include "nsXPLookAndFeel.h"
++
++class nsLookAndFeel final : public nsXPLookAndFeel {
++ public:
++  nsLookAndFeel() = default;
++  void NativeInit() final {}
++  void RefreshImpl() override { nsXPLookAndFeel::RefreshImpl(); }
++  nsresult NativeGetInt(IntID aID, int32_t& aResult) override;
++  nsresult NativeGetFloat(FloatID aID, float& aResult) override;
++  nsresult NativeGetColor(ColorID, ColorScheme, nscolor& aResult) override;
++  bool NativeGetFont(FontID aID, nsString& aFontName,
++                     gfxFontStyle& aFontStyle) override;
++  char16_t GetPasswordCharacterImpl() override { return 0x2022; }
++};
++
++#endif
+diff --git a/widget/dosxc/nsUserIdleServiceDosxc.cpp b/widget/dosxc/nsUserIdleServiceDosxc.cpp
+new file mode 100644
+index 0000000000..a8ee3187b9
+--- /dev/null
++++ b/widget/dosxc/nsUserIdleServiceDosxc.cpp
+@@ -0,0 +1,7 @@
++/* This Source Code Form is subject to the terms of the Mozilla Public
++ * License, v. 2.0. If a copy of the MPL was not distributed with this
++ * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
++
++#include "nsUserIdleServiceDosxc.h"
++
++bool nsUserIdleServiceDosxc::PollIdleTime(uint32_t* aIdleTime) { return false; }
+diff --git a/widget/dosxc/nsUserIdleServiceDosxc.h b/widget/dosxc/nsUserIdleServiceDosxc.h
+new file mode 100644
+index 0000000000..6aa58c4c44
+--- /dev/null
++++ b/widget/dosxc/nsUserIdleServiceDosxc.h
+@@ -0,0 +1,37 @@
++/* This Source Code Form is subject to the terms of the Mozilla Public
++ * License, v. 2.0. If a copy of the MPL was not distributed with this
++ * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
++
++#ifndef nsUserIdleServiceDosxc_h_
++#define nsUserIdleServiceDosxc_h_
++
++#include "mozilla/AppShutdown.h"
++#include "nsUserIdleService.h"
++
++class nsUserIdleServiceDosxc : public nsUserIdleService {
++ public:
++  NS_INLINE_DECL_REFCOUNTING_INHERITED(nsUserIdleServiceDosxc,
++                                       nsUserIdleService)
++
++  bool PollIdleTime(uint32_t* aIdleTime) override;
++
++  static already_AddRefed<nsUserIdleServiceDosxc> GetInstance() {
++    RefPtr<nsUserIdleService> idleService = nsUserIdleService::GetInstance();
++    if (!idleService) {
++      // Avoid late instantiation or resurrection during shutdown.
++      if (mozilla::AppShutdown::IsInOrBeyond(
++              mozilla::ShutdownPhase::AppShutdownConfirmed)) {
++        return nullptr;
++      }
++      idleService = new nsUserIdleServiceDosxc();
++    }
++
++    return idleService.forget().downcast<nsUserIdleServiceDosxc>();
++  }
++
++ protected:
++  nsUserIdleServiceDosxc() {}
++  virtual ~nsUserIdleServiceDosxc() {}
++};
++
++#endif  // nsUserIdleServiceDosxc_h_
+diff --git a/widget/dosxc/nsWidgetFactory.cpp b/widget/dosxc/nsWidgetFactory.cpp
+new file mode 100644
+index 0000000000..63c4d9c14f
+--- /dev/null
++++ b/widget/dosxc/nsWidgetFactory.cpp
+@@ -0,0 +1,29 @@
++/* This Source Code Form is subject to the terms of the Mozilla Public
++ * License, v. 2.0. If a copy of the MPL was not distributed with this
++ * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
++
++#include "nsWidgetFactory.h"
++
++#include "HeadlessClipboard.h"
++#include "mozilla/Components.h"
++#include "mozilla/ModuleUtils.h"
++#include "mozilla/WidgetUtils.h"
++#include "nsAppShell.h"
++#include "nsAppShellSingleton.h"
++#include "nsLookAndFeel.h"
++
++using namespace mozilla;
++using namespace mozilla::widget;
++
++NS_IMPL_COMPONENT_FACTORY(nsIClipboard) {
++  nsCOMPtr<nsIClipboard> inst = new HeadlessClipboard();
++  return inst.forget();
++}
++
++void nsWidgetDosxcModuleCtor() { nsAppShellInit(); }
++
++void nsWidgetDosxcModuleDtor() {
++  WidgetUtils::Shutdown();
++  nsLookAndFeel::Shutdown();
++  nsAppShellShutdown();
++}
+diff --git a/widget/dosxc/nsWidgetFactory.h b/widget/dosxc/nsWidgetFactory.h
+new file mode 100644
+index 0000000000..79e11855ad
+--- /dev/null
++++ b/widget/dosxc/nsWidgetFactory.h
+@@ -0,0 +1,16 @@
++/* This Source Code Form is subject to the terms of the Mozilla Public
++ * License, v. 2.0. If a copy of the MPL was not distributed with this
++ * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
++
++#ifndef nsWidgetFactory_h__
++#define nsWidgetFactory_h__
++
++#include "nscore.h"
++
++void nsWidgetDosxcModuleCtor();
++void nsWidgetDosxcModuleDtor();
++
++class nsISupports;
++nsresult nsAppShellConstructor(const nsIID& iid, void** result);
++
++#endif
+diff --git a/widget/dosxc/nsWindow.cpp b/widget/dosxc/nsWindow.cpp
+new file mode 100644
+index 0000000000..31713770e9
+--- /dev/null
++++ b/widget/dosxc/nsWindow.cpp
+@@ -0,0 +1,16 @@
++/* This Source Code Form is subject to the terms of the Mozilla Public
++ * License, v. 2.0. If a copy of the MPL was not distributed with this
++ * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
++
++// Windows are headless widgets for now: they render to memory.  Showing that
++// memory on the DOS-XC desktop is the next step of this backend.
++
++#include "nsIWidget.h"
++
++already_AddRefed<nsIWidget> nsIWidget::CreateTopLevelWindow() {
++  return nsIWidget::CreateHeadlessWidget();
++}
++
++already_AddRefed<nsIWidget> nsIWidget::CreateChildWindow() {
++  return nsIWidget::CreateHeadlessWidget();
++}
+diff --git a/widget/headless/HeadlessWidget.cpp b/widget/headless/HeadlessWidget.cpp
+index b36fc4141c..39e0a338ea 100644
+--- a/widget/headless/HeadlessWidget.cpp
++++ b/widget/headless/HeadlessWidget.cpp
+@@ -19,6 +19,9 @@
+ #include "mozilla/WritingModes.h"
+ #include "mozilla/gfx/gfxVars.h"
+ #include "mozilla/widget/HeadlessWidgetTypes.h"
++#ifdef MOZ_WIDGET_DOSXC
++#  include "dosxc/DosxcDesktop.h"
++#endif
+ #include "mozilla/widget/PlatformWidgetTypes.h"
+ #include "mozilla/widget/Screen.h"
+ #include "nsIScreen.h"
+@@ -97,6 +100,9 @@ void HeadlessWidget::Destroy() {
+   }
+   LOG(("HeadlessWidget::Destroy [%p]\n", (void*)this));
+   mDestroyed = true;
++#ifdef MOZ_WIDGET_DOSXC
++  dosxc::CloseWindow(this);
++#endif
+ 
+   if (sActiveWindows) {
+     int32_t index = sActiveWindows->IndexOf(this);
+@@ -177,8 +183,34 @@ void HeadlessWidget::Show(bool aState) {
+   }
+ 
+   ApplySizeModeSideEffects();
++#ifdef MOZ_WIDGET_DOSXC
++  if (mWindowType == WindowType::TopLevel ||
++      mWindowType == WindowType::Dialog ||
++      mWindowType == WindowType::Popup) {
++    dosxc::ShowWindow(this, aState, mWindowType == WindowType::Popup);
++  }
++#endif
++}
++
++#ifdef MOZ_WIDGET_DOSXC
++nsresult HeadlessWidget::SetTitle(const nsAString& title) {
++  dosxc::SetTitle(this, title);
++  return NS_OK;
+ }
+ 
++already_AddRefed<mozilla::gfx::DrawTarget>
++HeadlessWidget::StartRemoteDrawingInRegion(
++    const LayoutDeviceIntRegion& aInvalidRegion) {
++  return dosxc::StartDrawing(this, GetClientSize().ToUnknownSize());
++}
++
++void HeadlessWidget::EndRemoteDrawingInRegion(
++    mozilla::gfx::DrawTarget* aDrawTarget,
++    const LayoutDeviceIntRegion& aInvalidRegion) {
++  dosxc::EndDrawing(this);
++}
++#endif
++
+ bool HeadlessWidget::IsVisible() const { return mVisible; }
+ 
+ void HeadlessWidget::SetFocus(Raise aRaise,
+@@ -223,6 +255,11 @@ void HeadlessWidget::MoveInternal(int32_t aX, int32_t aY) {
+   }
+ 
+   mBounds.MoveTo(aX, aY);
++#ifdef MOZ_WIDGET_DOSXC
++  if (mWindowType == WindowType::Popup) {
++    dosxc::WidgetMoved(this, aX, aY);
++  }
++#endif
+   NotifyWindowMoved(mBounds.TopLeft());
+ }
+ 
+@@ -252,6 +289,9 @@ void HeadlessWidget::ResizeInternal(int32_t aWidth, int32_t aHeight,
+                                     bool aRepaint) {
+   ConstrainSize(&aWidth, &aHeight);
+   mBounds.SizeTo(LayoutDeviceIntSize(aWidth, aHeight));
++#ifdef MOZ_WIDGET_DOSXC
++  dosxc::WidgetResized(this, aWidth, aHeight);
++#endif
+ 
+   if (mCompositorWidgetDelegate) {
+     mCompositorWidgetDelegate->NotifyClientSizeChanged(mBounds.Size());
+diff --git a/widget/headless/HeadlessWidget.h b/widget/headless/HeadlessWidget.h
+index 1031bf358b..417b62d9a8 100644
+--- a/widget/headless/HeadlessWidget.h
++++ b/widget/headless/HeadlessWidget.h
+@@ -72,10 +72,22 @@ class HeadlessWidget final : public nsIWidget {
+   void Invalidate(const LayoutDeviceIntRect& aRect) override {
+     // TODO: see if we need to do anything here.
+   }
++#ifdef MOZ_WIDGET_DOSXC
++  nsresult SetTitle(const nsAString& title) override;
++  already_AddRefed<mozilla::gfx::DrawTarget> StartRemoteDrawingInRegion(
++      const LayoutDeviceIntRegion& aInvalidRegion) override;
++  void EndRemoteDrawingInRegion(
++      mozilla::gfx::DrawTarget* aDrawTarget,
++      const LayoutDeviceIntRegion& aInvalidRegion) override;
++  void* mDesktopWindow = nullptr;  // see widget/dosxc/DosxcDesktop.h
++  // The title Gecko gave the window, kept for when the desktop window opens.
++  nsCString mDesktopTitle;
++#else
+   nsresult SetTitle(const nsAString& title) override {
+     // Headless widgets have no title, so just ignore it.
+     return NS_OK;
+   }
++#endif
+   LayoutDeviceIntPoint WidgetToScreenOffset() override;
+   void SetInputContext(const InputContext& aContext,
+                        const InputContextAction& aAction) override {
+@@ -159,7 +171,9 @@ class HeadlessWidget final : public nsIWidget {
+   // currently active widget.
+   static StaticAutoPtr<nsTArray<HeadlessWidget*>> sActiveWindows;
+   // Get the most recently activated widget or null if there are none.
++  public:
+   static already_AddRefed<HeadlessWidget> GetActiveWindow();
++
+ };
+ 
+ }  // namespace widget
+diff --git a/widget/moz.build b/widget/moz.build
+index bde6bfdabe..e16c6b175a 100644
+--- a/widget/moz.build
++++ b/widget/moz.build
+@@ -53,7 +53,7 @@ XPCOM_MANIFESTS += [
+     "components.conf",
+ ]
+ 
+-if toolkit in ("android", "cocoa", "gtk", "uikit", "windows"):
++if toolkit in ("android", "cocoa", "dosxc", "gtk", "uikit", "windows"):
+     DIRS += [toolkit]
+ 
+ if toolkit == "cocoa":
+@@ -336,7 +336,7 @@ EXPORTS.ipc = [
+ if CONFIG["MOZ_X11"] or CONFIG["MOZ_WAYLAND"]:
+     DIRS += ["x11"]
+ 
+-if toolkit in {"gtk", "cocoa", "windows", "android", "uikit"}:
++if toolkit in {"dosxc", "gtk", "cocoa", "windows", "android", "uikit"}:
+     UNIFIED_SOURCES += [
+         "nsBaseFilePicker.cpp",
+     ]
+@@ -346,7 +346,7 @@ if toolkit in {"gtk", "cocoa", "windows"}:
+         "nsBaseColorPicker.cpp",
+     ]
+ 
+-if toolkit in ("gtk", "windows", "cocoa", "uikit", "android"):
++if toolkit in ("dosxc", "gtk", "windows", "cocoa", "uikit", "android"):
+     UNIFIED_SOURCES += [
+         "nsNativeTheme.cpp",
+     ]
+@@ -388,6 +388,12 @@ elif CONFIG["MOZ_WIDGET_TOOLKIT"] == "gtk":
+         "gtk/PlatformWidgetTypes.ipdlh",
+         "headless/HeadlessWidgetTypes.ipdlh",
+     ]
++elif toolkit == "dosxc":
++    IPDL_SOURCES = [
++        "dosxc/PCompositorWidget.ipdl",
++        "generic/PlatformWidgetTypes.ipdlh",
++        "headless/HeadlessWidgetTypes.ipdlh",
++    ]
+ elif toolkit == "android":
+     IPDL_SOURCES = [
+         "android/PCompositorWidget.ipdl",
+diff --git a/widget/nsIWidget.cpp b/widget/nsIWidget.cpp
+index f3f81a7041..59d49dd993 100644
+--- a/widget/nsIWidget.cpp
++++ b/widget/nsIWidget.cpp
+@@ -2678,7 +2678,7 @@ already_AddRefed<nsIBidiKeyboard> nsIWidget::CreateBidiKeyboard() {
+   return CreateBidiKeyboardInner();
+ }
+ 
+-#ifdef ANDROID
++#if defined(ANDROID) || defined(MOZ_WIDGET_DOSXC)
+ already_AddRefed<nsIBidiKeyboard> nsIWidget::CreateBidiKeyboardInner() {
+   // no bidi keyboard implementation
+   return nullptr;
+diff --git a/xpcom/io/nsLocalFileUnix.cpp b/xpcom/io/nsLocalFileUnix.cpp
+index 2469756c6d..967d4bb86b 100644
+--- a/xpcom/io/nsLocalFileUnix.cpp
++++ b/xpcom/io/nsLocalFileUnix.cpp
+@@ -6,6 +6,11 @@
+  * Implementation of nsIFile for "unixy" systems.
+  */
+ 
++#ifdef MOZ_WIDGET_DOSXC
++#  define HAVE_SYS_STATFS_H 1
++#  define HAVE_STATFS 1
++#endif
++
+ #include <dirent.h>
+ #include <errno.h>
+ #include <fcntl.h>
+@@ -658,6 +663,15 @@ nsLocalFile::Normalize() {
+     return NSRESULT_FOR_ERRNO();
+   }
+ 
++#ifdef MOZ_WIDGET_DOSXC
++  // realpath() gives X:\\DIR; these paths are /-rooted on the current drive.
++  if (resolved_path[0] && resolved_path[1] == ':') {
++    memmove(resolved_path, resolved_path + 2, strlen(resolved_path + 2) + 1);
++    for (char* c = resolved_path; *c; ++c) {
++      if (*c == '\\') *c = '/';
++    }
++  }
++#endif
+   mPath = resolved_path;
+   return NS_OK;
+ }

@@ -17,7 +17,7 @@ driver: it shows as `FAILED` and its device loses bus mastering.
 
 ## Writing one
 
-Every service a driver can use is in [`<dosxc/driver.h>`](../src/libc/include/dosxc/driver.h).
+Every service a driver can use is in [`<dosxc/driver.h>`](../os/libc/include/dosxc/driver.h).
 A driver exports one symbol, `dosxc_driver`, and receives a `struct dk_api`
 table when it loads.  There are no interrupts: DOS-XC calls `poll` often,
 so a driver checks its hardware there and uses timeouts everywhere else.
@@ -64,7 +64,7 @@ Rules that follow from running inside the system:
 `probe` registers an adapter with `net_register`, reports the carrier with
 `net_link`, and hands each received Ethernet frame to `net_receive` from
 `poll`.  The system does the rest (DHCP, ARP, IP, TCP, sockets).  The
-drivers in [`src/netdrivers`](../src/netdrivers) are complete examples;
+drivers in [`ethernet`](../ethernet) are complete examples;
 `e1000.c` is the simplest.
 
 ## Devices that are not PCI functions
@@ -77,6 +77,20 @@ and `poll` called like any other.  `probe` decides whether its hardware exists.
 `disk_register` adds a disk and mounts its FAT volumes.  `io` transfers at most
 64 sectors of 512 bytes and waits for the result; `disk_unregister` removes it.
 
+IDE (ATA and ATAPI CD drives), AHCI SATA and NVMe controllers are driven by the
+runtime itself on a BIOS boot (`os/runtime/storage.c`, `ata.c`, `ahci.c`,
+`nvme.c`), with DMA and polling.  A disk with the same size and first sector as
+one the BIOS listed replaces it, including the disk or CD DOS-XC booted from,
+and INT 13h for that drive is passed to the native driver, so 16-bit programs
+keep working.  Disks the BIOS did not list become new drive letters.  An empty
+file `\SYSTEM\BIOSDISK` on the system drive keeps every disk on INT 13h.  UEFI
+boots still use the firmware's block I/O.  Tested in QEMU only (IDE, AHCI,
+NVMe; reads about three times faster than through the BIOS).
+
+## Sound
+
+`probe` calls `audio_register` with a `struct dk_audio_ops`: `open` (rate and channels, 16-bit little-endian PCM), `close`, `write` (takes what fits and never waits) and `position` (frames played since `open`). One device is used. Programs reach it through `DOSXC_SYS_AUDIO`, one program at a time; `sound/hda.c` is the example, and it only supports 48 kHz stereo.
+
 ## Keyboards and mice
 
 From `poll`, `input_key` takes a HID keyboard usage with whether it is pressed
@@ -86,7 +100,7 @@ report that a mouse is present.
 
 ## Hyper-V
 
-`HYPERV.DRV`, in the `hyperv` package and built from [`src/hyperv`](../src/hyperv),
+`HYPERV.DRV`, in the `hyperv` package and built from [`hyperv`](../hyperv),
 drives VMBus and the synthetic network adapter, SCSI controllers, keyboard and
 mouse.  They share one driver because they share one VMBus connection.
 

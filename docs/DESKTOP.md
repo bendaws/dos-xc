@@ -5,7 +5,7 @@ installed, and at the command prompt when it is not.  Tap or hold **Esc** while
 the system starts to stay at the prompt for that boot; `DESKTOP` starts it from
 the prompt.  It looks like SerenityOS: the same theme colors and bitmap fonts, gradient title bars,
 beveled controls, and a taskbar along the bottom of the main monitor.  The
-fonts are used under the BSD 2-Clause license (`src/desktop/LICENSE.SerenityOS`).
+fonts are used under the BSD 2-Clause license (`desktop/LICENSE.SerenityOS`).
 **F12** leaves the desktop at any time, even without a mouse, and ends the
 programs running on it.
 
@@ -16,8 +16,55 @@ or whatever the firmware provides under UEFI.
 
 The desktop is the package `DOS-XC Desktop`, in `\Programs\DOS-XC Desktop`.  Each
 program runs as its own process, from the package's `Apps` folder, and can be left
-running beside the others.  The Start menu sorts them into System, Utilities,
-Games and Settings.
+running beside the others.  `DESKTOP.EXE PROGRAM [ARGS]` starts a program on the
+desktop as it opens.
+
+The Start menu, from the top:
+
+1. The default web browser, when one is chosen and installed: DOSfox (the
+   `dosfox` package, `\Programs\dosfox\DOSFOX.EXE`, with the logo it ships as
+   `DOSFOX.PNG`; its windows use the logo too).
+2. The default text editor: File Editor, or Vim in a terminal window when the
+   `Vim` package is installed and chosen.
+3. System, Utilities and Games.
+4. Control Panel and About DOS-XC.
+5. Exit to DOS, Restart and Shut Down.  Restart and Shut Down ask first.
+
+The menu is built each time it opens, so installing or removing a package shows
+at once.
+
+## Control Panel
+
+Every setting of the desktop in one window: Display (screens, resolution,
+scale), Wallpaper, Accent Color, Sound, Network (the adapter and its address),
+Default Programs (the web browser, or none, and the text editor) and Packages
+(the Package Manager).  The settings are kept in `%HOME%\DESKTOP.CFG`.
+
+## Icons and shortcuts on the desktop
+
+The desktop shows Computer (File Explorer) and everything in `%HOME%\Desktop`,
+in columns from the top left of the main screen.  Click to select, double-click
+or Enter to open; F2 renames and Delete deletes (after asking).  Files open in
+the program for their type: pictures in Paint, `.EXE` files in a terminal window,
+web pages in the default browser, everything else in the default editor.  The
+folder is looked at every two seconds, so files put there by other programs show
+up by themselves.
+
+Right-click the desktop for New File..., New Folder..., New Shortcut...,
+Refresh, File Explorer, Wallpaper..., Display Settings... and Control Panel;
+right-click an icon to open, rename or delete it.  New Shortcut... offers the
+desktop's programs (and DOSfox and Vim when installed) or, with Browse..., any
+file, folder or program.  In File Explorer, Organize > Add shortcut to desktop
+does the same for the selected item.
+
+A shortcut is a text file `NAME.LNK` of `key=value` lines:
+
+| Key | Meaning |
+| --- | --- |
+| `target` | The file, folder or program, with its drive |
+| `args` | Arguments for a program (optional) |
+| `icon` | A built-in icon (`folder`, `calc`, `editor`, `paint`, `dosfox`, ...) or a 16 x 16 PNG (optional; else `TARGET.PNG` beside a program, if there is one) |
+| `terminal` | `1`: run the program in a terminal window |
 
 | Program | File | Notes |
 | --- | --- | --- |
@@ -39,7 +86,7 @@ program that is not one of these opens in a terminal window.
 ## 16-bit programs
 
 A 16-bit program started in a terminal window runs in `DOSVM.EXE`, a virtual PC
-(`src/vdm`): a 386 real-mode interpreter with a VGA, the BIOS and DOS services.
+(`desktop/vdm`): a 386 real-mode interpreter with a VGA, the BIOS and DOS services.
 The desktop keeps running around it.  A program that only prints stays part of
 the terminal's text; one that sets a video mode or writes to the screen takes over
 the window, which resizes to fit, until it exits.  CGA, EGA, VGA and mode 13h
@@ -57,7 +104,7 @@ it and any other level plays at full volume.
 
 ## Accent color
 
-Settings > Accent Color picks the color of title bars, selections and menus from
+Control Panel > Accent Color picks the color of title bars, selections and menus from
 twelve presets or with red, green and blue sliders.  Every running program follows
 at once.  A light color is darkened where white text is drawn on it.  The choice
 is kept in `%HOME%\DESKTOP.CFG`.
@@ -67,7 +114,9 @@ is kept in `%HOME%\DESKTOP.CFG`.
 The Wallpaper window lists the pictures in the package's `Wallpapers` folder and
 `%HOME%\Wallpapers`.  **Add...** copies a picture into the second folder.  BMP,
 PNG (not interlaced) and JPEG (baseline and progressive) can be used.  The choice
-is kept in `%HOME%\DESKTOP.CFG`.
+is kept in `%HOME%\DESKTOP.CFG`.  The package's pictures are in
+`desktop/wallpapers`; `.avif` ones there are turned into JPEG when the package is
+built (with Python's Pillow, or `sips` on macOS), since DOS-XC cannot read AVIF.
 
 ## Monitors
 
@@ -96,8 +145,8 @@ between them in QEMU's View menu.
 
 `DESKTOP.EXE` is the compositor and window manager.  It publishes a board in
 shared memory (`DOSXC_TASK_SHARE_SET`); each program claims a slot and exchanges
-one-way rings of events and requests through it (`src/desktop/gui.c`).  All
+one-way rings of events and requests through it (`desktop/gui.c`).  All
 programs share one address space, so a window's pixels are read straight from
-the program that draws them.  The fonts in `src/desktop/fonts.h` are generated
+the program that draws them.  The fonts in `desktop/fonts.h` are generated
 by `tools/make_fonts.py`.  See "Graphics" and "Multitasking" in
 [PROGRAMS.md](PROGRAMS.md).

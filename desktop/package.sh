@@ -1,0 +1,45 @@
+#!/bin/sh
+#
+# DOS-XC /desktop/package.sh
+# Copyright (c) 2026 Ben Daws - see LICENSE.txt
+#
+
+set -eu
+. "$(dirname "$0")/../scripts/common.sh"
+for edition in $EDITIONS; do
+    use_edition "$edition"
+    desktop=$HERE
+    desktop_out=$out/desktop
+    rm -rf "$desktop_out"
+    mkdir -p "$desktop_out/Apps" "$desktop_out/Wallpapers"
+    cp "$desktop"/wallpapers/*.jpg "$desktop_out/Wallpapers/"
+    for picture in "$desktop"/wallpapers/*.avif; do
+        [ -f "$picture" ] || continue
+        name=$(basename "$picture" .avif)
+        python3 -c 'import sys
+from PIL import Image
+image = Image.open(sys.argv[1]).convert("RGB")
+image.thumbnail((2560, 2560))
+image.save(sys.argv[2], quality=90)' "$picture" "$desktop_out/Wallpapers/$name.jpg" 2>/dev/null ||
+            sips -s format jpeg "$picture" --out "$desktop_out/Wallpapers/$name.jpg" >/dev/null 2>&1 ||
+            echo "warning: $picture could not be converted (needs Pillow with AVIF, or sips)"
+    done
+    app_flags="$flags -Wno-missing-field-initializers"
+    spawn "$cc" $app_flags -I"$desktop" "$desktop/desktop.c" "$desktop/gfx.c" "$desktop/apps.c" "$desktop/widgets.c" "$desktop/dialogs.c" \
+        "$desktop/icons.c" "$desktop/control.c" \
+        "$desktop/image.c" "$ROOT/os/pkg/inflate.c" -I"$ROOT/os/pkg" -o "$desktop_out/DESKTOP.EXE"
+    gui="$desktop/gfx.c $desktop/gui.c $desktop/widgets.c $desktop/dialogs.c $desktop/image.c $ROOT/os/pkg/inflate.c"
+    for app in explorer:EXPLORER taskmgr:TASKMGR calc:CALC editor:EDITOR paint:PAINT solitaire:SOLITAIRE mines:MINES chess:CHESS terminal:TERMINAL; do
+        [ -f "$desktop/${app%%:*}.c" ] || continue
+        spawn "$cc" $app_flags -I"$desktop" "$desktop/${app%%:*}.c" $gui -I"$ROOT/os/pkg" -lm -o "$desktop_out/Apps/${app#*:}.EXE"
+    done
+    spawn "$cc" $app_flags -I"$desktop" -I"$ROOT/os" "$desktop/pkgmgr.c" $gui "$ROOT/os/pkg/dsp.c" "$ROOT/os/pkg/deflate.c" -I"$ROOT/os/pkg" -lm \
+        -o "$desktop_out/Apps/PKGMGR.EXE"
+    spawn "$cc" $app_flags -I"$desktop" -I"$ROOT/os" "$desktop/setupgui.c" $gui "$ROOT/os/setup/install.c" "$ROOT/os/setup/target.c" \
+        "$ROOT/os/drivers/fat32.c" "$ROOT/os/pkg/dsp.c" "$ROOT/os/pkg/deflate.c" -I"$ROOT/os/pkg" -lm -o "$desktop_out/Apps/SETUPGUI.EXE"
+    spawn "$cc" $app_flags -I"$ROOT/os" "$HERE/vdm/cpu.c" "$HERE/vdm/bios.c" "$HERE/vdm/video.c" "$HERE/vdm/dos.c" "$HERE/vdm/host.c" \
+        -o "$desktop_out/Apps/DOSVM.EXE"
+    finish_jobs
+    pack "$desktop_out" "desktop-$bits.dsp" Name="DOS-XC Desktop" Version="$VERSION" \
+        Author="Ben Daws" Description="Graphical desktop and its programs" Arch="$bits" Path=.
+done

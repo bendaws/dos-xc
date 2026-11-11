@@ -1,5 +1,8 @@
-/* Checks the int 0x80 system call interface (ABI 2).
-   Run from the directory holding HELLO.EXE: SYSCALLT.EXE */
+/*
+ * DOS-XC /tests/programs/syscalltest.c
+ * Copyright (c) 2026 Ben Daws - see LICENSE.txt
+ */
+
 #include <dosxc/syscall.h>
 #include <stdio.h>
 #include <string.h>
@@ -74,7 +77,6 @@ int main(void) {
     CHECK(registers_preserved(DOSXC_SYS_GETPID));
     CHECK(registers_preserved(9999));
 
-    /* 64-bit results and arguments (edx:eax / two registers on i386). */
     long long now = dosxc_sys_time();
     CHECK(now > 1700000000LL);
     unsigned long long t0 = dosxc_sys_nanoseconds();

@@ -1,4 +1,8 @@
-/* Self-test for the DOS-XC C library and program runtime. */
+/*
+ * DOS-XC /tests/programs/libctest.c
+ * Copyright (c) 2026 Ben Daws - see LICENSE.txt
+ */
+
 #include <ctype.h>
 #include <dirent.h>
 #include <errno.h>

@@ -1,10 +1,12 @@
-# Run build steps in the background, at most JOBS at a time.  Sourced by the
-# build scripts.  Set JOBS to override the processor count.
+#
+# DOS-XC /scripts/parallel.sh
+# Copyright (c) 2026 Ben Daws - see LICENSE.txt
+#
+
 JOBS=${JOBS:-$(sysctl -n hw.ncpu 2>/dev/null || nproc)}
 _spawn_pids=
 _spawn_count=0
 
-# Wait for every started command.  Exits if any of them failed.
 finish_jobs() {
     _spawn_failed=0
     for _spawn_pid in $_spawn_pids; do
@@ -18,7 +20,6 @@ finish_jobs() {
     fi
 }
 
-# Start a command.  Once JOBS are running, wait for that batch to finish.
 spawn() {
     "$@" &
     _spawn_pids="$_spawn_pids $!"

@@ -12,9 +12,9 @@ vim Testing.txt
 ```
 
 ## Get a Cross-Compiler
-The easiest way is to run our battle-tested cross-compiler build script at `toolchain/build-toolchain.sh` as so:
+The easiest way is to run our battle-tested cross-compiler build script at `gcc/build.sh` as so:
 ```
-./toolchain/build-toolchain.sh
+./gcc/build.sh
 ```
 
 Which produces the following binaries for a host system that compiles binaries for DOS-XC:

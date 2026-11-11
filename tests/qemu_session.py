@@ -1,19 +1,9 @@
 #!/usr/bin/env python3
-"""Drive a DOS-XC session in QEMU and print the console transcript.
+#
+# DOS-XC /tests/qemu_session.py
+# Copyright (c) 2026 Ben Daws - see LICENSE.txt
+#
 
-The kernel mirrors console text to the QEMU debug port (0xE9); keystrokes
-are typed through the QEMU monitor.
-
-Example:
-  tests/qemu_session.py --iso build/iso/DOSXC_0.2_x64.iso -c VER -c "HELLO.EXE a b"
-Exit status is 0 when every command returned to the prompt in time.
-
-A command starting with "!" is a QEMU monitor command instead (for example
-"!device_add usb-storage,bus=xhci.0,drive=stick,id=s1" to plug in a USB
-disk), "~SECONDS" just waits, and "&TEXT" types TEXT (no Enter) without
-waiting for a prompt, for programs that read the keyboard.  --qemu-arg adds QEMU options, e.g.
-  --qemu-arg="-device qemu-xhci,id=xhci" --qemu-arg="-device usb-kbd,bus=xhci.0"
-"""
 import argparse
 import os
 import pathlib
@@ -33,7 +23,6 @@ KEYS = {' ': 'spc', '\n': 'ret', '\\': 'backslash', '/': 'slash', '.': 'dot', '-
         '?': 'shift-slash', '`': 'grave_accent', '~': 'shift-grave_accent'}
 PROMPT = re.compile(r'[A-Z]:\\[^\r\n>]*>$')
 
-
 def key_name(c):
     if c in KEYS:
         return KEYS[c]
@@ -42,7 +31,6 @@ def key_name(c):
     if c.isupper():
         return 'shift-' + c.lower()
     raise ValueError(f'cannot type {c!r}')
-
 
 class Session:
     def __init__(self, args):
@@ -114,9 +102,8 @@ class Session:
         except subprocess.TimeoutExpired:
             self.process.kill()
 
-
 def main():
-    parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    parser = argparse.ArgumentParser(description='Drive a DOS-XC session in QEMU and print the console transcript.\n\nThe kernel mirrors console text to the QEMU debug port (0xE9); keystrokes\nare typed through the QEMU monitor.\n\nExample:\n  tests/qemu_session.py --iso build/iso/DOSXC_0.2_x64.iso -c VER -c "HELLO.EXE a b"\nExit status is 0 when every command returned to the prompt in time.\n\nA command starting with "!" is a QEMU monitor command instead (for example\n"!device_add usb-storage,bus=xhci.0,drive=stick,id=s1" to plug in a USB\ndisk), "~SECONDS" just waits, and "&TEXT" types TEXT (no Enter) without\nwaiting for a prompt, for programs that read the keyboard.  --qemu-arg adds QEMU options, e.g.\n  --qemu-arg="-device qemu-xhci,id=xhci" --qemu-arg="-device usb-kbd,bus=xhci.0"\n', formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument('--iso', help='boot CD image')
     parser.add_argument('--qemu')
     parser.add_argument('--memory', type=int, default=1024)
@@ -176,7 +163,6 @@ def main():
     if not transcript.endswith('\n'):
         sys.stdout.write('\n')
     return 0 if ok else 1
-
 
 if __name__ == '__main__':
     sys.exit(main())

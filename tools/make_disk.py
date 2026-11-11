@@ -1,16 +1,9 @@
 #!/usr/bin/env python3
-"""Create the MBR/FAT16 image of the live installation media.
+#
+# DOS-XC /tools/make_disk.py
+# Copyright (c) 2026 Ben Daws - see LICENSE.txt
+#
 
-  tools/make_disk.py BUILD BITS PACKAGES
-
-The image holds \\SYSTEM, the EFI loader, empty \\TEMP and \\Home folders,
-\\Programs with the coreutils, batch and desktop packages installed, \\Packages
-with every package for this edition (for Setup and PKG), any extra trees
-named in DOSXC_EXTRA_TREES or DOSXC_EXTRA_TREES_32/_64 (host directories
-separated by os.pathsep) and optional DOS programs from DOS_PROGRAMS_ZIP.
-The FAT16 geometry grows with the content and keeps free space for
-programs that write files on the live (read-only) media.
-"""
 import json
 import os
 import shutil
@@ -35,7 +28,6 @@ DATE = ((2026 - 1980) << 9) | (11 << 5) | 6
 TIME = 12 << 11
 SHORT_CHARS = set("ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789!#$%&'()-@^_`{}~")
 
-
 def is_short(name):
     """An exact upper-case 8.3 name needs no long-name entries."""
     if name in ('.', '..'):
@@ -43,7 +35,6 @@ def is_short(name):
     base, dot, ext = name.partition('.')
     return (1 <= len(base) <= 8 and len(ext) <= 3 and '.' not in ext and
             all(c in SHORT_CHARS for c in base + ext) and (ext or not dot))
-
 
 def short_alias(name, taken):
     if is_short(name):
@@ -64,13 +55,11 @@ def short_alias(name, taken):
             return alias.encode('ascii')
     raise SystemExit(f'too many similar names near {name}')
 
-
 def checksum(alias):
     total = 0
     for b in alias:
         total = (((total & 1) << 7) + (total >> 1) + b) & 0xff
     return total
-
 
 def entries_for(name, alias, cluster, size, directory):
     """Directory entries (long-name entries first) for one file."""
@@ -97,10 +86,8 @@ def entries_for(name, alias, cluster, size, directory):
     struct.pack_into('<I', e, 28, size)
     return result + e
 
-
 def entry_count(name):
     return 1 if is_short(name) else 1 + (len(name.encode('utf-16-le')) // 2 + 12) // 13
-
 
 def load_tree(path):
     tree = {}
@@ -109,7 +96,6 @@ def load_tree(path):
             continue
         tree[child.name] = load_tree(child) if child.is_dir() else child.read_bytes()
     return tree
-
 
 def merge(into, extra, where=''):
     for name, content in extra.items():
@@ -120,7 +106,6 @@ def merge(into, extra, where=''):
             merge(into[existing], content, where + '/' + name)
         else:
             raise SystemExit(f'extra tree conflicts with {where}/{name}')
-
 
 def clusters_needed(tree, cluster_bytes, root=False):
     total = 0
@@ -134,8 +119,6 @@ def clusters_needed(tree, cluster_bytes, root=False):
             total += max(1, (len(content) + cluster_bytes - 1) // cluster_bytes)
     return total
 
-
-# ---- content -----------------------------------------------------------
 mbr = bytearray((BUILD / 'mbr.bin').read_bytes())
 serial = 0xbd050000 + int(BITS)
 struct.pack_into('<I', mbr, 440, serial)
@@ -164,16 +147,15 @@ system = {
 tree = {'SYSTEM': system, 'EFI': {'BOOT': {'BOOTX64.EFI': (BUILD / 'iso64/EFI/BOOT/BOOTX64.EFI').read_bytes()}},
         'TEMP': {}, 'Home': {}, 'Programs': {}, 'Packages': {}}
 
-# Packages for this edition (and 16-bit ones), named <Name>.dsp on the media.
 for package in sorted(PACKAGES.glob('*.dsp')):
     stem, _, bits = package.stem.rpartition('-')
     if bits in (BITS, '16'):
         tree['Packages'][stem + '.dsp'] = package.read_bytes()
-# The live system comes with coreutils, batch and the desktop installed.
 staging = BUILD / f'live{BITS}'
 shutil.rmtree(staging, ignore_errors=True)
 for name in ('coreutils', 'batch', 'desktop'):
-    dsp.install(PACKAGES / f'{name}-{BITS}.dsp', staging)
+    if (PACKAGES / f'{name}-{BITS}.dsp').exists():      # the build may leave some out
+        dsp.install(PACKAGES / f'{name}-{BITS}.dsp', staging)
 tree['Programs'] = load_tree(staging / 'Programs')
 extra_trees = os.pathsep.join(os.environ.get(name, '') for name in
                               ('DOSXC_EXTRA_TREES', f'DOSXC_EXTRA_TREES_{BITS}'))
@@ -189,7 +171,6 @@ if archive:
                     raise SystemExit(f'Archive name conflicts with system directory: {name}')
                 tree[name] = source.read(item)
 
-# ---- geometry: smallest FAT16 cluster that fits content + headroom ------
 root_slots = sum(entry_count(n) for n in tree)
 if root_slots > ROOT_ENTRIES:
     raise SystemExit('Too many entries in the root directory')
@@ -215,10 +196,8 @@ image = bytearray(SECTORS * 512)
 next_cluster = 2
 locations = {}
 
-
 def lba_of(cluster):
     return DATA + (cluster - 2) * SPC
-
 
 def allocate(size):
     global next_cluster
@@ -230,7 +209,6 @@ def allocate(size):
     for n in range(count):
         struct.pack_into('<H', fat, (first + n) * 2, 0xffff if n == count - 1 else first + n + 1)
     return first
-
 
 def directory(tree, path='', parent=0, root=False):
     slots = 2 + sum(entry_count(n) for n in tree)
@@ -254,7 +232,6 @@ def directory(tree, path='', parent=0, root=False):
     offset = ROOT * 512 if root else lba_of(cluster) * 512
     image[offset:offset + len(entries)] = entries
     return cluster
-
 
 mbr[446:462] = struct.pack('<B3sB3sII', 0x80, b'\xfe\xff\xff', 0xef, b'\xfe\xff\xff', PART, SECTORS - PART)
 directory(tree, root=True)
@@ -281,7 +258,6 @@ out.write_bytes(image)
 print(f'Built {out} (MBR + FAT16, {SECTORS // 2048} MiB, {cluster_bytes // 1024} KiB clusters, '
       f'{(clusters + 2 - next_cluster) * cluster_bytes >> 20} MiB free)')
 
-
 def export(tree, destination):
     destination.mkdir(parents=True, exist_ok=True)
     for name, content in tree.items():
@@ -291,8 +267,6 @@ def export(tree, destination):
         else:
             target.write_bytes(content)
 
-
-# Browsable copies on the CD: the system files only (extra trees live in the image).
 export({k: v for k, v in tree.items() if k in ('SYSTEM', 'EFI')}, BUILD / f'iso{BITS}')
 if BITS == '64':
     # The El Torito EFI image is the partition itself.  Small images stay

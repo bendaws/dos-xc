@@ -56,7 +56,7 @@ Requirements: a C/C++ compiler (clang), make, curl, Python 3, xz, and about
 15 GB of disk space.  Then:
 
 ```sh
-toolchain/build-toolchain.sh x86_64        # or i686
+gcc/build.sh x86_64        # or i686
 scripts/build.sh                            # images now include \GCC
 ```
 
@@ -79,9 +79,9 @@ compiler is configured with the prefix `/Programs/GCC`.
 
 ### Porting notes
 
-* `toolchain/gcc-config/dosxc.h` is the target description (specs,
+* `gcc/config/dosxc.h` is the target description (specs,
   startfiles, link options).  `xm-dosxc.h` sets the host executable suffix.
-* `toolchain/patch-sources.sh` adds `*-dosxc` to `config.sub`, BFD, ld,
+* `gcc/patch-sources.sh` adds `*-dosxc` to `config.sub`, BFD, ld,
   gas, `config.gcc`, `config.host`, libgcc and libstdc++, and turns on the
   DOS file-system path handling of libiberty (`filenames.h`,
   `make-relative-prefix.c`) and ld.  Every edit is idempotent.
@@ -103,23 +103,39 @@ Put the program on a disk image with `DOSXC_EXTRA_TREES=dir scripts/build.sh`
 
 ## Ports
 
-`ports/build-ports.sh ARCH [xz] [vim] [curl] [python]` cross-compiles the
+`scripts/build-ports.sh ARCH [xz] [vim] [curl] [python]` cross-compiles the
 ports into `build/ports/ARCH`, which `scripts/build.sh` packs.  Vim uses its
 built-in `ansi` terminal description (there is no terminfo database) and
 `system()` for shell commands, since DOS-XC has no `fork()`.
 
+### Rust
+
+Rust programs need no special target.  Build for `x86_64-unknown-linux-musl`
+and link with the DOS-XC compiler:
+
+```sh
+rustc --target x86_64-unknown-linux-musl -C target-feature=-crt-static \
+      -C link-self-contained=no -C linker=x86_64-dosxc-gcc \
+      -C link-arg=--sysroot=SYSROOT -L FOLDER_WITH_LIBGCC_S hello.rs -o HELLO.EXE
+```
+
+`libgcc_s.a` in that folder is a copy of the compiler's `libgcc.a`.  The 64-bit
+C library keeps to Linux's structure layouts and constants where Rust's
+bindings depend on them, so its standard library works unmodified.  Rust does
+not run on DOS-XC itself yet.
+
 ### Python
 
 The `python3` package is CPython 3.14.  Building it needs a host `python3.14`.
-Every extension module is linked into the interpreter, because DOS-XC has no
-`dlopen`, and [`ports/python-dosxc.py`](../ports/python-dosxc.py) adapts the
+Every extension module is linked into the interpreter, so that it needs no
+`dlopen`, and [`python/python-dosxc.py`](../python/python-dosxc.py) adapts the
 standard library to drive letters, `;` search paths and `posix_spawn`.
 
 * `ssl` and `hashlib` use OpenSSL, so `urllib` can fetch HTTPS URLs.
 * `threading` and `concurrent.futures` use real threads.  Each thread gets a
   6 MiB stack, because CPython assumes about 4 MB when it sets its recursion
   limit and cannot ask DOS-XC for the real size.
-* Not available: `ctypes`, `mmap`, `multiprocessing`, `sqlite3`, `bz2`, `lzma`, IPv6, and C
+* Not available: `ctypes`, `multiprocessing`, `sqlite3`, `bz2`, `lzma`, IPv6, and C
   extension modules that are not built in.
 * `subprocess` runs the child to completion inside `Popen`, so a child cannot
   talk back and forth with its parent.  `shell=True` splits the command into

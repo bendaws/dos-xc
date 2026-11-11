@@ -25,7 +25,7 @@ linked against `libc.so` unless it was built with `gcc -static`:
 | TLS | `PT_TLS` is rejected (GCC emulates TLS) |
 | Stack | `PT_GNU_STACK` `p_memsz`, if non-zero, is the stack size (default 16 MiB, or 4 MiB with under 512 MiB of RAM) |
 
-The loader ([`src/runtime/loader.c`](../src/runtime/loader.c)) copies the image to any free,
+The loader ([`os/runtime/loader.c`](../os/runtime/loader.c)) copies the image to any free,
 page-aligned block, zeroes `.bss`, applies relocations and calls the entry
 point.  Because images never assume a fixed address, nested programs
 (`gcc` → `cc1` → `as` → `collect2` → `ld`) share one address space without
@@ -61,7 +61,7 @@ destructor arrays, because a shared `libc.so` cannot see them.
 
 Programs call the system with interrupt `0x80`, much like 32-bit Linux.
 The call number (`DOSXC_SYS_*` in
-[`src/libc/include/dosxc/abi.h`](../src/libc/include/dosxc/abi.h)) goes
+[`os/libc/include/dosxc/abi.h`](../os/libc/include/dosxc/abi.h)) goes
 in `eax`/`rax`:
 
 | | Number | Arguments 1-6 | Result |
@@ -123,7 +123,7 @@ returns `-ENOSYS`.
   (used by Setup; the boot disk is read-only); `fullpath` gives the DOS
   form of a path, `C:\DIR\FILE`.
 
-[`<dosxc/syscall.h>`](../src/libc/include/dosxc/syscall.h) defines a
+[`<dosxc/syscall.h>`](../os/libc/include/dosxc/syscall.h) defines a
 typed inline wrapper for each call (`dosxc_sys_open`, `dosxc_sys_write` ...)
 and generic `__dosxc_syscall0` ... `__dosxc_syscall3` helpers.  The C library
 uses nothing else to reach the system.
@@ -137,7 +137,9 @@ int main(void) {
 ```
 
 Because programs run in ring 0, the CPU pushes the interrupt frame on the
-program's own stack, which is why programs must not use a red zone.  The
+program's own stack, so code containing the system call must not use a red
+zone (libc is built that way).  Timer interrupts, and page faults on BIOS boots,
+use stacks of their own, so other code may use one.  The
 gate is a trap gate, so the interrupt flag is left as the caller had it.
 
 ### ABI versions
@@ -222,7 +224,7 @@ thread-specific data and, in `<semaphore.h>`, unnamed semaphores.  They are in
 and GCC's emulated `__thread` variables are per-thread or thread-safe.
 
 A thread is a kernel task that shares its process.  All programs and threads
-in the system share 64 task slots, and creating a thread beyond that reports
+in the system share 256 task slots, and creating a thread beyond that reports
 `EAGAIN`.  The system runs on one processor.  Threads are preempted under the same rules as programs:
 by a 100 Hz timer on a BIOS boot, but only at system calls under UEFI, so a
 thread spinning without system calls holds up the others there.
@@ -306,8 +308,16 @@ linker.
 * All symbols are bound at start (`BIND_NOW`); lookups search the program,
   then its libraries breadth-first, so programs may interpose symbols and
   use copy relocations.  Supported relocations: `RELATIVE`, `IRELATIVE`,
-  `GLOB_DAT`, `JUMP_SLOT`, `COPY`, absolute and PC-relative word.  Text
-  relocations and thread-local storage are rejected.
+  `GLOB_DAT`, `JUMP_SLOT`, `COPY`, absolute and PC-relative word, and on the
+  64-bit edition `TPOFF64`, `DTPMOD64` and `DTPOFF64`.  Text relocations are
+  rejected, as is native thread-local storage (`PT_TLS`) on the 32-bit edition.
+* `dlopen`, `dlsym`, `dlerror` and `dladdr` (`<dlfcn.h>`; `-ldl` links but adds
+  nothing) load libraries into a running dynamically linked program, with the
+  same private data and the same relocations.  Binding is always immediate
+  (`RTLD_LAZY` means `RTLD_NOW`), every library is global (`RTLD_LOCAL` means
+  `RTLD_GLOBAL`), `RTLD_NEXT` searches the objects after the caller's, and `dladdr` gives
+  the file but not the symbol.  `dlclose` does nothing: libraries stay until
+  the process ends.  A statically linked program cannot use them.
 * Library constructors run before the program's (`DOSXC_AT_INITS`),
   destructors after the program's (`DOSXC_AT_FINIS`).
 
@@ -318,27 +328,97 @@ fixed address (`0x4400000`).  It owns all memory above `0x5000000` (sized
 from the E820 map on BIOS, or a block reserved by the UEFI loader), a
 sector cache for the system volume (with a RAM overlay when booted from
 read-only media), the drive letters, the open-file table, the terminal,
-the system environment and the shared libraries.  On 64-bit BIOS boots it
-maps the first 4 GiB.  Files opened for reading are read from disk on
-demand; files opened for writing are kept in memory and written back when
-closed.
+the system environment and the shared libraries.
+
+Each process has its own page tables (64-bit): its threads share them, and
+a task switch loads them.  Shared libraries' writable data lives there, a copy
+per process; memory mappings (`mmap`) too.
+
+On 64-bit BIOS boots programs run in ring 3 and are isolated: a program can
+use its own memory (image, stack, heap, library data, mappings), read the code
+of the libraries it loaded, and nothing else.  The kernel's memory and other
+processes' memory fault (SIGSEGV), as do privileged instructions and I/O
+ports.  System calls check every pointer they are given against the caller's
+memory and return `EFAULT` otherwise.  Exceptions to the separation:
+
+* A desktop program (`DOSXC_TASK_SHARE_GET`) sees the desktop's board, and the
+  desktop sees all of that program's memory, since it draws the program's
+  windows from it.
+* The process that set a display mode can write the framebuffer.
+* The page with the running thread's data word (`DOSXC_TASK_THREAD_SLOT`) is
+  readable by every program.
+
+An empty file `\SYSTEM\SHAREMEM` on the system drive keeps ring 3 but lets
+every program use all memory; `\SYSTEM\RING0` runs programs in ring 0 as
+before.  32-bit and UEFI boots run programs in ring 0 without isolation.
+
+Files opened for reading are read from disk on demand; files opened for
+writing are kept in memory and written back when closed.
+
+## Thread-local storage
+
+GCC emulates `__thread` and `thread_local` on both editions (see
+[TOOLCHAIN.md](TOOLCHAIN.md)).  The 64-bit edition also runs code that uses
+native thread-local storage, such as Rust's standard library: `PT_TLS`
+segments, `%fs`-relative access and `__tls_get_addr`.  `DOSXC_TASK_SET_TP` sets
+a thread's pointer.  A library that uses the initial-exec model must be there
+when the program starts; it cannot be loaded with `dlopen`.
+
+## Memory mappings
+
+`<sys/mman.h>` is demand-paged on the 64-bit edition.  On the 32-bit edition a
+mapping is ordinary memory, allocated in full at once: `MAP_FIXED` fails,
+hints are ignored and permissions are not enforced.  The rest of this section
+describes the 64-bit edition.  Mappings live in their own range of addresses from
+`0x100000000000`, are demand-paged, and can exceed physical memory: reserving
+address space costs nothing until a page is touched.  RAM above 4 GiB is only
+reachable this way, and only on a BIOS boot (under UEFI, memory is the block the
+loader reserves).
+
+| Call | Behaviour |
+|------|-----------|
+| `mmap` anonymous | Zero-filled.  Partial `munmap`, `MAP_FIXED`, `MAP_FIXED_NOREPLACE` and address hints work.  `MAP_POPULATE` and `MAP_STACK` allocate every page at once. |
+| `mmap` of a file | Read into private memory when mapped.  `MAP_SHARED` with `PROT_WRITE` is a copy written back by `msync` and `munmap`, so two programs mapping one file do not see each other's changes. |
+| `mmap` of shared memory | `memfd_create` and `shm_open` give kernel objects (`DOSXC_SYS_SHM`): `ftruncate` sizes them, and every `mmap` of one, in any process, maps the same pages.  The descriptor can be passed to another process over a local socket.  Pages are allocated when first touched and freed when no descriptor or mapping is left. |
+| `mprotect` | `PROT_NONE` and read-only are enforced.  Execute permission is not.  Outside mappings it succeeds and does nothing. |
+| `madvise` | `MADV_DONTNEED` and `MADV_FREE` release the pages, which read back as zero. |
+| `msync`, `mlock` | Succeed and do nothing. |
+
+A mapping belongs to the process that made it and is reachable only from its
+page tables (and the desktop's, for its programs); it is released at process
+exit.  There is no swap.  A touched page that cannot be given memory ends the
+program with a page fault.  Physical memory taken from the program arena for
+mappings is reused by later mappings but not given back to the arena.
+
+## Local sockets
+
+`socketpair(AF_UNIX, SOCK_STREAM)` gives two connected descriptors
+(`DOSXC_SYS_UNIX`).  Reads wait (other tasks run meanwhile) unless the socket
+is non-blocking; reading at end of stream returns 0 once the other end is
+closed, and writing then fails with `EPIPE` (and `SIGPIPE` unless
+`MSG_NOSIGNAL`).  `sendmsg` and `recvmsg` carry descriptors (`SCM_RIGHTS`):
+they arrive with the first byte of the message they were sent with, as new
+descriptors in the receiving process.  `poll` and `select` see them.  A
+program started beside its parent (`DOSXC_TASK_START`) inherits every
+descriptor not marked close-on-exec.  Named sockets (`bind` to a path, `listen`) and
+datagram local sockets are not available.
 
 ## The C library
 
-`src/libc` is a C library written for DOS-XC: stdio (with exact
+`os/libc` is a C library written for DOS-XC: stdio (with exact
 floating-point formatting), stdlib, string, math, time, locale stubs,
 wide characters, `setjmp`, `getopt`, directories, `posix_spawn`, `waitpid`,
 `pipe`, `select` on pipes, POSIX threads, `fork`-less process creation and the POSIX
 pieces GCC, binutils and libstdc++ need.  Build it with
 
 ```sh
-src/libc/build.sh x86_64 OUT [CC]     # or i386
+os/libc/build.sh x86_64 OUT [CC]     # or i386
 ```
 
 which produces `OUT/lib/{crt0,crti,crtn}.o`, `libc.a`, `libm.a` (empty, the
 math functions are in `libc.a`) and `OUT/include`.
 
-`src/libc/build.sh` also links `libc.so`.
+`os/libc/build.sh` also links `libc.so`.
 
 `fork` and `exec*` without a following exit are not available; use
 `posix_spawn`, `system` or `popen` (`popen(..., "r")` runs the command at

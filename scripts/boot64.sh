@@ -1,8 +1,13 @@
 #!/bin/sh
+#
+# DOS-XC /scripts/boot64.sh
+# Copyright (c) 2026 Ben Daws - see LICENSE.txt
+#
+
 set -eu
 
 ROOT=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
-VERSION=$(sed -n 's/^#define DOSXC_VERSION "\(.*\)"$/\1/p' "$ROOT/src/kernel/bootinfo.h")
+VERSION=$(sed -n 's/^#define DOSXC_VERSION "\(.*\)"$/\1/p' "$ROOT/os/kernel/bootinfo.h")
 ISO=${ISO:-"$ROOT/build/iso/DOSXC_${VERSION}_x64.iso"}
 QEMU=${QEMU:-qemu-system-x86_64}
 MEMORY=${MEMORY:-1024}   # MiB; GCC needs several hundred
@@ -33,7 +38,6 @@ if [ -n "$HD" ]; then
         echo "error: disk image not found: $HD" >&2
         exit 1
     fi
-    # Name the format: QEMU blocks writes to sector 0 of a raw image it had to guess.
     case "$HD" in
     *.qcow2) HD_FORMAT=qcow2 ;;
     *.vmdk) HD_FORMAT=vmdk ;;
@@ -74,5 +78,4 @@ while [ "$i" -lt "$DISPLAYS" ]; do
     i=$((i + 1))
 done
 
-# shellcheck disable=SC2086
 exec "$QEMU" $VIDEO -device qemu-xhci,id=xhci -device usb-mouse,bus=xhci.0 -m "$MEMORY" -audiodev "$AUDIO",id=speaker -machine pcspk-audiodev=speaker "$@"

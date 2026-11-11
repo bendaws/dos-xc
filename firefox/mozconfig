@@ -1,0 +1,38 @@
+# Build settings for Firefox on DOS-XC.  firefox/build.sh sets ROOT.
+#
+# The build system is told the target is Linux with musl, which is what Rust
+# builds for (see docs/TOOLCHAIN.md); C and C++ use the DOS-XC cross compiler.
+# The compiler is not Linux's, but Firefox's C and C++ should think it is: the C
+# library keeps to Linux's interfaces wherever code reaches for them.
+CC="x86_64-dosxc-gcc -D__linux__ -D__linux"
+CXX="x86_64-dosxc-g++ -D__linux__ -D__linux"
+# macOS's own tools write empty archives from ELF objects.
+AR=x86_64-dosxc-ar
+RANLIB=x86_64-dosxc-ranlib
+NM=x86_64-dosxc-nm
+STRIP=x86_64-dosxc-strip
+OBJCOPY=x86_64-dosxc-objcopy
+# Rust's binding generator parses the same headers with Clang.
+sysroot=$ROOT/toolchain/cross/x86_64-dosxc
+export BINDGEN_CFLAGS="-nostdinc++ -isystem $sysroot/include/c++/15.2.0 -isystem $sysroot/include/c++/15.2.0/x86_64-dosxc -isystem $sysroot/sysroot/include -D__dosxc__"
+# Debug information would make libxul.so 5 GB.
+export LDFLAGS="-Wl,--strip-debug"
+mk_add_options MOZ_OBJDIR="$ROOT/toolchain/work/firefox-obj"
+ac_add_options --target=x86_64-unknown-linux-musl
+ac_add_options --enable-application=browser
+ac_add_options --disable-bootstrap
+ac_add_options --without-wasm-sandboxed-libraries
+ac_add_options --with-libclang-path="$DOSXC_LIBCLANG"
+ac_add_options --enable-optimize
+ac_add_options --disable-debug
+ac_add_options --disable-tests
+ac_add_options --disable-sandbox
+ac_add_options --disable-crashreporter
+ac_add_options --disable-updater
+ac_add_options --disable-necko-wifi
+ac_add_options --disable-webrtc
+ac_add_options --disable-jemalloc
+ac_add_options --disable-audio-backends
+ac_add_options --enable-default-toolkit=cairo-dosxc
+# DOSfox: our own name and logo, as Mozilla asks of builds it did not make.
+ac_add_options --with-branding=browser/branding/dosfox

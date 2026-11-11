@@ -1,9 +1,11 @@
 # Networking
 
-DOS-XC speaks IPv4 over wired Ethernet.  Install the `ethernet` package
+DOS-XC speaks IPv4 and IPv6 over wired Ethernet.  Install the `ethernet` package
 (Setup selects it by default; on the live system, `PKG INSTALL
 X:\Packages\ethernet.dsp`) and the adapter configures itself with DHCP.  The
-shell announces the address before its next prompt.
+shell announces the address before its next prompt.  IPv6 configures itself
+from router advertisements (SLAAC), with a link-local address always present;
+`IPCONFIG` shows both, and `PING` accepts either kind of address.
 
 | Hardware | Driver | Tested |
 |----------|--------|--------|
@@ -33,7 +35,7 @@ the computer's clock must be set.  The bundle is taken when the ports are
 built; rebuild the packages to refresh it.
 
 Keys come from `getentropy`, which reads the system pool
-([`src/runtime/random.c`](../src/runtime/random.c)).  It collects the timing
+([`os/runtime/random.c`](../os/runtime/random.c)).  It collects the timing
 of every system call since boot and RDRAND where the processor has it.  The
 pool is not saved across restarts, so on a processor without RDRAND a program
 started straight after boot gets less randomness than one started later.
@@ -43,6 +45,12 @@ started straight after boot gets less randomness than one started later.
 The C library provides BSD sockets (`<sys/socket.h>`, `<netinet/in.h>`,
 `<arpa/inet.h>`, `<netdb.h>`), TCP and UDP, blocking and non-blocking, with
 `poll` and `select`.  `getaddrinfo` resolves names with the DHCP-supplied DNS
-servers.  `127.0.0.1` reaches the machine itself.
+servers.  `127.0.0.1` and `::1` reach the machine itself.  An `AF_INET6` socket
+also talks IPv4 through mapped addresses unless `IPV6_V6ONLY` is set.
+`getaddrinfo` asks for AAAA records only when an adapter has a global IPv6
+address, and then lists IPv6 addresses first.
 
-Limits: IPv4 only, no IP fragment reassembly, 64 KiB TCP windows.
+Limits: no IP fragment reassembly, 64 KiB TCP windows, no DHCPv6, one global
+IPv6 address per adapter (the interface identifier is random for each boot),
+and link-local addresses always use the first adapter because scope ids are
+ignored.

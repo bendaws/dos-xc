@@ -37,8 +37,10 @@ installs one into the live system (in memory until restart).
 | `coreutils` | `\Programs\coreutils` | DIR, TYPE, MORE, COPY, MOVE, REN, DEL, MD, RD, EDIT, WRITE, CLS, COLOR, VER, BEEP, SPEED, EJECT, SHUTDOWN, RESTART (REBOOT), HELP |
 | `batch` | `\Programs\batch` | `BATCH.EXE`, which runs `.BAT` files |
 | `DOS-XC Desktop` | `\Programs\DOS-XC Desktop` | The graphical desktop and its programs ([DESKTOP.md](DESKTOP.md)) |
+| `dosfox` | `\Programs\dosfox` | DOSfox web browser (built from Firefox source), 64-bit only ([firefox/README.md](../firefox/README.md)) |
 | `GCC` | `\Programs\GCC` | GCC 15.2 (C, C++) and binutils 2.45 ([TOOLCHAIN.md](TOOLCHAIN.md)) |
 | `ethernet` | `\SYSTEM\DRIVERS` | Ethernet drivers: Intel, Broadcom, virtio ([NETWORK.md](NETWORK.md)) |
+| `sound` | `\SYSTEM\DRIVERS` | Sound drivers: Intel High Definition Audio ([DRIVERS.md](DRIVERS.md#sound)) |
 | `hyperv` | `\SYSTEM\DRIVERS` | Hyper-V network, SCSI disks, keyboard and mouse ([DRIVERS.md](DRIVERS.md#hyper-v)) |
 | `curl` | `\Programs\curl` | curl 8.11 (`CURL`, HTTP and HTTPS) |
 | `Vim` | `\Programs\Vim` | Vim 9.1 (`VIM`, `VI`, `VIEW`, `EX`, `VIMDIFF`) |
@@ -80,20 +82,16 @@ An installed package keeps its metadata in `\Programs\<Name>\PACKAGE.INF`.
 `PKG PACK` reads the metadata from `PACKAGE.INF` in the folder being
 packed when it exists (options override it).
 
-The format is implemented in [`src/pkg/dsp.c`](../src/pkg/dsp.c) (with
+The format is implemented in [`os/pkg/dsp.c`](../os/pkg/dsp.c) (with
 its own inflate and deflate) and, for the build machine, in
 [`tools/dsp.py`](../tools/dsp.py).
 
 ## Building the packages
 
-`scripts/build.sh` makes `build/packages/<Name>-<bits>.dsp`:
+Each package has a folder at the top of the repository with a `package.sh`, and `scripts/build.sh` runs them all, making `build/packages/<Name>-<bits>.dsp`.  `FOLDER/package.sh [32] [64]` builds one package by itself.
 
-* `coreutils` and `batch` from `src/coreutils` and `src/batch` (every build);
-* `DOS-XC Desktop`, as `desktop-<bits>.dsp`, from `src/desktop` and `src/vdm` (every build);
-* `GCC` from `toolchain/dist/ARCH/GCC` (`toolchain/build-toolchain.sh ARCH`);
-* `ethernet` from `src/netdrivers` and `hyperv` from `src/hyperv` (every build);
-* `Vim`, `xz`, `curl` and `python3` from `build/ports/ARCH` (`ports/build-ports.sh ARCH`);
-* `Oregon` from `OREGON.ZIP` in the repository root.
+Programs in this repository are compiled by their `package.sh`.  GCC and the ported programs take much longer, so they have a separate `build.sh`, and `package.sh` packs its output if it exists: `toolchain/dist/ARCH/GCC` from `gcc/build.sh ARCH`, and `build/ports/ARCH` from `scripts/build-ports.sh ARCH`.  `oregon` uses `oregon/OREGON.ZIP`.
 
-Missing inputs are skipped, so a plain checkout builds without the larger
-packages.
+Missing inputs are skipped, so a plain checkout builds without the larger packages.
+
+`scripts/build.sh --select` chooses packages and editions on a checklist, and `--last` repeats that choice.  `--only a,b,c` and `--editions 64` do the same without one.  The core system and `coreutils` are always built.  Only the chosen packages go on the media, and a package left out of the live system's defaults (`batch`, the desktop) is simply absent from it.
