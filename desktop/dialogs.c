@@ -80,13 +80,15 @@ void ask_box(const char *title, const char *question, const char *yes, const cha
     else window_modal(w);
 }
 
-struct input { char prompt[100]; struct field field; void (*done)(const char *, void *); void *data; };
+struct input { char prompt[100]; struct field field; int secret; void (*done)(const char *, void *); void *data; };
 static const struct rect input_field = {16, 34, 304, 22}, input_ok = {152, 66, 80, 24}, input_cancel = {240, 66, 80, 24};
 
 static void input_paint(struct window *w, const struct canvas *c) {
     struct input *in = w->data;
     text(c, 16, 14, &font_regular, in->prompt, C_TEXT);
-    field_paint(c, &in->field, input_field, 1);
+    struct field shown = in->field;
+    if (in->secret) for (size_t i = 0; shown.text[i]; ++i) shown.text[i] = '*';
+    field_paint(c, &shown, input_field, 1);
     button(c, input_ok, "OK", 0, 1);
     button(c, input_cancel, "Cancel", 0, 0);
 }
@@ -112,12 +114,28 @@ static void input_key(struct window *w, int key) {
     else if (key == 27) input_finish(w, 0);
     else if (field_key(&in->field, key)) window_paint(w);
 }
-static void input_closed(struct window *w) { struct input *in = w->data; if (in->done) in->done(0, in->data); free(in); }
+static void input_closed(struct window *w) {
+    struct input *in = w->data;
+    if (in->done) in->done(0, in->data);
+    memset(in, 0, sizeof(*in));
+    free(in);
+}
 static const struct app_ops input_ops = {input_paint, input_mouse, input_key, input_closed};
 
+static void open_input(const char *title, const char *prompt, const char *initial, int secret, void (*done)(const char *, void *), void *data);
+
 void input_box(const char *title, const char *prompt, const char *initial, void (*done)(const char *, void *), void *data) {
+    open_input(title, prompt, initial, 0, done, data);
+}
+
+void secret_box(const char *title, const char *prompt, void (*done)(const char *, void *), void *data) {
+    open_input(title, prompt, "", 1, done, data);
+}
+
+static void open_input(const char *title, const char *prompt, const char *initial, int secret, void (*done)(const char *, void *), void *data) {
     struct input *in = calloc(1, sizeof(*in));
     if (!in) return;
+    in->secret = secret;
     snprintf(in->prompt, sizeof(in->prompt), "%s", prompt);
     field_set(&in->field, initial ? initial : "");
     in->done = done;

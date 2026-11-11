@@ -11,7 +11,8 @@ for edition in $EDITIONS; do
     desktop=$HERE
     desktop_out=$out/desktop
     rm -rf "$desktop_out"
-    mkdir -p "$desktop_out/Apps" "$desktop_out/Wallpapers"
+    mkdir -p "$desktop_out/Apps" "$desktop_out/Wallpapers" "$desktop_out/Pictures"
+    cp "$desktop"/pictures/*.jpg "$desktop_out/Pictures/"
     cp "$desktop"/wallpapers/*.jpg "$desktop_out/Wallpapers/"
     for picture in "$desktop"/wallpapers/*.avif; do
         [ -f "$picture" ] || continue
@@ -26,16 +27,17 @@ image.save(sys.argv[2], quality=90)' "$picture" "$desktop_out/Wallpapers/$name.j
     done
     app_flags="$flags -Wno-missing-field-initializers"
     spawn "$cc" $app_flags -I"$desktop" "$desktop/desktop.c" "$desktop/gfx.c" "$desktop/apps.c" "$desktop/widgets.c" "$desktop/dialogs.c" \
-        "$desktop/icons.c" "$desktop/control.c" \
+        "$desktop/icons.c" "$desktop/control.c" "$desktop/logon.c" "$desktop/users.c" \
         "$desktop/image.c" "$ROOT/os/pkg/inflate.c" -I"$ROOT/os/pkg" -o "$desktop_out/DESKTOP.EXE"
     gui="$desktop/gfx.c $desktop/gui.c $desktop/widgets.c $desktop/dialogs.c $desktop/image.c $ROOT/os/pkg/inflate.c"
-    for app in explorer:EXPLORER taskmgr:TASKMGR calc:CALC editor:EDITOR paint:PAINT solitaire:SOLITAIRE mines:MINES chess:CHESS terminal:TERMINAL; do
+    for app in explorer:EXPLORER taskmgr:TASKMGR calc:CALC editor:EDITOR paint:PAINT solitaire:SOLITAIRE mines:MINES chess:CHESS terminal:TERMINAL events:EVENTS firewall:FIREWALL; do
         [ -f "$desktop/${app%%:*}.c" ] || continue
         spawn "$cc" $app_flags -I"$desktop" "$desktop/${app%%:*}.c" $gui -I"$ROOT/os/pkg" -lm -o "$desktop_out/Apps/${app#*:}.EXE"
     done
+    spawn "$cc" $app_flags -I"$desktop" "$desktop/fonts.c" "$desktop/ttf.c" $gui -I"$ROOT/os/pkg" -lm -o "$desktop_out/Apps/FONTS.EXE"
     spawn "$cc" $app_flags -I"$desktop" -I"$ROOT/os" "$desktop/pkgmgr.c" $gui "$ROOT/os/pkg/dsp.c" "$ROOT/os/pkg/deflate.c" -I"$ROOT/os/pkg" -lm \
         -o "$desktop_out/Apps/PKGMGR.EXE"
-    spawn "$cc" $app_flags -I"$desktop" -I"$ROOT/os" "$desktop/setupgui.c" $gui "$ROOT/os/setup/install.c" "$ROOT/os/setup/target.c" \
+    spawn "$cc" $app_flags -I"$desktop" -I"$ROOT/os" "$desktop/setupgui.c" $gui "$ROOT/os/setup/install.c" "$ROOT/os/runtime/sha256.c" "$ROOT/os/setup/target.c" \
         "$ROOT/os/drivers/fat32.c" "$ROOT/os/pkg/dsp.c" "$ROOT/os/pkg/deflate.c" -I"$ROOT/os/pkg" -lm -o "$desktop_out/Apps/SETUPGUI.EXE"
     spawn "$cc" $app_flags -I"$ROOT/os" "$HERE/vdm/cpu.c" "$HERE/vdm/bios.c" "$HERE/vdm/video.c" "$HERE/vdm/dos.c" "$HERE/vdm/host.c" \
         -o "$desktop_out/Apps/DOSVM.EXE"

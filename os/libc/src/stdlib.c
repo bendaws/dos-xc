@@ -344,6 +344,16 @@ int rand_r(unsigned *seed) {
 }
 long random(void) { return rand(); }
 void srandom(unsigned seed) { srand(seed); }
+static unsigned long long rand48_step(unsigned short x[3]) {
+    unsigned long long v = (unsigned long long)x[0] | (unsigned long long)x[1] << 16 | (unsigned long long)x[2] << 32;
+    v = (v * 0x5deece66dull + 0xb) & 0xffffffffffffull;
+    x[0] = (unsigned short)v; x[1] = (unsigned short)(v >> 16); x[2] = (unsigned short)(v >> 32);
+    return v;
+}
+long jrand48(unsigned short x[3]) { return (long)(int)(rand48_step(x) >> 16); }
+long nrand48(unsigned short x[3]) { return (long)(rand48_step(x) >> 17); }
+double erand48(unsigned short x[3]) { return (double)rand48_step(x) / 281474976710656.0; }
+long mrand48(void) { return (long)(int)((unsigned)rand() << 1 ^ (unsigned)rand()); }
 long lrand48(void) { return rand(); }
 void srand48(long seed) { srand((unsigned)seed); }
 double drand48(void) { return (double)rand() / ((double)RAND_MAX + 1); }

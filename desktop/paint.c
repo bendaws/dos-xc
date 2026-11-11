@@ -363,7 +363,7 @@ static void paint_popup(struct window *w, int tag, int index) {
             struct dosxc_sysinfo info;
             dosxc_sys_sysinfo(&info);
             char folder[300], file[340];
-            snprintf(folder, sizeof(folder), "%c:%s\\Wallpapers", info.drive, home && *home == '\\' ? home : "\\Home");
+            snprintf(folder, sizeof(folder), "%c:%s\\Wallpapers", info.drive, home && *home == '\\' ? home : "\\Users\\Public");
             dosxc_sys_mkdir(folder);
             snprintf(file, sizeof(file), "%s\\From Paint.bmp", folder);
             if (image_save_bmp(file, &picture)) message_box("Paint", "The picture could not be saved.", file);

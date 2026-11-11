@@ -60,7 +60,10 @@ enum { ICON_LOGO, ICON_FOLDER, ICON_FILE, ICON_PROGRAM, ICON_DRIVE, ICON_PROMPT,
        ICON_CALC, ICON_EDITOR, ICON_PAINT, ICON_TASKS, ICON_CARDS, ICON_MINES, ICON_CHESS, ICON_PICTURE, ICON_COMPUTER, ICON_STAR,
        ICON_SOUND, ICON_NET, ICON_NET_OFF, ICON_PACKAGE, ICON_SETUP, ICON_GEAR, ICON_GAMES, ICON_TOOLS, ICON_COUNT };
 #define ICON_DOSFOX ICON_COUNT
-#define ICON_SLOTS (ICON_COUNT + 1)
+#define ICON_USER (ICON_COUNT + 1)
+#define ICON_LOGOUT ICON_USER
+#define ICON_APP_FIRST (ICON_COUNT + 2)
+#define ICON_SLOTS (ICON_COUNT + 34)
 extern struct icon icons[ICON_SLOTS];
 int icon_load_png(int icon, const char *path);   /* a 16 x 16 PNG; 0 when loaded */
 int icon_read_png(const char *path, struct icon *out);
@@ -109,7 +112,10 @@ struct window {
     volatile u32 seq;                /* the client adds 1 after each repaint */
     u32 seen;
     int popup;                       /* no frame, no taskbar button, placed by the client */
+    char icon_file[160];             /* a client's own 16 x 16 PNG icon, or "" */
 };
+void gui_set_icon_file(const char *path);       /* for this program's next windows */
+int icon_for_png(const char *path);             /* an icon slot holding it, or ICON_PROGRAM */
 struct window *window_open(int w, int h, const char *title, int icon, const struct app_ops *ops, void *data);
 void window_close(struct window *);
 void window_title(struct window *, const char *);
@@ -163,6 +169,15 @@ void icons_delete(void);
 int icons_add_shortcut(const char *label, const struct shortcut *s);
 
 void open_control_panel(void);
+void open_user_accounts(void);
+void desktop_quit(int status);
+extern int logon_mode;
+void logon_init(void);
+void logon_paint(const struct canvas *c, struct rect screen);
+int logon_click(int x, int y);                            /* 1 when it was on the login screen */
+void logon_key(int key);
+int user_picture(const char *path, int size, struct surface *out);   /* a square picture */
+void picture_chooser(void (*done)(const char *path, void *data), void *data);
 void open_default_programs(void);
 void open_network(void);
 
@@ -184,6 +199,7 @@ void ask_box(const char *title, const char *question, const char *yes, const cha
 void window_modal(struct window *w);            /* only it takes input until it closes */
 /* DONE gets the text typed, or 0 when cancelled. */
 void input_box(const char *title, const char *prompt, const char *initial, void (*done)(const char *text, void *data), void *data);
+void secret_box(const char *title, const char *prompt, void (*done)(const char *text, void *data), void *data);  /* typed text shown as * */
 /* DONE gets 1 for YES, 0 for Cancel. */
 void confirm_box(const char *title, const char *question, const char *yes, int icon, void (*done)(int ok, void *data), void *data);
 
@@ -209,7 +225,21 @@ struct shortcut {
 int shortcut_read(const char *path, struct shortcut *s);
 int shortcut_write(const char *path, const struct shortcut *s);
 
-/* Programs that can be the default browser or editor: "dosfox", "editor", "vim". */
+/* A program a package lists in its MENU.CFG (or a built-in one). */
+struct app_entry {
+    char id[32], name[64];
+    char program[260], dir[200];
+    char category[32];               /* the Start menu submenu it goes in */
+    char icon_file[200];             /* as MENU.CFG gives it: a built-in icon's name or a PNG beside the program */
+    char defaults[96];               /* kinds it can be the default for: browser editor media document spreadsheet presentation */
+    char types[256];                 /* file extensions it opens */
+    int icon, terminal, url, builtin;
+};
+int apps_list(struct app_entry *out, int max);
+int app_find(const char *id, struct app_entry *out);
+int app_start(const struct app_entry *e, const char *argument);
+int programs_for(const char *kind, struct app_entry *out, int max);
+/* Programs by id (from MENU.CFG files; "editor" is the File Editor). */
 int program_installed(const char *name);
 int program_info(const char *name, char *label, size_t label_size, int *icon);
 void default_program(const char *kind, char *out, size_t size);  /* kind "browser" or "editor"; "" for none */

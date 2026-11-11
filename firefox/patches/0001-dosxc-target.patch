@@ -11,7 +11,7 @@ index bbb60f5f49..3b786e0030 100644
 +  return aCacheDomains;
 +}
 diff --git a/browser/app/nsBrowserApp.cpp b/browser/app/nsBrowserApp.cpp
-index 1fbef26996..737b8d6628 100644
+index 1fbef26996..bc19bb22d7 100644
 --- a/browser/app/nsBrowserApp.cpp
 +++ b/browser/app/nsBrowserApp.cpp
 @@ -3,6 +3,11 @@
@@ -26,7 +26,7 @@ index 1fbef26996..737b8d6628 100644
  #include "mozilla/XREAppData.h"
  #include "XREChildData.h"
  #include "XREShellData.h"
-@@ -338,6 +343,43 @@ static void ExpandFileDescriptorTable() {
+@@ -338,6 +343,42 @@ static void ExpandFileDescriptorTable() {
  #endif
  
  int main(int argc, char* argv[], char* envp[]) {
@@ -41,7 +41,6 @@ index 1fbef26996..737b8d6628 100644
 +    char root[4] = {self.dli_fname[0], ':', '/', 0};
 +    chdir(root);
 +  }
-+  setenv("MOZ_FORCE_DISABLE_E10S", "1", 0);
 +  setenv("MOZ_HEADLESS", "1", 0);
 +  setenv("MOZ_CRASHREPORTER_DISABLE", "1", 0);
 +  const char* home = getenv("HOME");
@@ -833,6 +832,54 @@ index ad946302dd..5c3ae36ab1 100644
      UNIFIED_SOURCES += ["linux/LinuxGamepad.cpp"]
  else:
      UNIFIED_SOURCES += ["fallback/FallbackGamepad.cpp"]
+diff --git a/dom/ipc/ContentChild.cpp b/dom/ipc/ContentChild.cpp
+index 466aa9339c..f100593b7e 100644
+--- a/dom/ipc/ContentChild.cpp
++++ b/dom/ipc/ContentChild.cpp
+@@ -296,6 +296,11 @@
+ #include "nscore.h"  // for NS_FREE_PERMANENT_DATA
+ #include "private/pprio.h"
+ 
++#ifdef MOZ_WIDGET_DOSXC
++#  include <dosxc/abi.h>
++#  include <spawn.h>
++#endif
++
+ #ifdef MOZ_WIDGET_GTK
+ #  include <gtk/gtk.h>
+ 
+@@ -1793,6 +1798,16 @@ mozilla::ipc::IPCResult ContentChild::RecvSetProcessSandbox(
+ #  endif /* XP_LINUX && !ANDROID */
+ #endif   /* MOZ_SANDBOX */
+ 
++#if !defined(MOZ_SANDBOX) && defined(MOZ_WIDGET_DOSXC)
++  // Content may read files but not change them, start programs, open
++  // network sockets or use system calls; sound stays (cubeb runs here).
++  if (Preferences::GetInt("security.sandbox.content.level", 1) > 0 &&
++      dosxc_sandbox(DOSXC_SANDBOX_FILES | DOSXC_SANDBOX_SPAWN |
++                    DOSXC_SANDBOX_NET | DOSXC_SANDBOX_SYSTEM) != 0) {
++    MOZ_CRASH("DOS-XC content sandbox failed");
++  }
++#endif
++
+   return IPC_OK();
+ }
+ 
+diff --git a/dom/ipc/ContentParent.cpp b/dom/ipc/ContentParent.cpp
+index d12d07d824..1064923b61 100644
+--- a/dom/ipc/ContentParent.cpp
++++ b/dom/ipc/ContentParent.cpp
+@@ -3061,6 +3061,10 @@ bool ContentParent::InitInternal(ProcessPriority aInitialPriority) {
+   if (shouldSandbox && !SendSetProcessSandbox(brokerFd)) {
+     KillHard("SandboxInitFailed");
+   }
++#elif defined(MOZ_WIDGET_DOSXC)
++  if (!SendSetProcessSandbox(Nothing())) {
++    KillHard("SandboxInitFailed");
++  }
+ #endif
+ 
+   // Ensure that the default set of permissions are avaliable in the content
 diff --git a/dom/ipc/PContent.ipdl b/dom/ipc/PContent.ipdl
 index 352a103bba..bd6984ff70 100644
 --- a/dom/ipc/PContent.ipdl
@@ -1239,7 +1286,7 @@ index 0000000000..9135bb9b88
 +
 +#endif /* GFX_PLATFORM_DOSXC_H */
 diff --git a/gfx/thebes/gfxFT2FontList.cpp b/gfx/thebes/gfxFT2FontList.cpp
-index fcc0be86a4..4ac858da7e 100644
+index fcc0be86a4..8d9848c8a5 100644
 --- a/gfx/thebes/gfxFT2FontList.cpp
 +++ b/gfx/thebes/gfxFT2FontList.cpp
 @@ -2,12 +2,16 @@
@@ -1271,7 +1318,7 @@ index fcc0be86a4..4ac858da7e 100644
        face = Factory::NewSharedFTFaceFromData(fontData, mFTFontIndex);
        if (!face) {
          NS_WARNING("failed to create freetype face");
-@@ -1580,6 +1585,16 @@ void gfxFT2FontList::FindFonts() {
+@@ -1580,10 +1585,24 @@ void gfxFT2FontList::FindFonts() {
    }
  
    if (!useSystemFontAPI)
@@ -1288,7 +1335,15 @@ index fcc0be86a4..4ac858da7e 100644
  #endif
    {
      FindFontsInDir(androidFontsRoot, mFontNameCache.get());
-@@ -1911,6 +1926,8 @@ FontFamily gfxFT2FontList::GetDefaultFontForPlatform(
+   }
++#ifdef MOZ_WIDGET_DOSXC
++  // System fonts, added with the desktop's Fonts program.
++  FindFontsInDir("/SYSTEM/FONTS"_ns, mFontNameCache.get());
++#endif
+ 
+   // Look for fonts stored in omnijar, unless we're on a low-memory
+   // device where we don't want to spend the RAM to decompress them.
+@@ -1911,6 +1930,8 @@ FontFamily gfxFT2FontList::GetDefaultFontForPlatform(
    if (ff.IsNull()) {
      ff = FindFamily(aFontVisibilityProvider, "Droid Sans"_ns);
    }
@@ -1464,6 +1519,80 @@ index 80350aa641..96fbf437a5 100644
  #  elif defined(XP_LINUX) || defined(__DragonFly__) || defined(XP_FREEBSD) || \
        defined(XP_NETBSD) || defined(XP_OPENBSD)
      pump_ = new base::MessagePumpForUI();
+diff --git a/ipc/chromium/src/base/process_util_linux.cc b/ipc/chromium/src/base/process_util_linux.cc
+index 8d096dc22d..779f36c316 100644
+--- a/ipc/chromium/src/base/process_util_linux.cc
++++ b/ipc/chromium/src/base/process_util_linux.cc
+@@ -28,6 +28,10 @@
+ #include "base/logging.h"
+ #include "mozilla/ipc/FileDescriptor.h"
+ #include "mozilla/ipc/FileDescriptorShuffle.h"
++#if defined(MOZ_WIDGET_DOSXC)
++#  include <fcntl.h>
++#  include <spawn.h>
++#endif
+ #include "mozilla/UniquePtr.h"
+ #include "mozilla/StaticPtr.h"
+ #include "mozilla/Result.h"
+@@ -43,6 +47,51 @@ MOZ_RUNINIT static mozilla::EnvironmentLog gProcessLog("MOZ_PROCESS_LOG");
+ 
+ namespace base {
+ 
++#if defined(MOZ_WIDGET_DOSXC)
++// DOS-XC has no fork: the kernel starts the child with exactly the
++// descriptors listed.
++Result<Ok, LaunchError> LaunchApp(const std::vector<std::string>& argv,
++                                  LaunchOptions&& options,
++                                  ProcessHandle* process_handle) {
++  EnvironmentArray env_storage;
++  const EnvironmentArray& envp =
++      options.full_env ? options.full_env
++                       : (env_storage = BuildEnvironmentArray(options.env_map));
++
++  // Standard output and error are passed on; standard input is not, so a
++  // child cannot read the console's keys.
++  std::vector<int> map;
++  bool mapped[3] = {false, false, false};
++  for (const auto& fds : options.fds_to_remap) {
++    map.push_back(fds.first);
++    map.push_back(fds.second);
++    if (fds.second >= 0 && fds.second < 3) mapped[fds.second] = true;
++  }
++  for (int fd = 1; fd < 3; ++fd) {
++    if (!mapped[fd] && fcntl(fd, F_GETFD) >= 0) {
++      map.push_back(fd);
++      map.push_back(fd);
++    }
++  }
++
++  std::vector<char*> argv_cstr;
++  for (const auto& arg : argv) argv_cstr.push_back(const_cast<char*>(arg.c_str()));
++  argv_cstr.push_back(nullptr);
++
++  pid_t pid = -1;
++  int error = dosxc_spawn_fds(&pid, argv_cstr[0], argv_cstr.data(), envp.get(),
++                              map.data(), int(map.size() / 2));
++  if (error) {
++    CHROMIUM_LOG(WARNING) << "dosxc_spawn_fds failed: " << strerror(error);
++    return Err(LaunchError("dosxc_spawn_fds", error));
++  }
++  gProcessLog.print("==> process %d launched child process %d\n",
++                    GetCurrentProcId(), pid);
++  if (options.wait) HANDLE_EINTR(waitpid(pid, nullptr, 0));
++  if (process_handle) *process_handle = pid;
++  return Ok();
++}
++#else
+ Result<Ok, LaunchError> LaunchApp(const std::vector<std::string>& argv,
+                                   LaunchOptions&& options,
+                                   ProcessHandle* process_handle) {
+@@ -162,5 +211,6 @@ Result<Ok, LaunchError> LaunchApp(const std::vector<std::string>& argv,
+ 
+   return Ok();
+ }
++#endif
+ 
+ }  // namespace base
 diff --git a/ipc/glue/GeckoChildProcessHost.cpp b/ipc/glue/GeckoChildProcessHost.cpp
 index 00dda54373..add2d094a5 100644
 --- a/ipc/glue/GeckoChildProcessHost.cpp

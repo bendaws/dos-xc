@@ -34,5 +34,7 @@ ac_add_options --disable-webrtc
 ac_add_options --disable-jemalloc
 ac_add_options --disable-audio-backends
 ac_add_options --enable-default-toolkit=cairo-dosxc
+# There is no fork: content processes are started with dosxc_spawn_fds.
+ac_add_options --disable-forkserver
 # DOSfox: our own name and logo, as Mozilla asks of builds it did not make.
 ac_add_options --with-branding=browser/branding/dosfox

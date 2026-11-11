@@ -23,6 +23,7 @@ static const struct { const char *label; int icon; void (*open)(void); } panels[
     {"Sound", ICON_SOUND, open_sound},
     {"Network", ICON_NET, open_network},
     {"Default Programs", ICON_STAR, open_default_programs},
+    {"User Accounts", ICON_USER, open_user_accounts},
     {"Packages", ICON_PACKAGE, open_packages},
 };
 #define PANELS ((int)(sizeof(panels) / sizeof(*panels)))
@@ -68,43 +69,40 @@ void open_control_panel(void) {
 
 /* ---- Default Programs ---------------------------------------------------- */
 
-static const char *const browsers[] = {"none", "dosfox"};
-static const char *const editors[] = {"editor", "vim"};
-#define LIST_ROW 22
-
-struct defaults {
-    const char *browser_shown[4], *editor_shown[4];
-    int browser_count, editor_count, browser, editor;
+static const struct { const char *kind, *label; int optional; } kinds[] = {
+    {"browser", "Web browser", 1}, {"editor", "Text editor", 0}, {"media", "Media player", 1},
+    {"document", "Documents", 1}, {"spreadsheet", "Spreadsheets", 1}, {"presentation", "Presentations", 1},
 };
-static const struct rect dp_ok = {148, 236, 80, 24}, dp_cancel = {236, 236, 80, 24};
-static struct rect browser_row(int i) { return (struct rect){16, 34 + i * LIST_ROW, 300, LIST_ROW}; }
-static struct rect editor_row(int i) { return (struct rect){16, 140 + i * LIST_ROW, 300, LIST_ROW}; }
+#define KINDS ((int)(sizeof(kinds) / sizeof(*kinds)))
+#define CHOICES 6
 
-static void choice_paint(const struct canvas *c, struct rect r, const char *name, int on) {
-    char label[64] = "None";
-    int icon = ICON_INFO;
-    if (strcmp(name, "none")) program_info(name, label, sizeof(label), &icon);
-    bevel(c, r.x, r.y + 4, 14, 14, 1);
-    fill(c, r.x + 2, r.y + 6, 10, 10, C_BASE);
-    if (on) fill(c, r.x + 4, r.y + 8, 6, 6, C_TEXT);
-    if (strcmp(name, "none")) draw_icon(c, r.x + 22, r.y + 3, icon);
-    text(c, r.x + 44, r.y + 6, &font_regular, label, C_TEXT);
-}
+struct defaults { struct app_entry choices[KINDS][CHOICES]; int count[KINDS], chosen[KINDS]; };
+static struct rect choice_rect(int kind) { return (struct rect){130, 14 + kind * 30, 230, 22}; }
+static const struct rect dp_ok = {200, 14 + KINDS * 30 + 10, 76, 24}, dp_cancel = {284, 14 + KINDS * 30 + 10, 76, 24};
 
+/* chosen = -1: none. */
 static void dp_paint(struct window *w, const struct canvas *c) {
     struct defaults *d = w->data;
-    text(c, 16, 14, &font_bold, "Web browser", C_TEXT);
-    for (int i = 0; i < d->browser_count; ++i) choice_paint(c, browser_row(i), d->browser_shown[i], i == d->browser);
-    text(c, 16, 120, &font_bold, "Text editor", C_TEXT);
-    for (int i = 0; i < d->editor_count; ++i) choice_paint(c, editor_row(i), d->editor_shown[i], i == d->editor);
+    for (int k = 0; k < KINDS; ++k) {
+        struct rect r = choice_rect(k);
+        text(c, 14, r.y + 5, &font_regular, kinds[k].label, C_TEXT);
+        bevel(c, r.x, r.y, r.w, r.h, 1);
+        fill(c, r.x + 2, r.y + 2, r.w - 4, r.h - 4, C_BASE);
+        int i = d->chosen[k];
+        if (i >= 0) {
+            draw_icon(c, r.x + 4, r.y + 3, d->choices[k][i].icon);
+            text(c, r.x + 24, r.y + 6, &font_regular, d->choices[k][i].name, C_TEXT);
+        } else text(c, r.x + 24, r.y + 6, &font_regular, d->count[k] ? "None" : "(no program installed)", C_DISABLED);
+        for (int t = 0; t < 4; ++t) fill(c, r.x + r.w - 14 + t, r.y + 9 + t, 7 - 2 * t, 1, C_TEXT);
+    }
     button(c, dp_ok, "OK", 0, 1);
     button(c, dp_cancel, "Cancel", 0, 0);
 }
 
 static void dp_accept(struct window *w) {
     struct defaults *d = w->data;
-    set_default_program("browser", d->browser_shown[d->browser]);
-    set_default_program("editor", d->editor_shown[d->editor]);
+    for (int k = 0; k < KINDS; ++k)
+        set_default_program(kinds[k].kind, d->chosen[k] >= 0 ? d->choices[k][d->chosen[k]].id : "none");
     window_close(w);
 }
 
@@ -114,10 +112,13 @@ static void dp_mouse(struct window *w, int x, int y, int kind, int value) {
     if (kind != M_DOWN && kind != M_DOUBLE) return;
     if (rect_has(dp_ok, x, y)) { dp_accept(w); return; }
     if (rect_has(dp_cancel, x, y)) { window_close(w); return; }
-    for (int i = 0; i < d->browser_count; ++i)
-        if (rect_has(browser_row(i), x, y)) { d->browser = i; window_paint(w); }
-    for (int i = 0; i < d->editor_count; ++i)
-        if (rect_has(editor_row(i), x, y)) { d->editor = i; window_paint(w); }
+    for (int k = 0; k < KINDS; ++k)
+        if (rect_has(choice_rect(k), x, y) && d->count[k]) {
+            int next = d->chosen[k] + 1;
+            if (next >= d->count[k]) next = kinds[k].optional ? -1 : 0;
+            d->chosen[k] = next;
+            window_paint(w);
+        }
 }
 
 static void dp_key(struct window *w, int key) {
@@ -131,19 +132,14 @@ static const struct app_ops dp_ops = {dp_paint, dp_mouse, dp_key, dp_closed};
 void open_default_programs(void) {
     struct defaults *d = calloc(1, sizeof(*d));
     if (!d) return;
-    char browser[32], editor[32];
-    default_program("browser", browser, sizeof(browser));
-    default_program("editor", editor, sizeof(editor));
-    for (size_t i = 0; i < sizeof(browsers) / sizeof(*browsers); ++i)
-        if (!strcmp(browsers[i], "none") || program_installed(browsers[i])) {
-            if (!strcmp(browsers[i], browser[0] ? browser : "none")) d->browser = d->browser_count;
-            d->browser_shown[d->browser_count++] = browsers[i];
-        }
-    for (size_t i = 0; i < sizeof(editors) / sizeof(*editors); ++i)
-        if (program_installed(editors[i])) {
-            if (!strcmp(editors[i], editor)) d->editor = d->editor_count;
-            d->editor_shown[d->editor_count++] = editors[i];
-        }
-    struct window *w = window_open(332, 270, "Default Programs", ICON_STAR, &dp_ops, d);
+    for (int k = 0; k < KINDS; ++k) {
+        d->count[k] = programs_for(kinds[k].kind, d->choices[k], CHOICES);
+        char id[32];
+        default_program(kinds[k].kind, id, sizeof(id));
+        d->chosen[k] = -1;
+        for (int i = 0; i < d->count[k]; ++i)
+            if (!strcmp(d->choices[k][i].id, id)) d->chosen[k] = i;
+    }
+    struct window *w = window_open(374, 14 + KINDS * 30 + 46, "Default Programs", ICON_STAR, &dp_ops, d);
     if (!w) free(d);
 }

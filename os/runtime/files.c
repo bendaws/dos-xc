@@ -358,6 +358,7 @@ static int api_open(const char *path, int flags, int mode) {
     if (!kind) {
         char canonical[PATH_MAX_RT];
         int r = path_resolve(p, path, canonical);
+        if (!r) r = accounts_access(canonical, (flags & O_ACCMODE) != O_RDONLY || (flags & (DOSXC_O_CREAT | DOSXC_O_TRUNC)));
         if (!r) r = open_inode(f, canonical, flags);
         if (r) {
             f->refs = 0;
@@ -507,10 +508,17 @@ static int unix_poll(struct open_file *f, int events) {
     return ready;
 }
 
-/* -ENOTSOCK when FD is not a local socket. */
+/* -ENOTSOCK when FD is neither a local socket nor a pipe. */
 int files_poll(int fd, int events) {
     struct open_file *f = lookup(fd);
     if (!f) return -DOSXC_EBADF;
+    if (f->kind == KIND_PIPE_READ) {
+        int ready = 0;
+        if ((events & DOSXC_POLL_IN) && (f->pipe->tail != f->pipe->head || !f->pipe->writers)) ready |= DOSXC_POLL_IN;
+        if (!f->pipe->writers) ready |= DOSXC_POLL_HUP;
+        return ready;
+    }
+    if (f->kind == KIND_PIPE_WRITE) return f->pipe->readers ? events & DOSXC_POLL_OUT : DOSXC_POLL_ERR;
     if (f->kind != KIND_UNIX) return -DOSXC_ENOTSOCK;
     return unix_poll(f, events);
 }
@@ -606,6 +614,11 @@ static dosxc_ssize api_read(int fd, void *buffer, dosxc_size size) {
     case KIND_NULL: return 0;
     case KIND_PIPE_READ: {
         struct pipe *p = f->pipe;
+        while (p->tail == p->head && p->writers && size) {
+            if (f->flags & DOSXC_O_NONBLOCK) return -DOSXC_EAGAIN;
+            socket_wait_interrupted();
+            sched_sleep(1000000);
+        }
         uptr available = p->tail - p->head;
         if (size > available) size = available;
         memcpy(buffer, p->data + p->head, size);
@@ -800,6 +813,7 @@ static int api_stat(const char *path, struct dosxc_stat *st) {
     char canonical[PATH_MAX_RT];
     int r = path_resolve(current, path, canonical);
     if (r) return r;
+    if ((r = accounts_access(canonical, 0))) return r;
     struct inode *n = find_inode(canonical);
     if (n) {
         fill_stat(st, KIND_FILE, n->size, n->attributes, n->dirty ? cpu_rtc_time() : fat_time(n->date, n->time), canonical);
@@ -815,6 +829,7 @@ static int api_unlink(const char *path) {
     char canonical[PATH_MAX_RT];
     int r = path_resolve(current, path, canonical);
     if (r) return r;
+    if ((r = accounts_access(canonical, 1))) return r;
     struct fat32_info info;
     if (fat_info(canonical, &info)) return -DOSXC_ENOENT;
     if (info.attributes & DOSXC_ATTR_DIRECTORY) return -DOSXC_EISDIR;
@@ -829,6 +844,8 @@ static int api_rename(const char *from, const char *to) {
     char source[PATH_MAX_RT], target[PATH_MAX_RT];
     int r = path_resolve(current, from, source);
     if (!r) r = path_resolve(current, to, target);
+    if (!r) r = accounts_access(source, 1);
+    if (!r) r = accounts_access(target, 1);
     if (r) return r;
     struct fat32_info info, existing;
     if (fat_info(source, &info)) return -DOSXC_ENOENT;
@@ -853,6 +870,7 @@ static int api_mkdir(const char *path) {
     char canonical[PATH_MAX_RT], parent[PATH_MAX_RT];
     int r = path_resolve(current, path, canonical);
     if (r) return r;
+    if ((r = accounts_access(canonical, 1))) return r;
     struct fat32_info info;
     if (!fat_info(canonical, &info)) return -DOSXC_EEXIST;
     parent_of(canonical, parent);
@@ -866,6 +884,7 @@ static int api_rmdir(const char *path) {
     char canonical[PATH_MAX_RT];
     int r = path_resolve(current, path, canonical);
     if (r) return r;
+    if ((r = accounts_access(canonical, 1))) return r;
     struct fat32_info info;
     if (fat_info(canonical, &info)) return -DOSXC_ENOENT;
     if (!(info.attributes & DOSXC_ATTR_DIRECTORY)) return -DOSXC_ENOTDIR;
@@ -878,6 +897,7 @@ static int api_chdir(const char *path) {
     char canonical[PATH_MAX_RT];
     int r = path_resolve(current, path, canonical);
     if (r) return r;
+    if ((r = accounts_access(canonical, 0))) return r;
     struct fat32_info info;
     if (fat_info(canonical, &info)) return -DOSXC_ENOENT;
     if (!(info.attributes & DOSXC_ATTR_DIRECTORY)) return -DOSXC_ENOTDIR;
@@ -939,6 +959,7 @@ static dosxc_ssize api_listdir(const char *path, struct dosxc_dirent *entries, d
     char canonical[PATH_MAX_RT];
     int r = path_resolve(current, path, canonical);
     if (r) return r;
+    if ((r = accounts_access(canonical, 0))) return r;
     struct fat32_info info;
     if (fat_info(canonical, &info)) return -DOSXC_ENOENT;
     if (!(info.attributes & DOSXC_ATTR_DIRECTORY)) return -DOSXC_ENOTDIR;
@@ -1017,6 +1038,22 @@ int files_setup(struct process *child, struct process *parent, const char *outpu
             files_release(child);
             return fd < 0 ? fd : -DOSXC_EIO;
         }
+    }
+    return 0;
+}
+
+/* Give CHILD exactly the descriptors MAP lists (pairs: the parent's fd, the child's fd). */
+int files_remap(struct process *child, struct process *parent, const int *map, int count) {
+    struct open_file *chosen[MAX_FDS] = {0};
+    for (int i = 0; i < count; ++i) {
+        int from = map[2 * i], to = map[2 * i + 1];
+        if (from < 0 || from >= MAX_FDS || to < 0 || to >= MAX_FDS || !parent->fds[from]) return -DOSXC_EBADF;
+        chosen[to] = parent->fds[from];
+    }
+    files_release(child);
+    for (int fd = 0; fd < MAX_FDS; ++fd) {
+        child->cloexec[fd] = 0;
+        if ((child->fds[fd] = chosen[fd])) ++chosen[fd]->refs;
     }
     return 0;
 }

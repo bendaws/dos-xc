@@ -304,6 +304,7 @@ static i64 sys_connect(struct socket *s, const void *address, uptr length, int n
     u16 port;
     int r = fetch_address(s, address, length, &ip, &port);
     if (r) return r;
+    if ((r = firewall_check(0, s->type == DOSXC_SOCK_STREAM, port, &ip))) return r;
     if (s->type == DOSXC_SOCK_DGRAM) {
         s->remote = ip;
         s->remote_port = port;
@@ -428,6 +429,7 @@ i64 socket_syscall(uptr number, uptr a, uptr b, uptr c, uptr d, uptr e) {
         if (r) return r;
         if (s->local_port) return -DOSXC_EINVAL;
         if (!net_addr_any(&ip) && !net_is_local_any(&ip)) return -DOSXC_EADDRNOTAVAIL;
+        if (port && (r = firewall_check(1, s->type == DOSXC_SOCK_STREAM, port, 0))) return r;
         if (port && !s->reuse && port_taken(s->type, port, s)) return -DOSXC_EADDRINUSE;
         s->local = ip;
         s->local_port = port ? port : socket_ephemeral_port(s->type);
@@ -436,6 +438,7 @@ i64 socket_syscall(uptr number, uptr a, uptr b, uptr c, uptr d, uptr e) {
     case DOSXC_SYS_LISTEN:
         if (s->type != DOSXC_SOCK_STREAM) return -DOSXC_EOPNOTSUPP;
         if (!s->local_port && !(s->local_port = socket_ephemeral_port(DOSXC_SOCK_STREAM))) return -DOSXC_EADDRINUSE;
+        if (firewall_check(1, 1, s->local_port, 0)) return -DOSXC_EACCES;
         return tcp_listen(s, (int)b);
     case DOSXC_SYS_ACCEPT: return sys_accept(s, (void *)b, (dosxc_u32 *)c, nonblock);
     case DOSXC_SYS_SENDTO: {
@@ -445,6 +448,7 @@ i64 socket_syscall(uptr number, uptr a, uptr b, uptr c, uptr d, uptr e) {
             u16 port;
             int r = fetch_address(s, m->address, *m->address_length, &ip, &port);
             if (r) return r;
+            if ((r = firewall_check(0, 0, port, &ip))) return r;
             r = udp_send(s, m->buffer, m->length, &ip, port);
             return r ? r : (i64)m->length;
         }

@@ -332,32 +332,32 @@ void icons_key(int key) {
 
 /* ---- New Shortcut: a program list, or any file or folder --------------- */
 
-struct choice { const char *label, *app, *icon; const char *program; };
-static const struct choice choices[] = {
+static const struct { const char *label, *app, *icon; } builtin_choices[] = {
     {"File Explorer", "EXPLORER.EXE", "folder"}, {"File Editor", "EDITOR.EXE", "editor"},
     {"Calculator", "CALC.EXE", "calc"}, {"Paint", "PAINT.EXE", "paint"},
     {"Task Manager", "TASKMGR.EXE", "tasks"}, {"DOS Prompt", "TERMINAL.EXE", "prompt"},
     {"Package Manager", "PKGMGR.EXE", "package"}, {"Solitaire", "SOLITAIRE.EXE", "cards"},
     {"Minesweeper", "MINES.EXE", "mines"}, {"Chess", "CHESS.EXE", "chess"},
-    {"DOSfox", 0, "dosfox", "dosfox"}, {"Vim", 0, "editor", "vim"},
 };
-#define CHOICES ((int)(sizeof(choices) / sizeof(*choices)))
+#define MAX_CHOICES 40
 #define ROW 20
-struct picker { int shown[CHOICES], count, selected; };
-static const struct rect pick_list = {10, 30, 300, 220}, pick_ok = {148, 260, 76, 24}, pick_cancel = {232, 260, 76, 24},
-                         pick_browse = {10, 260, 96, 24};
+#define VISIBLE 14
+struct pick_item { char label[64], target[260], icon[200]; int icon_index, terminal; };
+struct picker { struct pick_item items[MAX_CHOICES]; int count, selected, top; };
+static const struct rect pick_list = {10, 30, 300, VISIBLE * ROW}, pick_ok = {148, 40 + VISIBLE * ROW, 76, 24},
+                         pick_cancel = {232, 40 + VISIBLE * ROW, 76, 24}, pick_browse = {10, 40 + VISIBLE * ROW, 96, 24};
 
 static void pick_paint(struct window *w, const struct canvas *c) {
     struct picker *p = w->data;
     text(c, 10, 10, &font_regular, "Put a shortcut to this program on the desktop:", C_TEXT);
     bevel(c, pick_list.x - 2, pick_list.y - 2, pick_list.w + 4, pick_list.h + 4, 1);
     fill(c, pick_list.x, pick_list.y, pick_list.w, pick_list.h, C_BASE);
-    for (int i = 0; i < p->count; ++i) {
-        const struct choice *ch = &choices[p->shown[i]];
-        int y = pick_list.y + i * ROW;
+    for (int i = p->top; i < p->count && i < p->top + VISIBLE; ++i) {
+        const struct pick_item *it = &p->items[i];
+        int y = pick_list.y + (i - p->top) * ROW;
         if (i == p->selected) fill(c, pick_list.x, y, pick_list.w, ROW, C_SELECTION);
-        draw_icon(c, pick_list.x + 3, y + 2, icon_by_name(ch->icon));
-        text(c, pick_list.x + 24, y + 5, &font_regular, ch->label, i == p->selected ? 0xffffff : C_TEXT);
+        draw_icon(c, pick_list.x + 3, y + 2, it->icon_index);
+        text(c, pick_list.x + 24, y + 5, &font_regular, it->label, i == p->selected ? 0xffffff : C_TEXT);
     }
     button(c, pick_browse, "Browse...", 0, 0);
     button(c, pick_ok, "OK", 0, 1);
@@ -366,24 +366,17 @@ static void pick_paint(struct window *w, const struct canvas *c) {
 
 static void pick_accept(struct window *w) {
     struct picker *p = w->data;
-    if (p->selected < 0) return;
-    const struct choice *ch = &choices[p->shown[p->selected]];
+    if (p->selected < 0 || p->selected >= p->count) return;
+    const struct pick_item *it = &p->items[p->selected];
     struct shortcut s;
     memset(&s, 0, sizeof(s));
-    snprintf(s.icon, sizeof(s.icon), "%s", ch->icon);
-    if (ch->app) {
-        char relative[64];
-        snprintf(relative, sizeof(relative), "Apps\\%s", ch->app);
-        desktop_path(s.target, sizeof(s.target), relative);
-    } else {
-        struct dosxc_sysinfo info;
-        dosxc_sys_sysinfo(&info);
-        snprintf(s.target, sizeof(s.target), "%c:%s", info.drive,
-                 !strcmp(ch->program, "dosfox") ? "\\Programs\\dosfox\\DOSFOX.EXE" : "\\Programs\\Vim\\BIN\\VIM.EXE");
-        s.terminal = !strcmp(ch->program, "vim");
-    }
+    snprintf(s.icon, sizeof(s.icon), "%s", it->icon);
+    snprintf(s.target, sizeof(s.target), "%s", it->target);
+    s.terminal = it->terminal;
+    char label[64];
+    snprintf(label, sizeof(label), "%s", it->label);
     window_close(w);
-    if (icons_add_shortcut(ch->label, &s)) message_box("New Shortcut", "The shortcut could not be made.", ch->label);
+    if (icons_add_shortcut(label, &s)) message_box("New Shortcut", "The shortcut could not be made.", label);
 }
 
 static void browsed(const char *path, void *data) {
@@ -413,7 +406,7 @@ static void pick_mouse(struct window *w, int x, int y, int kind, int value) {
         return;
     }
     if (rect_has(pick_list, x, y)) {
-        int at = (y - pick_list.y) / ROW;
+        int at = p->top + (y - pick_list.y) / ROW;
         if (at < p->count) {
             p->selected = at;
             window_paint(w);
@@ -426,8 +419,8 @@ static void pick_key(struct window *w, int key) {
     struct picker *p = w->data;
     if (key == '\n') pick_accept(w);
     else if (key == 27) window_close(w);
-    else if (key == 0x101 && p->selected > 0) { --p->selected; window_paint(w); }
-    else if (key == 0x102 && p->selected + 1 < p->count) { ++p->selected; window_paint(w); }
+    else if (key == 0x101 && p->selected > 0) { if (--p->selected < p->top) p->top = p->selected; window_paint(w); }
+    else if (key == 0x102 && p->selected + 1 < p->count) { if (++p->selected >= p->top + VISIBLE) ++p->top; window_paint(w); }
 }
 
 static void pick_closed(struct window *w) { free(w->data); }
@@ -436,8 +429,26 @@ static const struct app_ops pick_ops = {pick_paint, pick_mouse, pick_key, pick_c
 void icons_new_shortcut(void) {
     struct picker *p = calloc(1, sizeof(*p));
     if (!p) return;
-    for (int i = 0; i < CHOICES; ++i)
-        if (!choices[i].program || program_installed(choices[i].program)) p->shown[p->count++] = i;
-    struct window *w = window_open(320, 294, "New Shortcut", ICON_PROGRAM, &pick_ops, p);
+    for (int i = 0; i < (int)(sizeof(builtin_choices) / sizeof(*builtin_choices)); ++i) {
+        struct pick_item *it = &p->items[p->count++];
+        char relative[64];
+        snprintf(relative, sizeof(relative), "Apps\\%s", builtin_choices[i].app);
+        desktop_path(it->target, sizeof(it->target), relative);
+        snprintf(it->label, sizeof(it->label), "%s", builtin_choices[i].label);
+        snprintf(it->icon, sizeof(it->icon), "%s", builtin_choices[i].icon);
+        it->icon_index = icon_by_name(it->icon);
+    }
+    static struct app_entry apps[32];
+    int n = apps_list(apps, 32);
+    for (int i = 0; i < n && p->count < MAX_CHOICES; ++i) {
+        if (apps[i].builtin) continue;
+        struct pick_item *it = &p->items[p->count++];
+        snprintf(it->label, sizeof(it->label), "%s", apps[i].name);
+        snprintf(it->target, sizeof(it->target), "%s", apps[i].program);
+        snprintf(it->icon, sizeof(it->icon), "%s", apps[i].icon_file);
+        it->icon_index = apps[i].icon;
+        it->terminal = apps[i].terminal;
+    }
+    struct window *w = window_open(320, 74 + VISIBLE * ROW, "New Shortcut", ICON_PROGRAM, &pick_ops, p);
     if (!w) free(p);
 }

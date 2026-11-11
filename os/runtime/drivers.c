@@ -73,6 +73,13 @@ static void format_v(struct sink *s, const char *f, __builtin_va_list ap) {
     }
 }
 
+int rt_format_v(char *out, uptr size, const char *format, __builtin_va_list ap) {
+    struct sink s = {out, size, 0};
+    format_v(&s, format, ap);
+    if (size) out[s.used < size ? s.used : size - 1] = 0;
+    return (int)s.used;
+}
+
 static int api_format(char *out, unsigned long size, const char *format, ...) {
     struct sink s = {out, size, 0};
     __builtin_va_list ap;
@@ -104,6 +111,7 @@ static void api_log(const char *format, ...) {
     __builtin_va_end(ap);
     text[s.used < sizeof(text) ? s.used : sizeof(text) - 1] = 0;
     log_line(text);
+    event_log(DOSXC_EVENT_INFO, "Drivers", "%s", text);
 }
 
 static void api_notice(const char *format, ...) {
@@ -540,6 +548,27 @@ static void folder_path(char *out) {
     rt_strcpy(out + 2, "\\SYSTEM\\DRIVERS");
 }
 
+/* \SYSTEM\DRIVERS\STORE holds every driver DOS-XC ships: each one not
+   installed is tried, and kept when it finds a device. */
+static void autodetect(const char *folder) {
+    char store[PATH_MAX_RT], path[PATH_MAX_RT];
+    rt_strcpy(store, folder);
+    rt_strcpy(store + rt_strlen(store), "\\STORE");
+    found_count = 0;
+    if (fs_list(store, collect_driver, 0)) return;
+    for (int i = 0; i < found_count; ++i) {
+        if (find_by_file(found[i])) continue;
+        rt_strcpy(path, store);
+        uptr n = rt_strlen(path);
+        path[n++] = '\\';
+        rt_strcpy(path + n, found[i]);
+        if (driver_load(path)) continue;
+        struct driver *d = find_by_file(found[i]);
+        if (d && d->state == DOSXC_DRIVER_STATE_IDLE) driver_unload(found[i]);
+        else if (d) api_log("%s: found a device for it, loaded automatically", found[i]);
+    }
+}
+
 void drivers_init(void) {
     if (ctx->bios_available && (*(volatile u8 *)0x417 & 3)) {
         log_line("Drivers skipped: Shift was held during startup.");
@@ -558,6 +587,7 @@ void drivers_init(void) {
         int r = driver_load(path);
         if (r) api_log("%s: could not be loaded (error %d)", found[i], -r);
     }
+    autodetect(folder);
     cpu_restore_idt();
 }
 

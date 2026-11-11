@@ -185,7 +185,22 @@ struct process {
     struct vconsole *vc;         /* its terminal window, if any */
     struct aspace *space;        /* 64-bit: its page tables, shared by its threads */
     int grantees[4];             /* processes that may use all of its memory (the desktop) */
+    char user[32];               /* its user account; "" for the system */
+    u32 sandbox;                 /* DOSXC_SANDBOX_* rights given up, also for its children */
 };
+/* accounts.c */
+int accounts_enabled(void);
+int accounts_admin(void);
+/* events.c */
+void event_log(int level, const char *source, const char *format, ...);   /* %s %d %u %x %c */
+const char *event_program(const struct process *p);
+void process_exited(struct process *p, int status);   /* logs it */
+long events_syscall(int op, void *a, void *b);
+int rt_format_v(char *out, uptr size, const char *format, __builtin_va_list ap);                                 /* the running process may administer */
+int accounts_access(const char *canonical, int write);    /* 0 or -EACCES */
+void accounts_init(void);
+long user_syscall(int operation, const void *a, void *b);
+int env_set(const char *name, const char *value);
 int process_grant(struct process *p, int pid);           /* PID may use all of P's memory */
 int process_share(int owner, uptr start, uptr end, int pid);   /* PID may use OWNER's [start, end) */
 extern struct process *current;
@@ -296,7 +311,11 @@ void random_stir(void);
 long random_syscall(void *buffer, dosxc_size size);
 
 /* loader.c */
-int process_background(struct process *parent, const char *path, char *const argv[], struct vconsole *console);
+int process_background(struct process *parent, const char *path, char *const argv[], char *const envp[], struct vconsole *console);
+int process_background_fds(struct process *parent, const char *path, char *const argv[], char *const envp[], const int *map, int count);
+int files_remap(struct process *child, struct process *parent, const int *map, int count);
+void process_record_exit(struct process *p, int status);
+long process_wait(int *status, int pid, int no_wait);
 void process_kill_console(struct vconsole *console);
 int process_list(struct dosxc_task_info *out, unsigned capacity);
 int process_kill(int pid);

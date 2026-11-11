@@ -689,7 +689,19 @@ static const char *const art[ICON_COUNT - 1] = {
 
 struct icon icons[ICON_SLOTS];
 
+static void person_icon(struct icon *icon) {
+    memset(icon, 0, sizeof(*icon));
+    for (int y = 0; y < ICON_SIZE; ++y)
+        for (int x = 0; x < ICON_SIZE; ++x) {
+            int hx = x - 8, hy = y - 5, bx = x - 8, by = y - 16;
+            int head = hx * hx * 4 + hy * hy * 4 <= 49, body = y >= 10 && bx * bx + by * by * 2 <= 56;
+            int head_edge = head && hx * hx * 4 + hy * hy * 4 > 25, body_edge = body && bx * bx + by * by * 2 > 36;
+            if (head || body) icon->px[y * ICON_SIZE + x] = head_edge || body_edge ? 0xff1c3f7a : head ? 0xfff2c9a0 : 0xff3a7bd5;
+        }
+}
+
 void icons_init(void) {
+    person_icon(&icons[ICON_USER]);
     memcpy(icons[ICON_LOGO].px, logo16, sizeof(logo16));
     for (int n = 0; n < ICON_COUNT - 1; ++n)
         for (int i = 0; i < ICON_SIZE * ICON_SIZE; ++i)

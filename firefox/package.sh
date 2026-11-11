@@ -35,6 +35,7 @@ for edition in $EDITIONS; do
     (cd "$DIST" && tar -cf - --exclude=firefox-bin --exclude=pingsender --exclude=precomplete \
         --exclude=removed-files --exclude=gmp-clearkey .) | tar -xf - -C "$tree"
     mv "$tree/firefox" "$tree/DOSFOX.EXE"
+    "$CROSS/$triple-strip" --strip-unneeded "$tree/DOSFOX.EXE" "$tree"/*.so
     cp "$(dirname "$0")/files/dosxc-prefs.js" "$tree/browser/defaults/preferences/dosxc.js"
     for font in DejaVuSans DejaVuSans-Bold DejaVuSans-Oblique DejaVuSans-BoldOblique \
                 DejaVuSerif DejaVuSerif-Bold DejaVuSerif-Italic DejaVuSerif-BoldItalic \
@@ -44,6 +45,8 @@ for edition in $EDITIONS; do
     cp "$CJK/NotoSansCJK-Regular.ttc" "$tree/fonts/"
     cp "$ROOT/toolchain/work/firefox/browser/branding/dosfox/default16.png" "$tree/DOSFOX.PNG"
     echo "DOSfox's profile lives here." > "$tree/home/README.TXT"
+    printf '%s\n' "id=dosfox" "name=DOSfox" "program=DOSFOX.EXE" "icon=DOSFOX.PNG" "category=Internet" \
+        "default=browser" "types=htm html xhtml svg" "url=1" > "$tree/MENU.CFG"
     package_port dosfox Version=162.0a1 Author="Ben Daws" \
         Description="Firefox for DOS-XC (ported)" \
         Path=.

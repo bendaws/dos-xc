@@ -26,12 +26,47 @@ The Start menu, from the top:
    `DOSFOX.PNG`; its windows use the logo too).
 2. The default text editor: File Editor, or Vim in a terminal window when the
    `Vim` package is installed and chosen.
-3. System, Utilities and Games.
+3. System (with its Administrators folder: Package Manager, Event Logs,
+   Firewall and other programs that need an administrator), Utilities and
+   Games, then a folder for each category that
+   installed packages use (Internet, Office, ...; see
+   [PACKAGES.md](PACKAGES.md#start-menu-entries)).
 4. Control Panel and About DOS-XC.
 5. Exit to DOS, Restart and Shut Down.  Restart and Shut Down ask first.
 
 The menu is built each time it opens, so installing or removing a package shows
 at once.
+
+## User accounts
+
+User accounts are optional: Setup asks whether to use them and creates the
+first administrator.  Without accounts everyone is the one public user, with
+`C:\Users\Public` as home.  With them, the computer starts at a login screen
+(on the desktop when the `DOS-XC Desktop` package is installed, as text
+otherwise): a row of users with their nicknames and pictures.  Click one, or move
+with Tab or the arrow keys and press Enter, to type the password.  After logging
+in the user gets the desktop or the command prompt, as they chose.  The Start
+menu shows the user's picture and nickname at the top and **Log Out** beside
+Restart and Shut Down; at the prompt, `LOGOUT` at the first command prompt does
+the same.  Logging out ends the user's programs.
+
+Each user has a user name (letters and digits), a password, a nickname (any
+printable ASCII), a square picture (nine are in the package's `Pictures` folder,
+or any picture file), a home folder (`C:\Users\<name>` unless an administrator
+chose another) and their own desktop settings there.  Control Panel > User
+Accounts changes one's own picture, nickname, password and start mode;
+administrators also add and remove users, make or unmake administrators, set
+home folders, and turn accounts on or off.  There is always at least one
+administrator.
+
+Only administrators may write `\SYSTEM` (and `\SYSTEM\Drivers`), `\Programs`,
+`\Packages`, `\EFI` and `\AUTOEXEC.BAT`, open other users' home folders, read the
+account database (`\SYSTEM\USERS.DB`: salted, iterated SHA-256 password hashes),
+use raw disk access, load drivers, or run 16-bit programs directly on the hardware
+(other users can run them in a terminal window, through `DOSVM.EXE`).  So only
+administrators can install packages.  The rules are enforced by the kernel on the
+system drive; they hold against programs only where programs are isolated
+(64-bit BIOS boots, see `docs/PROGRAMS.md`).
 
 ## Control Panel
 
@@ -78,6 +113,9 @@ A shortcut is a text file `NAME.LNK` of `key=value` lines:
 | Minesweeper | `MINES.EXE` | Three sizes; right-click flags |
 | Chess | `CHESS.EXE` | Against the computer, three levels |
 | Package Manager | `PKGMGR.EXE` | Installed and available packages; runs `PKG` for every change and shows its output |
+| Event Logs | `EVENTS.EXE` | The system's event log (administrators): programs starting, ending and stopping on errors, drivers, devices, logins, account changes, power, firewall blocks, and what programs send with `syslog`.  Filter by level, save as text, clear.  The last 512 events are kept in memory until restart |
+| Firewall | `FIREWALL.EXE` | Rules in `\SYSTEM\FIREWALL.CFG`, checked from the top, the first match deciding; unmatched traffic is blocked.  Click a rule's Action, Direction or Protocol to change it, double-click Ports or Program to edit them.  On by default, allowing DOSfox, curl, Python and PING out |
+| Fonts | `FONTS.EXE` | System fonts in `\SYSTEM\FONTS` (used by DOSfox) and the desktop's built-in fonts, with previews; adds and removes font files.  Opening a `.ttf`, `.otf` or `.ttc` file shows it with Install This Font |
 | Install DOS-XC | `SETUPGUI.EXE` | The same steps as `SETUP`; in the Start menu on the live system only |
 
 Double-clicking a file in File Explorer opens it in the matching program.  A

@@ -128,6 +128,7 @@ system = {
     'PKG.EXE': (user / 'PKG.EXE').read_bytes(),
     'LIB': {'libc.so': (BUILD / f'sysroot{BITS}' / 'lib' / 'libc.so').read_bytes()},
     'Drivers': {},
+    'FONTS': {},
     'SETUP.EXE': (user / 'SETUP.EXE').read_bytes(),
     'LOADER.BIN': (BUILD / f'loader{BITS}.bin').read_bytes(),
     'KERNEL.BIN': (BUILD / f'kernel{BITS}.bin').read_bytes(),
@@ -145,15 +146,25 @@ system = {
     'VERSION.TXT': (VERSION["label"] + "\r\nSystem directory: C:\\SYSTEM\r\n").encode("ascii"),
 }
 tree = {'SYSTEM': system, 'EFI': {'BOOT': {'BOOTX64.EFI': (BUILD / 'iso64/EFI/BOOT/BOOTX64.EFI').read_bytes()}},
-        'TEMP': {}, 'Home': {}, 'Programs': {}, 'Packages': {}}
+        'TEMP': {}, 'Users': {'Public': {}}, 'Programs': {}, 'Packages': {}}
 
 for package in sorted(PACKAGES.glob('*.dsp')):
     stem, _, bits = package.stem.rpartition('-')
     if bits in (BITS, '16'):
         tree['Packages'][stem + '.dsp'] = package.read_bytes()
+store = {}
+for package in sorted(PACKAGES.glob(f'*-{BITS}.dsp')):
+    if package.stat().st_size > 64 << 20:
+        continue
+    info, entries = dsp.read(package)
+    wanted = {name.upper() for name in info.get('Driver', '').split(';') if name}
+    for name, raw in entries:
+        if name.rsplit('/', 1)[-1].upper() in wanted:
+            store[name.rsplit('/', 1)[-1].upper()] = raw
+system['Drivers']['STORE'] = store
 staging = BUILD / f'live{BITS}'
 shutil.rmtree(staging, ignore_errors=True)
-for name in ('coreutils', 'batch', 'desktop'):
+for name in ('coreutils', 'batch', 'desktop', 'dosfox', 'dosoffice'):
     if (PACKAGES / f'{name}-{BITS}.dsp').exists():      # the build may leave some out
         dsp.install(PACKAGES / f'{name}-{BITS}.dsp', staging)
 tree['Programs'] = load_tree(staging / 'Programs')

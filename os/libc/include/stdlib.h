@@ -41,6 +41,10 @@ long random(void);
 void srandom(unsigned);
 double drand48(void);
 long lrand48(void);
+long jrand48(unsigned short[3]);
+long nrand48(unsigned short[3]);
+double erand48(unsigned short[3]);
+long mrand48(void);
 void srand48(long);
 
 void *malloc(size_t) __malloc_like;

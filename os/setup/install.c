@@ -9,6 +9,7 @@
 #include <string.h>
 #include <strings.h>
 #include "install.h"
+#include "../runtime/sha256.h"
 #include "target.h"
 
 struct dosxc_sysinfo setup_system;
@@ -199,6 +200,36 @@ static int install_package(const struct package_choice *choice) {
     return length < 0 || target_write(inf, text, (unsigned long)length) ? -1 : 0;
 }
 
+struct setup_account setup_account;
+
+long long fat32_clock_seconds(void) { return (long long)dosxc_sys_time(); }
+
+int setup_valid_name(const char *name) {
+    if (!*name || strlen(name) >= sizeof(setup_account.name)) return 0;
+    for (const char *p = name; *p; ++p)
+        if (!((*p >= 'a' && *p <= 'z') || (*p >= 'A' && *p <= 'Z') || (*p >= '0' && *p <= '9'))) return 0;
+    return 1;
+}
+
+static int write_accounts(void) {
+    static const char digits[] = "0123456789abcdef";
+    unsigned char salt[16], hash[32];
+    __dosxc_syscall2(DOSXC_SYS_RANDOM, (__dosxc_word)salt, sizeof(salt));
+    password_hash(salt, setup_account.password, hash);
+    char salt_hex[33], hash_hex[65], home[64], folder[64], text[700];
+    for (int i = 0; i < 16; ++i) { salt_hex[i * 2] = digits[salt[i] >> 4]; salt_hex[i * 2 + 1] = digits[salt[i] & 15]; }
+    for (int i = 0; i < 32; ++i) { hash_hex[i * 2] = digits[hash[i] >> 4]; hash_hex[i * 2 + 1] = digits[hash[i] & 15]; }
+    salt_hex[32] = hash_hex[64] = 0;
+    snprintf(folder, sizeof(folder), "\\Users\\%s", setup_account.name);
+    snprintf(home, sizeof(home), "C:%s", folder);
+    int n = snprintf(text, sizeof(text), "accounts\t1\nuser\t%s\t1\t0\t%s\t%s\t%s\tC:\\Programs\\DOS-XC Desktop\\Pictures\\Dog.jpg\t%s\n",
+                     setup_account.name, salt_hex, hash_hex, home,
+                     setup_account.nickname[0] ? setup_account.nickname : setup_account.name);
+    memset(setup_account.password, 0, sizeof(setup_account.password));
+    if (target_mkdir(folder) || target_write("\\SYSTEM\\USERS.DB", text, (unsigned long)n)) return fail("Cannot write the user accounts.", 0);
+    return 0;
+}
+
 int setup_install(const struct disk_choice *disk, setup_progress progress_fn, void (*status)(const char *text)) {
     on_progress = progress_fn;
     on_status = status;
@@ -228,9 +259,10 @@ int setup_install(const struct disk_choice *disk, setup_progress progress_fn, vo
     free(boot);
     free(mbr);
     if (copy_tree(system) || copy_tree(efi)) return -1;
-    if (target_mkdir("\\TEMP") || target_mkdir("\\Home") || target_mkdir("\\Programs")) return fail("Cannot create the top folders.", 0);
+    if (target_mkdir("\\TEMP") || target_mkdir("\\Users") || target_mkdir("\\Users\\Public") || target_mkdir("\\Programs")) return fail("Cannot create the top folders.", 0);
     for (int i = 0; i < setup_package_count; ++i)
         if (setup_packages[i].selected && install_package(&setup_packages[i])) return -1;
+    if (setup_account.enabled && write_accounts()) return -1;
     on_status("Finishing the installation...");
     return target_finish() ? fail("Cannot finish the boot record.", 0) : 0;
 }

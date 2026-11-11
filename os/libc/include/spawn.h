@@ -33,5 +33,11 @@ int posix_spawnattr_setflags(posix_spawnattr_t *, short);
 int posix_spawnattr_setpgroup(posix_spawnattr_t *, pid_t);
 int posix_spawnattr_setsigmask(posix_spawnattr_t *__restrict, const sigset_t *__restrict);
 int posix_spawnattr_setsigdefault(posix_spawnattr_t *__restrict, const sigset_t *__restrict);
+/* DOS-XC: start PATH beside the caller with only MAP's descriptors (COUNT pairs of
+   the caller's fd and the child's fd).  0 or an errno value, like posix_spawn. */
+int dosxc_spawn_fds(pid_t *pid, const char *path, char *const argv[], char *const envp[], const int *map, int count);
+/* DOS-XC: give up DOSXC_SANDBOX_* rights (<dosxc/abi.h>) for good, for this
+   process and the programs it starts.  0, or -1 with errno set. */
+int dosxc_sandbox(unsigned rights);
 __END_DECLS
 #endif

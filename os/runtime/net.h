@@ -136,6 +136,10 @@ struct socket {
 #define SOCKET_MAX 256
 extern struct socket sockets[SOCKET_MAX];
 struct socket *socket_new(int type, int family);
+/* firewall.c */
+int firewall_check(int inbound, int stream, u16 port, const net_addr *peer);   /* 0 or -EACCES */
+void firewall_reload(void);
+int firewall_enabled(void);
 int socket_accepts(const struct socket *s, const net_addr *destination);
 void socket_free(struct socket *s);
 u16 socket_ephemeral_port(int type);

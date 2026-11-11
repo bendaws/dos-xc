@@ -19,6 +19,11 @@ extern int setup_disk_count;
 extern struct package_choice setup_packages[64];
 extern int setup_package_count;
 
+/* The first administrator, when user accounts are wanted. */
+struct setup_account { int enabled; char name[32], nickname[64], password[64]; };
+extern struct setup_account setup_account;
+int setup_valid_name(const char *name);
+
 typedef void (*setup_progress)(const char *name, unsigned percent, unsigned long done, unsigned long total);
 
 void setup_init(void);                 /* sysinfo, source drive */

@@ -140,5 +140,6 @@ int usleep(useconds_t);
 ssize_t write(int, const void *, size_t);
 int lockf(int, int, off_t);
 char *getpass(const char *);
+void swab(const void *from, void *to, ssize_t n);
 __END_DECLS
 #endif

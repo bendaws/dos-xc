@@ -139,6 +139,10 @@ int pipe2(int fds[2], int flags) {
         dosxc_sys_fdflags(fds[0], 1, DOSXC_FD_CLOEXEC);
         dosxc_sys_fdflags(fds[1], 1, DOSXC_FD_CLOEXEC);
     }
+    if (flags & O_NONBLOCK) {
+        dosxc_sys_setfl(fds[0], O_NONBLOCK);
+        dosxc_sys_setfl(fds[1], O_NONBLOCK);
+    }
     return 0;
 }
 

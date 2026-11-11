@@ -30,6 +30,8 @@ struct sockaddr_storage { sa_family_t ss_family; char __ss_pad[126]; };
 #define SOCK_STREAM 1
 #define SOCK_DGRAM 2
 #define SOCK_RAW 3
+#define SOCK_RDM 4
+#define SOCK_SEQPACKET 5
 #define SOCK_NONBLOCK 0x800
 #define SOCK_CLOEXEC 0x80000
 

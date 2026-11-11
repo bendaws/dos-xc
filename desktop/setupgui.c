@@ -6,7 +6,7 @@
 #include "wm.h"
 #include "../os/setup/install.h"
 
-enum { PAGE_WELCOME, PAGE_DISK, PAGE_PACKAGES, PAGE_CONFIRM, PAGE_COPY, PAGE_DONE, PAGE_FAILED, PAGE_HELP };
+enum { PAGE_WELCOME, PAGE_DISK, PAGE_PACKAGES, PAGE_CONFIRM, PAGE_COPY, PAGE_DONE, PAGE_FAILED, PAGE_HELP, PAGE_ACCOUNTS };
 #define WIDTH 560
 #define HEIGHT 400
 #define LIST_ROW 20
@@ -97,6 +97,45 @@ static void paint_packages(const struct canvas *c) {
     vscroll_paint(c, &package_scroll, (struct rect){list_area.x + list_area.w - 14, list_area.y, 14, list_area.h});
 }
 
+static struct field account_fields[4];
+static int account_focus, accounts_wanted;
+static char account_error[80];
+static const char *const account_labels[4] = {"User name:", "Nickname:", "Password:", "Password again:"};
+static const struct rect accounts_box = {24, 132, 300, 18};
+static struct rect account_field(int i) { return (struct rect){150, 160 + i * 30, 240, 22}; }
+
+static void paint_accounts(const struct canvas *c) {
+    paint_text(c, 24, 66, "User accounts give everyone who uses this computer a user name, a\n"
+                          "password and folders of their own.  Only administrators change the\n"
+                          "system and install programs.  Other users are added in Control Panel.");
+    bevel(c, accounts_box.x, accounts_box.y + 2, 14, 14, 1);
+    fill(c, accounts_box.x + 2, accounts_box.y + 4, 10, 10, C_BASE);
+    if (accounts_wanted) fill(c, accounts_box.x + 4, accounts_box.y + 6, 6, 6, C_TEXT);
+    text(c, accounts_box.x + 20, accounts_box.y + 4, &font_bold, "Use user accounts (the first is an administrator)", C_TEXT);
+    if (!accounts_wanted) return;
+    for (int i = 0; i < 4; ++i) {
+        text(c, 40, account_field(i).y + 5, &font_regular, account_labels[i], C_TEXT);
+        struct field shown = account_fields[i];
+        if (i >= 2) for (size_t k = 0; shown.text[k]; ++k) shown.text[k] = '*';
+        field_paint(c, &shown, account_field(i), account_focus == i);
+    }
+    if (account_error[0]) text(c, 40, 284, &font_regular, account_error, 0xb01010);
+}
+
+static int accounts_accept(void) {
+    account_error[0] = 0;
+    memset(&setup_account, 0, sizeof(setup_account));
+    if (!accounts_wanted) return 0;
+    if (!setup_valid_name(account_fields[0].text)) snprintf(account_error, sizeof(account_error), "The user name may only have letters and digits.");
+    else if (strcmp(account_fields[2].text, account_fields[3].text)) snprintf(account_error, sizeof(account_error), "The two passwords are not the same.");
+    if (account_error[0]) return -1;
+    setup_account.enabled = 1;
+    snprintf(setup_account.name, sizeof(setup_account.name), "%s", account_fields[0].text);
+    snprintf(setup_account.nickname, sizeof(setup_account.nickname), "%s", account_fields[1].text);
+    snprintf(setup_account.password, sizeof(setup_account.password), "%s", account_fields[2].text);
+    return 0;
+}
+
 static void paint_confirm(const struct canvas *c) {
     char size[32], line[200], list[300] = "";
     setup_size_text(size, sizeof(size), setup_disks[selected_disk].sectors);
@@ -110,6 +149,8 @@ static void paint_confirm(const struct canvas *c) {
     }
     text(c, 24, 118, &font_regular, "Programs to install:", C_TEXT);
     text(c, 24, 134, &font_regular, *list ? list : "(none)", C_TEXT);
+    snprintf(line, sizeof(line), "User accounts: %s%s", setup_account.enabled ? "on, administrator " : "off", setup_account.enabled ? setup_account.name : "");
+    text(c, 24, 160, &font_regular, line, C_TEXT);
 }
 
 static void paint_copy(const struct canvas *c) {
@@ -125,7 +166,7 @@ static void paint_copy(const struct canvas *c) {
 
 static void wizard_paint(struct window *w, const struct canvas *c) {
     (void)w;
-    static const char *const titles[] = {"Welcome", "Choose a disk", "Choose programs to install", "Confirm", "Copying files", "Finished", "Setup failed", "Help"};
+    static const char *const titles[] = {"Welcome", "Choose a disk", "Choose programs to install", "Confirm", "Copying files", "Finished", "Setup failed", "Help", "User accounts"};
     wizard_header(c, titles[page]);
     switch (page) {
     case PAGE_WELCOME:
@@ -133,6 +174,7 @@ static void wizard_paint(struct window *w, const struct canvas *c) {
         break;
     case PAGE_DISK: paint_disks(c); break;
     case PAGE_PACKAGES: paint_packages(c); break;
+    case PAGE_ACCOUNTS: paint_accounts(c); break;
     case PAGE_CONFIRM: paint_confirm(c); break;
     case PAGE_COPY: paint_copy(c); break;
     case PAGE_DONE:
@@ -190,7 +232,8 @@ static void go_next(void) {
         if (!setup_package_count) setup_find_packages();
         page = PAGE_PACKAGES;
         break;
-    case PAGE_PACKAGES: page = PAGE_CONFIRM; break;
+    case PAGE_PACKAGES: page = PAGE_ACCOUNTS; break;
+    case PAGE_ACCOUNTS: if (!accounts_accept()) page = PAGE_CONFIRM; break;
     case PAGE_CONFIRM:
         page = PAGE_COPY;
         copy_percent = 0;
@@ -207,7 +250,8 @@ static void go_next(void) {
 static void go_back(void) {
     if (page == PAGE_DISK) page = PAGE_WELCOME;
     else if (page == PAGE_PACKAGES) page = PAGE_DISK;
-    else if (page == PAGE_CONFIRM) page = PAGE_PACKAGES;
+    else if (page == PAGE_ACCOUNTS) page = PAGE_PACKAGES;
+    else if (page == PAGE_CONFIRM) page = PAGE_ACCOUNTS;
     window_paint(win);
 }
 
@@ -223,6 +267,13 @@ static void wizard_mouse(struct window *w, int x, int y, int kind, int value) {
     if (page == PAGE_COPY || page == PAGE_DONE || page == PAGE_FAILED || page == PAGE_HELP) return;
     if (rect_has(back_button, x, y) && page != PAGE_WELCOME) { go_back(); return; }
     if (rect_has(help_button, x, y)) { return_page = page; page = PAGE_HELP; window_paint(w); return; }
+    if (page == PAGE_ACCOUNTS) {
+        if (rect_has(accounts_box, x, y)) accounts_wanted = !accounts_wanted;
+        for (int i = 0; accounts_wanted && i < 4; ++i)
+            if (rect_has(account_field(i), x, y)) account_focus = i;
+        window_paint(w);
+        return;
+    }
     if (!rect_has(list_area, x, y)) return;
     int at = (y - list_area.y) / LIST_ROW;
     if (page == PAGE_DISK && at < setup_disk_count) { selected_disk = at; window_paint(w); }
@@ -238,6 +289,13 @@ static void wizard_key(struct window *w, int key) {
     if (page == PAGE_COPY) return;
     if (key == '\n' || key == '\r') { if (page != PAGE_FAILED) go_next(); return; }
     if (key == 27 && page != PAGE_DONE && page != PAGE_FAILED) { if (page == PAGE_HELP) go_next(); else if (page == PAGE_WELCOME) window_close(w); else go_back(); return; }
+    if (page == PAGE_ACCOUNTS) {
+        if (key == '\t') account_focus = (account_focus + 1) % 4;
+        else if (key == ' ' && !accounts_wanted) accounts_wanted = 1;
+        else if (accounts_wanted) field_key(&account_fields[account_focus], key);
+        window_paint(w);
+        return;
+    }
     if (page == PAGE_DISK) {
         if (key == 0x101 && selected_disk) --selected_disk;
         if (key == 0x102 && selected_disk + 1 < setup_disk_count) ++selected_disk;

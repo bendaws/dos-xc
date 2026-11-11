@@ -34,6 +34,7 @@ static void complain(const char *path, const char *message) {
     rt_print(": ");
     rt_print(message);
     rt_print("\r\n");
+    event_log(DOSXC_EVENT_WARNING, "Programs", "%s %s", posix, message);
 }
 
 static int read_at(const char *path, u64 offset, void *buffer, uptr size, u64 file_size) {
@@ -286,6 +287,7 @@ static int process_prepare(struct process *parent, const char *path, char *const
     char canonical[PATH_MAX_RT], posix[PATH_MAX_RT];
     int r = find_program(parent, path, canonical);
     if (r) return r;
+    if ((r = accounts_access(canonical, 0))) return r;
     u8 magic[4];
     if ((r = files_is_executable(canonical, magic))) return r;
     if (memcmp(magic, "\177ELF", 4)) {
@@ -302,6 +304,8 @@ static int process_prepare(struct process *parent, const char *path, char *const
     p->pid = next_pid++;
     if (next_pid > 0x7fff0000) next_pid = 1;
     p->parent = parent;
+    if (parent) rt_strcpy(p->user, parent->user);
+    p->sandbox = parent ? parent->sandbox : 0;
     vc_attach(p, parent ? parent->vc : 0);
     rt_strcpy(p->path, canonical);
 #if __SIZEOF_POINTER__ == 8
@@ -368,6 +372,7 @@ static int process_prepare(struct process *parent, const char *path, char *const
     *out = p;
     *entry = image.entry;
     *stack_pointer = sp;
+    event_log(DOSXC_EVENT_INFO, "Programs", "%s started as process %d", event_program(p), p->pid);
     return 0;
 }
 
@@ -388,20 +393,63 @@ int process_spawn(struct process *parent, const char *path, char *const argv[], 
     current = saved;
     sched_set_leaf(saved);
     libraries_activate(saved);
+    process_exited(p, r);
     process_finish(p);
     return r;
 }
 
 /* Start a program beside its parent; returns its pid. */
-int process_background(struct process *parent, const char *path, char *const argv[], struct vconsole *console) {
+int process_background(struct process *parent, const char *path, char *const argv[], char *const envp[], struct vconsole *console) {
     struct process *p;
     uptr entry, sp;
-    int r = process_prepare(parent, path, argv, 0, 0, 0, &p, &entry, &sp);
+    int r = process_prepare(parent, path, argv, envp, 0, 0, &p, &entry, &sp);
     if (r) return r;
     if (console) { vc_detach(p); vc_attach(p, console); }
     r = sched_start(p, entry, sp);
     if (r < 0) process_finish(p);
     return r;
+}
+
+int process_background_fds(struct process *parent, const char *path, char *const argv[], char *const envp[], const int *map, int count) {
+    struct process *p;
+    uptr entry, sp;
+    int r = process_prepare(parent, path, argv, envp, 0, 0, &p, &entry, &sp);
+    if (r) return r;
+    if ((r = files_remap(p, parent, map, count)) || (r = sched_start(p, entry, sp)) < 0) process_finish(p);
+    return r;
+}
+
+/* Exit statuses of children started beside their parents, kept until collected. */
+#define MAX_EXITS 64
+static struct { int pid, parent, status; } exits[MAX_EXITS];
+
+void process_record_exit(struct process *p, int status) {
+    if (!p->parent) return;
+    int slot = 0;
+    for (int i = 0; i < MAX_EXITS; ++i)
+        if (!exits[i].pid || !process_alive(exits[i].parent)) { slot = i; break; }
+    exits[slot].pid = p->pid;
+    exits[slot].parent = p->parent->pid;
+    exits[slot].status = status;
+}
+
+long process_wait(int *status, int pid, int no_wait) {
+    for (;;) {
+        for (int i = 0; i < MAX_EXITS; ++i)
+            if (exits[i].pid && exits[i].parent == current->pid && (pid < 0 || exits[i].pid == pid)) {
+                int found = exits[i].pid;
+                if (status) *status = exits[i].status;
+                exits[i].pid = 0;
+                return found;
+            }
+        int running = 0;
+        for (unsigned i = 0; i < MAX_DEPTH; ++i)
+            if (processes[i].used && processes[i].parent == current && processes[i].background && (pid < 0 || processes[i].pid == pid)) running = 1;
+        if (!running) return -DOSXC_ECHILD;
+        if (no_wait) return 0;
+        socket_wait_interrupted();
+        sched_sleep(1000000);
+    }
 }
 
 int process_list(struct dosxc_task_info *out, unsigned capacity) {
@@ -526,7 +574,18 @@ int process_share(int owner, uptr start, uptr end, int pid) {
 }
 
 /* Release what a finished process owned. */
+void process_exited(struct process *p, int status) {
+    if (status & 0x7f)
+        event_log(DOSXC_EVENT_WARNING, "Programs", "%s (process %d) was ended by signal %d", event_program(p), p->pid, status & 0x7f);
+    else
+        event_log(DOSXC_EVENT_INFO, "Programs", "%s (process %d) ended with code %d", event_program(p), p->pid, (status >> 8) & 0xff);
+}
+
 void process_finish(struct process *p) {
+    if (!p->parent && p->user[0]) event_log(DOSXC_EVENT_INFO, "Accounts", "%s logged out", p->user);
+    if (!p->parent && p->user[0])                /* logging out: the user's programs end too */
+        for (unsigned i = 0; i < MAX_DEPTH; ++i)
+            if (processes[i].used && &processes[i] != p && rt_equal_nocase(processes[i].user, p->user)) processes[i].killed = 1;
     sched_stop_threads(p);
     display_process_finished(p->pid);
     speaker_process_finished(p->pid);
@@ -672,6 +731,8 @@ void runtime_exception(uptr *frame, uptr *regs) {
         }
     }
 #endif
+    event_log(DOSXC_EVENT_ERROR, "Programs", "%s (process %d) stopped: %s at %lx", current ? event_program(current) : "The system",
+              current ? current->pid : 0, names[vector] ? names[vector] : "Processor exception", (unsigned long)ip);
     if (!current) {
         rt_print("The system is halted.\r\n");
         for (;;) __asm__ volatile("cli; hlt");

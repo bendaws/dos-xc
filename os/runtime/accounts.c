@@ -178,6 +178,14 @@ static void make_folder(const char *path) {
 
 int accounts_enabled(void) { load(); return enabled; }
 
+void accounts_init(void) {
+    char path[PATH_MAX_RT];
+    path[0] = (char)rt_upper(ctx->drive);
+    path[1] = ':';
+    rt_strcpy(path + 2, "\\Users\\Public");
+    make_folder(path);
+}
+
 /* The system (no user) and administrators may do anything. */
 int accounts_admin(void) {
     load();
@@ -316,15 +324,32 @@ long user_syscall(int operation, const void *a, void *b) {
         }
         return 0;
     }
-    case DOSXC_USER_LOGIN: return login(a, b);
+    case DOSXC_USER_LOGIN: {
+        int r = login(a, b);
+        if (r) event_log(DOSXC_EVENT_WARNING, "Accounts", "Failed login as %s", (const char *)a);
+        else event_log(DOSXC_EVENT_INFO, "Accounts", "%s logged in", (const char *)a);
+        return r;
+    }
     case DOSXC_USER_CHECK: {
         struct account *x = find(a);
         return x && password_ok(x, b) ? 0 : -DOSXC_EACCES;
     }
-    case DOSXC_USER_ADD: return change(b, 1);
-    case DOSXC_USER_SET: return change(b, 0);
-    case DOSXC_USER_REMOVE: return remove_account(a);
-    case DOSXC_USER_ENABLE: return enable((int)(uptr)a);
+    case DOSXC_USER_ADD: case DOSXC_USER_SET: {
+        const struct dosxc_user_change *c = b;
+        int r = change(c, operation == DOSXC_USER_ADD);
+        if (!r) event_log(DOSXC_EVENT_INFO, "Accounts", operation == DOSXC_USER_ADD ? "Account %s was added" : "Account %s was changed", c->user.name);
+        return r;
+    }
+    case DOSXC_USER_REMOVE: {
+        int r = remove_account(a);
+        if (!r) event_log(DOSXC_EVENT_INFO, "Accounts", "Account %s was removed", (const char *)a);
+        return r;
+    }
+    case DOSXC_USER_ENABLE: {
+        int r = enable((int)(uptr)a);
+        if (!r) event_log(DOSXC_EVENT_INFO, "Accounts", (uptr)a ? "User accounts were turned on" : "User accounts were turned off");
+        return r;
+    }
     }
     return -DOSXC_EINVAL;
 }

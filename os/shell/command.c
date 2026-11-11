@@ -19,7 +19,7 @@
 
 static int errorlevel;
 static int interactive;
-static void start_desktop(void);
+static int start_desktop(int ask);
 static char system_drive = 'C';
 static int exit_requested;
 
@@ -88,6 +88,9 @@ static void welcome(void) {
     const char *version = info.version;
     if (!strncmp(version, "DOS-XC v", 8)) version += 8;
     printf("\n  DOS-XC %s\n\n", version);
+    struct dosxc_user me;
+    if (dosxc_sys_user(DOSXC_USER_ENABLED, 0, 0) > 0 && !dosxc_sys_user(DOSXC_USER_WHOAMI, 0, &me) && me.name[0])
+        printf("  Logged in as %s\n", me.nickname);
     printf("  Memory: %llu MB/%llu MB\n", used, total);
     struct dosxc_volume volumes[26];
     int count = dosxc_sys_volumes(volumes, 26);
@@ -672,6 +675,12 @@ static int simple_command(char *text) {
     if (same(name, "ECHO") || starts(name, "ECHO.")) return builtin_echo(arguments, raw);
     if (same(name, "REM")) return 0;
     if (same(name, "HISTORY")) return builtin_history();
+    if (same(name, "LOGOUT") || same(name, "LOGOFF")) {
+        if (!dosxc_sys_user(DOSXC_USER_ENABLED, 0, 0)) { say("User accounts are off: there is nobody to log out.\n"); return 1; }
+        if (dosxc_sys_getppid() != 0) { say("Type EXIT until you are back at the first command prompt, then LOGOUT.\n"); return 1; }
+        exit_requested = 1;
+        return 0;
+    }
     if (same(name, "EXIT")) {
         exit_requested = 1;
         return *arguments ? atoi(starts(arguments, "/B") ? arguments + 2 : arguments) : errorlevel;
@@ -790,20 +799,67 @@ static int run_command(char *line) {
     return errorlevel;
 }
 
-static void start_desktop(void) {
-    char marker[8];
-    if (env_get("DESKTOPSTARTED", marker, sizeof(marker)) >= 0) return;
-    env_set("DESKTOPSTARTED", "1");
+#define LOGGED_OUT 3
+
+/* Returns the desktop's exit status, or -1 when it did not run. */
+static int start_desktop(int ask) {
     char program[64];
-    if (!find_desktop_file("DESKTOP.EXE", program, sizeof(program))) return;
-    for (int i = 0; i < 12; ++i) {
+    if (!find_desktop_file("DESKTOP.EXE", program, sizeof(program))) return -1;
+    for (int i = 0; ask && i < 12; ++i) {
         int k = dosxc_sys_console(DOSXC_CONSOLE_GETKEY, 0, 0);
-        if (k == 27) { say("Staying at the command prompt.\n"); return; }
+        if (k == 27) { say("Staying at the command prompt.\n"); return -1; }
         if (k < 0) dosxc_sys_sleep(20000000);
     }
     char *argv[2] = {program, 0};
     fflush(stdout);
-    dosxc_sys_spawn(program, argv, 0);
+    int status = dosxc_sys_spawn(program, argv, 0);
+    return status < 0 ? -1 : (status >> 8) & 0xff;
+}
+
+static void read_secret(char *out, size_t size) {
+    size_t n = 0;
+    for (;;) {
+        int k = dosxc_sys_console(DOSXC_CONSOLE_GETKEY, 1, 0);
+        if (k == '\r' || k == '\n') break;
+        if ((k == '\b' || k == 127) && n) { --n; fputs("\b \b", stdout); }
+        else if (k >= 32 && k < 127 && n + 1 < size) { out[n++] = (char)k; putchar('*'); }
+        fflush(stdout);
+    }
+    out[n] = 0;
+    putchar('\n');
+}
+
+/* At the first command prompt with user accounts on: nobody goes further
+   until someone has logged in, on the desktop's login screen when the
+   desktop is installed, else here. */
+static void log_in(void) {
+    char program[64];
+    if (find_desktop_file("DESKTOP.EXE", program, sizeof(program))) {
+        char *argv[3] = {program, "/LOGON", 0};
+        fflush(stdout);
+        dosxc_sys_spawn(program, argv, 0);
+        struct dosxc_user me;
+        dosxc_sys_user(DOSXC_USER_WHOAMI, 0, &me);
+        if (me.name[0]) return;
+    }
+    for (;;) {
+        say("\nUsers of this computer:\n");
+        struct dosxc_user u;
+        long count = dosxc_sys_user(DOSXC_USER_LIST, 0, &u);
+        for (long i = 0; i < count; ++i) {
+            dosxc_sys_user(DOSXC_USER_LIST, (void *)i, &u);
+            printf("  %-20s %s%s\n", u.name, u.nickname, u.admin ? " (administrator)" : "");
+        }
+        char name[64], password[64];
+        fputs("\nUser name: ", stdout);
+        fflush(stdout);
+        if (!read_line(name) || !name[0]) continue;
+        fputs("Password: ", stdout);
+        fflush(stdout);
+        read_secret(password, sizeof(password));
+        if (!dosxc_sys_user(DOSXC_USER_LOGIN, name, password)) break;
+        say("The user name or password is not right.\n");
+    }
 }
 
 /* ---- main ------------------------------------------------------------------ */
@@ -832,6 +888,13 @@ int main(int argc, char **argv) {
     if (argc == 1 && dosxc_sys_getppid() == 0) {
         chdir(drive_root);
         build_path();
+        int accounts = dosxc_sys_user(DOSXC_USER_ENABLED, 0, 0) > 0;
+        struct dosxc_user me;
+        if (accounts) {
+            log_in();
+            dosxc_sys_user(DOSXC_USER_WHOAMI, 0, &me);
+            chdir(me.home);
+        }
         welcome();
         char autoexec[32];
         snprintf(autoexec, sizeof(autoexec), "%c:\\AUTOEXEC.BAT", system_drive);
@@ -840,7 +903,11 @@ int main(int argc, char **argv) {
             snprintf(line, sizeof(line), "\"%s\"", autoexec);
             run_command(line);
         }
-        start_desktop();
+        char marker[8];
+        if (accounts ? me.start == DOSXC_USER_START_DESKTOP : env_get("DESKTOPSTARTED", marker, sizeof(marker)) < 0) {
+            if (!accounts) env_set("DESKTOPSTARTED", "1");
+            if (start_desktop(!accounts) == LOGGED_OUT) return 0;
+        }
     }
     char line[LINE_MAX_SHELL];
     while (!exit_requested) {

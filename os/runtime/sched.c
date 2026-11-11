@@ -173,9 +173,11 @@ static void task_entry(void) {
     struct task *t = &tasks[running];
     struct process *p = current;
     if (preempting) __asm__ volatile("sti");
-    if (!p->killed) runtime_enter(t->entry, t->sp, &p->saved, cpu_has_sse());
+    int status = p->killed ? DOSXC_SIGNALED(9) : runtime_enter(t->entry, t->sp, &p->saved, cpu_has_sse());
     __asm__ volatile("cli");
     current = p;
+    process_record_exit(p, p->killed && !p->exit_pending ? DOSXC_SIGNALED(9) : status);
+    process_exited(p, p->killed && !p->exit_pending ? DOSXC_SIGNALED(9) : status);
     process_finish(p);
     task_retire();
 }
@@ -318,8 +320,20 @@ long sched_syscall(int operation, void *a, long b, long c) {
     case DOSXC_TASK_START: {
         struct vconsole *console = c > 0 ? vc_get((int)c - 1) : 0;
         if (c > 0 && !console) return -DOSXC_EINVAL;
-        return process_background(current, a, (char *const *)b, console);
+        return process_background(current, a, (char *const *)b, 0, console);
     }
+    case DOSXC_TASK_SPAWN: {
+        const struct dosxc_spawn *spawn = a;
+        return process_background(current, spawn->path, spawn->argv, spawn->envp, 0);
+    }
+    case DOSXC_TASK_SANDBOX:
+        current->sandbox |= (u32)(uptr)a & DOSXC_SANDBOX_ALL;
+        return current->sandbox;
+    case DOSXC_TASK_SPAWN_FDS: {
+        const struct dosxc_spawn_fds *spawn = a;
+        return process_background_fds(current, spawn->path, spawn->argv, spawn->envp, spawn->map, spawn->count);
+    }
+    case DOSXC_TASK_WAIT: return process_wait(a, (int)b, (int)c);
     case DOSXC_TASK_CONSOLE_OPEN: return vc_open(current->pid);
     case DOSXC_TASK_CONSOLE_READ: {
         struct vconsole *v = vc_get((int)b);
@@ -350,7 +364,11 @@ long sched_syscall(int operation, void *a, long b, long c) {
     case DOSXC_TASK_FUTEX_WAIT: return futex_wait(a, (int)b, c);
     case DOSXC_TASK_FUTEX_WAKE: return futex_wake(a, b);
     case DOSXC_TASK_LIST: return process_list(a, (unsigned)b);
-    case DOSXC_TASK_KILL: return process_kill((int)b);
+    case DOSXC_TASK_KILL: {
+        struct process *target = process_find((int)b);
+        if (target && !accounts_admin() && !rt_equal_nocase(target->user, current->user)) return -DOSXC_EPERM;
+        return process_kill((int)b);
+    }
     case DOSXC_TASK_ALIVE: return process_alive((int)b);
     case DOSXC_TASK_STATS: {
         struct dosxc_task_stats *s = a;

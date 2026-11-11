@@ -4,6 +4,7 @@
  */
 
 #include "wm.h"
+#include <strings.h>
 
 #define TITLE_H 19
 #define FRAME_TOP (TITLE_H + 5)
@@ -35,7 +36,7 @@ static struct gui_board *board;
 static struct surface wall_source;
 static char wall_path[300];
 static int wall_loaded;
-static int running = 1;
+static int running = 1, exit_status;
 static int clock_minute = -1;
 static u32 accent = ACCENT_DEFAULT;
 static int sound_volume = 100, net_state, net_shown = -1, volume_shown = -1;
@@ -60,7 +61,7 @@ struct menu_item { const char *label; int icon; void (*act)(void); const struct 
 #define MENU_SEP 8
 #define MENU_W 190
 struct open_menu { int open, hot, count; struct rect r; const struct menu_item *items; int stripe; };
-static struct open_menu menu, submenu;
+static struct open_menu menu, submenu, nested;   /* nested: a folder inside a submenu */
 
 static void damage_rect(struct rect r) {
     if (r.w <= 0 || r.h <= 0) return;
@@ -201,7 +202,7 @@ void identify_screens(void) {
 /* The saved arrangement: "%HOME%\DISPLAYS.CFG", one display per line. */
 static void config_path(char *out, size_t size) {
     const char *home = getenv("HOME");
-    snprintf(out, size, "%s\\DISPLAYS.CFG", home && *home ? home : "\\Home");
+    snprintf(out, size, "%s\\DISPLAYS.CFG", home && *home ? home : "\\Users\\Public");
 }
 
 void save_layout(void) {
@@ -614,7 +615,24 @@ static void paint_taskbar(const struct canvas *c) {
     text(c, clk.x + (clk.w - text_width(&font_regular, line)) / 2, clk.y + (clk.h - font_regular.height) / 2, &font_regular, line, C_TEXT);
 }
 
-static int item_height(const struct menu_item *m) { return m->label ? MENU_ROW : MENU_SEP; }
+#define MENU_HEADER 52
+#define ICON_HEADER (-2)
+static int item_height(const struct menu_item *m) { return m->icon == ICON_HEADER ? MENU_HEADER : m->label ? MENU_ROW : MENU_SEP; }
+
+static struct dosxc_user me;
+static int accounts_on;
+static struct surface me_picture;
+
+static void paint_header(const struct canvas *c, struct rect r, int y, const char *label) {
+    gradient(c, r.x + 2, y, r.w - 4, MENU_HEADER, C_ACTIVE1, C_ACTIVE2);
+    if (me_picture.px) {
+        fill(c, r.x + 7, y + 5, me_picture.w + 2, me_picture.h + 2, 0xffffff);
+        blit(c, r.x + 8, y + 6, &me_picture);
+    } else {
+        draw_icon_big(c, r.x + 8, y + 10, &icons[ICON_COMPUTER]);
+    }
+    text(c, r.x + 56, y + (MENU_HEADER - font_bold.height) / 2, &font_bold, label, 0xffffff);
+}
 
 static void paint_one_menu(const struct canvas *c, const struct open_menu *o) {
     if (!o->open || !rect_meets(o->r, c->clip)) return;
@@ -626,7 +644,9 @@ static void paint_one_menu(const struct canvas *c, const struct open_menu *o) {
     for (int i = 0; i < o->count; ++i) {
         const struct menu_item *m = &o->items[i];
         int h = item_height(m);
-        if (!m->label) {
+        if (m->icon == ICON_HEADER) {
+            paint_header(c, r, y, m->label);
+        } else if (!m->label) {
             fill(c, r.x + 28, y + h / 2 - 1, r.w - 32, 1, C_SHADOW1);
             fill(c, r.x + 28, y + h / 2, r.w - 32, 1, C_HIGHLIGHT);
         } else {
@@ -643,6 +663,7 @@ static void paint_one_menu(const struct canvas *c, const struct open_menu *o) {
 static void paint_menu(const struct canvas *c) {
     paint_one_menu(c, &menu);
     paint_one_menu(c, &submenu);
+    paint_one_menu(c, &nested);
 }
 
 static const u32 C_ARROW_DARK = 0xff000000, C_ARROW_LIGHT = 0xffffffff;
@@ -690,9 +711,10 @@ static void paint_identify(const struct canvas *c, int s) {
 }
 
 static void paint_scene(const struct canvas *c, int s) {
-    if (screens[s].wall.px) blit(c, screens[s].r.x, screens[s].r.y, &screens[s].wall);
+    if (logon_mode) logon_paint(c, screens[s].r);
+    else if (screens[s].wall.px) blit(c, screens[s].r.x, screens[s].r.y, &screens[s].wall);
     else fill(c, c->clip.x, c->clip.y, c->clip.w, c->clip.h, C_DESKTOP);
-    if (s == main_screen) icons_paint(c);
+    if (s == main_screen && !logon_mode) icons_paint(c);
     for (int i = 0; i < window_count; ++i) {
         struct window *w = windows[i];
         if (w->minimized || !rect_meets(frame_of(w), c->clip)) continue;
@@ -701,7 +723,7 @@ static void paint_scene(const struct canvas *c, int s) {
         inner.clip = rect_both(c->clip, w->r);
         if (w->content.px) blit(&inner, w->r.x, w->r.y, &w->content);
     }
-    if (s == main_screen) paint_taskbar(c);
+    if (s == main_screen && !logon_mode) paint_taskbar(c);
     paint_menu(c);
     paint_identify(c, s);
     paint_cursor(c);
@@ -770,7 +792,17 @@ static void composite(void) {
     damage_count = 0;
 }
 
+static int nested_index = -1;
+
+static void nested_close(void) {
+    nested_index = -1;
+    if (!nested.open) return;
+    nested.open = 0;
+    damage_rect(nested.r);
+}
+
 static void submenu_close(void) {
+    nested_close();
     if (!submenu.open) return;
     submenu.open = 0;
     damage_rect(submenu.r);
@@ -815,7 +847,7 @@ static int menu_item_at(const struct open_menu *o, int x, int y) {
     int at = o->r.y + 2;
     for (int i = 0; i < o->count; ++i) {
         int h = item_height(&o->items[i]);
-        if (y >= at && y < at + h) return o->items[i].label ? i : -1;
+        if (y >= at && y < at + h) return o->items[i].label && o->items[i].icon != ICON_HEADER ? i : -1;
         at += h;
     }
     return -1;
@@ -837,9 +869,24 @@ static void submenu_open(int index) {
     }
 }
 
+static void nested_open(int index) {
+    nested_close();
+    nested_index = index;
+    int y = submenu.r.y + 2;
+    for (int i = 0; i < index; ++i) y += item_height(&submenu.items[i]);
+    const struct menu_item *m = &submenu.items[index];
+    menu_place(&nested, submenu.r.x + submenu.r.w - 3, y - 2, m->sub, m->sub_count, 0);
+    if (nested.r.x < submenu.r.x + submenu.r.w - 3) {
+        nested.r.x = submenu.r.x - MENU_W + 3;
+        damage_rect(nested.r);
+    }
+}
+
 static void act_shutdown(void);
 static void act_restart(void);
 static void act_exit(void) { running = 0; }
+void desktop_quit(int status) { exit_status = status; running = 0; }
+int logon_mode;
 
 /* A program in the package's Apps folder, as its own task. */
 static void launch(const char *name) {
@@ -857,6 +904,9 @@ LAUNCHER(act_editor, "EDITOR.EXE")
 LAUNCHER(act_calc, "CALC.EXE")
 LAUNCHER(act_paint, "PAINT.EXE")
 LAUNCHER(act_tasks, "TASKMGR.EXE")
+LAUNCHER(act_events, "EVENTS.EXE")
+LAUNCHER(act_firewall, "FIREWALL.EXE")
+LAUNCHER(act_fonts, "FONTS.EXE")
 LAUNCHER(act_solitaire, "SOLITAIRE.EXE")
 LAUNCHER(act_mines, "MINES.EXE")
 LAUNCHER(act_chess, "CHESS.EXE")
@@ -881,11 +931,19 @@ static void confirmed_shutdown(int ok, void *data) { (void)data; if (ok) act_shu
 static void ask_restart(void) { confirm_box("Restart", "Restart the computer now?", "Restart", ICON_RESTART, confirmed_restart, 0); }
 static void ask_shutdown(void) { confirm_box("Shut Down", "Shut down the computer now?", "Shut Down", ICON_POWER, confirmed_shutdown, 0); }
 
+#define COUNT_OF(a) ((int)(sizeof(a) / sizeof(*(a))))
+#define ADMIN_FOLDER "System/Administrators"
+/* Programs that need an administrator: System, Administrators (packages add theirs with category=System/Administrators). */
+static const struct menu_item admin_items[] = {
+    {"Package Manager", ICON_PACKAGE, act_packages},
+    {"Event Logs", ICON_INFO, act_events},
+    {"Firewall", ICON_NET, act_firewall},
+};
 static const struct menu_item system_items[] = {
     {"File Explorer", ICON_FOLDER, act_explorer},
     {"Task Manager", ICON_TASKS, act_tasks},
     {"DOS Prompt", ICON_PROMPT, act_prompt},
-    {"Package Manager", ICON_PACKAGE, act_packages},
+    {"Fonts", ICON_FILE, act_fonts},
     {"Install DOS-XC", ICON_SETUP, act_setup},             /* live system only: keep last */
 };
 static const struct menu_item utility_items[] = {
@@ -898,32 +956,102 @@ static const struct menu_item game_items[] = {
     {"Minesweeper", ICON_MINES, act_mines},
     {"Chess", ICON_CHESS, act_chess},
 };
-#define COUNT_OF(a) ((int)(sizeof(a) / sizeof(*(a))))
 static int system_count = COUNT_OF(system_items);
-static struct menu_item start_items[16];
+static struct menu_item start_items[32];
 static char browser_label[64], editor_label[64];
+
+static void act_logout(void) { running = 0; exit_status = 3; }
+
+#define MAX_CATEGORIES 8
+#define MAX_CATEGORY_ITEMS 24
+static struct menu_item category_items[MAX_CATEGORIES][MAX_CATEGORY_ITEMS];
+static char category_names[MAX_CATEGORIES][32];
+static int category_counts[MAX_CATEGORIES], category_total;
+static struct app_entry menu_apps[32];
+static int menu_app_count;
+
+static void launch_menu_app(int i) {
+    if (i < menu_app_count && app_start(&menu_apps[i], 0))
+        message_box(menu_apps[i].name, "The program could not be started.", "Reinstall its package.");
+}
+#define APP_THUNK(n) static void act_app##n(void) { launch_menu_app(n); }
+APP_THUNK(0) APP_THUNK(1) APP_THUNK(2) APP_THUNK(3) APP_THUNK(4) APP_THUNK(5) APP_THUNK(6) APP_THUNK(7)
+APP_THUNK(8) APP_THUNK(9) APP_THUNK(10) APP_THUNK(11) APP_THUNK(12) APP_THUNK(13) APP_THUNK(14) APP_THUNK(15)
+APP_THUNK(16) APP_THUNK(17) APP_THUNK(18) APP_THUNK(19) APP_THUNK(20) APP_THUNK(21) APP_THUNK(22) APP_THUNK(23)
+APP_THUNK(24) APP_THUNK(25) APP_THUNK(26) APP_THUNK(27) APP_THUNK(28) APP_THUNK(29) APP_THUNK(30) APP_THUNK(31)
+static void (*const app_thunks[32])(void) = {
+    act_app0, act_app1, act_app2, act_app3, act_app4, act_app5, act_app6, act_app7, act_app8, act_app9, act_app10,
+    act_app11, act_app12, act_app13, act_app14, act_app15, act_app16, act_app17, act_app18, act_app19, act_app20,
+    act_app21, act_app22, act_app23, act_app24, act_app25, act_app26, act_app27, act_app28, act_app29, act_app30, act_app31};
+
+static int category(const char *name) {
+    for (int i = 0; i < category_total; ++i)
+        if (!strcasecmp(category_names[i], name)) return i;
+    if (category_total == MAX_CATEGORIES) return -1;
+    snprintf(category_names[category_total], sizeof(category_names[0]), "%s", name);
+    category_counts[category_total] = 0;
+    return category_total++;
+}
+
+static void category_add(int c, struct menu_item item) {
+    if (c >= 0 && category_counts[c] < MAX_CATEGORY_ITEMS) category_items[c][category_counts[c]++] = item;
+}
+
+static int category_icon(const char *name) {
+    if (!strcasecmp(name, "System")) return ICON_COMPUTER;
+    if (!strcasecmp(name, "Utilities")) return ICON_TOOLS;
+    if (!strcasecmp(name, "Games")) return ICON_GAMES;
+    if (!strcasecmp(name, "Internet")) return ICON_NET;
+    if (!strcasecmp(name, "Multimedia")) return ICON_SOUND;
+    if (!strcasecmp(name, "Office")) return ICON_EDITOR;
+    return ICON_FOLDER;
+}
 
 static int start_menu_build(void) {
     int n = 0;
+    if (accounts_on && me.name[0]) start_items[n++] = (struct menu_item){me.nickname, ICON_HEADER, 0};
     char name[32];
     int icon;
     default_program("browser", name, sizeof(name));
-    if (name[0] && !program_info(name, browser_label, sizeof(browser_label), &icon)) {
-        if (icon == ICON_DOSFOX) icon_load_png(ICON_DOSFOX, "\\Programs\\dosfox\\DOSFOX.PNG");
+    if (name[0] && !program_info(name, browser_label, sizeof(browser_label), &icon))
         start_items[n++] = (struct menu_item){browser_label, icon, act_browser};
-    }
     default_program("editor", name, sizeof(name));
     if (!program_info(name, editor_label, sizeof(editor_label), &icon))
         start_items[n++] = (struct menu_item){editor_label, icon, act_text_editor};
-    if (n) start_items[n++] = (struct menu_item){0, 0, 0};
-    start_items[n++] = (struct menu_item){"System", ICON_COMPUTER, 0, system_items, system_count};
-    start_items[n++] = (struct menu_item){"Utilities", ICON_TOOLS, 0, utility_items, COUNT_OF(utility_items)};
-    start_items[n++] = (struct menu_item){"Games", ICON_GAMES, 0, game_items, COUNT_OF(game_items)};
+    if (n && start_items[n - 1].icon != ICON_HEADER) start_items[n++] = (struct menu_item){0, 0, 0};
+    category_total = 0;
+    int system = category("System"), utilities = category("Utilities"), games = category("Games");
+    static struct menu_item admin_menu[MAX_CATEGORY_ITEMS];
+    int admin_count = 0;
+    for (int i = 0; i < COUNT_OF(admin_items); ++i) admin_menu[admin_count++] = admin_items[i];
+    struct menu_item admin_folder = {"Administrators", ICON_GEAR, 0, admin_menu, 0};
+    int install_last = system_count == COUNT_OF(system_items);
+    for (int i = 0; i < system_count - install_last; ++i) category_add(system, system_items[i]);
+    category_add(system, admin_folder);
+    int admin_slot = category_counts[system] - 1;
+    if (install_last) category_add(system, system_items[system_count - 1]);
+    for (int i = 0; i < COUNT_OF(utility_items); ++i) category_add(utilities, utility_items[i]);
+    for (int i = 0; i < COUNT_OF(game_items); ++i) category_add(games, game_items[i]);
+    menu_app_count = 0;
+    static struct app_entry all[32];
+    int count = apps_list(all, 32);
+    for (int i = 0; i < count && menu_app_count < 32; ++i) {
+        if (all[i].builtin) continue;
+        menu_apps[menu_app_count] = all[i];
+        struct menu_item item = {menu_apps[menu_app_count].name, all[i].icon, app_thunks[menu_app_count]};
+        if (!strcasecmp(all[i].category, ADMIN_FOLDER)) { if (admin_count < MAX_CATEGORY_ITEMS) admin_menu[admin_count++] = item; }
+        else category_add(category(all[i].category), item);
+        ++menu_app_count;
+    }
+    if (system >= 0 && admin_slot >= 0) category_items[system][admin_slot].sub_count = admin_count;
+    for (int c = 0; c < category_total; ++c)
+        start_items[n++] = (struct menu_item){category_names[c], category_icon(category_names[c]), 0, category_items[c], category_counts[c]};
     start_items[n++] = (struct menu_item){0, 0, 0};
     start_items[n++] = (struct menu_item){"Control Panel", ICON_GEAR, open_control_panel};
     start_items[n++] = (struct menu_item){"About DOS-XC", ICON_INFO, open_about};
     start_items[n++] = (struct menu_item){0, 0, 0};
     start_items[n++] = (struct menu_item){"Exit to DOS", ICON_EXIT, act_exit};
+    if (accounts_on && me.name[0]) start_items[n++] = (struct menu_item){"Log Out", ICON_LOGOUT, act_logout};
     start_items[n++] = (struct menu_item){"Restart", ICON_RESTART, ask_restart};
     start_items[n++] = (struct menu_item){"Shut Down", ICON_POWER, ask_shutdown};
     return n;
@@ -983,7 +1111,7 @@ static void popup_open(struct window *w, int x, int y, const char *items, int ta
 
 static void wallpaper_config(char *out, size_t size) {
     const char *home = getenv("HOME");
-    snprintf(out, size, "%s\\DESKTOP.CFG", home && *home ? home : "\\Home");
+    snprintf(out, size, "%s\\DESKTOP.CFG", home && *home ? home : "\\Users\\Public");
 }
 
 const char *current_wallpaper(void) { return wall_path; }
@@ -1148,6 +1276,7 @@ static void client_request(int slot, const struct gui_request *r) {
         struct window *c = (struct window *)r->window;
         int icon = c->icon >= 0 && c->icon < ICON_SLOTS ? c->icon : ICON_PROGRAM;
         if (icon == ICON_DOSFOX) icon_load_png(ICON_DOSFOX, "\\Programs\\dosfox\\DOSFOX.PNG");
+        if (c->icon_file[0]) icon = icon_for_png(c->icon_file);
         struct window *fresh = window_create(c->content.w, c->content.h, c->title, icon, &remote_ops, 0, 1);
         if (fresh) {
             fresh->remote = c;
@@ -1310,10 +1439,12 @@ void open_network(void) {
 
 static void mouse_down_left(int doubled) {
     if (menu.open) {
-        int s = menu_item_at(&submenu, cursor_x, cursor_y);
-        int i = menu_item_at(&menu, cursor_x, cursor_y);
-        const struct menu_item *m = s >= 0 ? &submenu.items[s] : i >= 0 && !menu.items[i].sub ? &menu.items[i] : 0;
-        if (i >= 0 && menu.items[i].sub && s < 0) return;
+        int n = menu_item_at(&nested, cursor_x, cursor_y);
+        int s = n >= 0 ? -1 : menu_item_at(&submenu, cursor_x, cursor_y);
+        int i = n >= 0 || s >= 0 ? -1 : menu_item_at(&menu, cursor_x, cursor_y);
+        const struct menu_item *m = n >= 0 ? &nested.items[n] : s >= 0 && !submenu.items[s].sub ? &submenu.items[s]
+                                  : i >= 0 && !menu.items[i].sub ? &menu.items[i] : 0;
+        if ((i >= 0 && menu.items[i].sub) || (s >= 0 && submenu.items[s].sub)) return;
         int in_start = rect_has(start_button_rect(), cursor_x, cursor_y);
         int from_client = popup_owner != 0;
         menu_close();
@@ -1321,17 +1452,17 @@ static void mouse_down_left(int doubled) {
         else if (m) m->act();
         if (m || in_start) return;
     }
-    if (rect_has(start_button_rect(), cursor_x, cursor_y)) {
+    if (!logon_mode && rect_has(start_button_rect(), cursor_x, cursor_y)) {
         struct rect r = start_button_rect();
         int count = start_menu_build();
         int height = menu_height(start_items, count);
         menu_open_at(r.x, r.y - height, start_items, count, 1);
         return;
     }
-    if (rect_has(volume_rect(), cursor_x, cursor_y)) { open_sound(); return; }
-    if (rect_has(net_rect(), cursor_x, cursor_y)) { open_network(); return; }
+    if (!logon_mode && rect_has(volume_rect(), cursor_x, cursor_y)) { open_sound(); return; }
+    if (!logon_mode && rect_has(net_rect(), cursor_x, cursor_y)) { open_network(); return; }
     for (int i = 0; i < task_count; ++i)
-        if (rect_has(taskbar_rect(), cursor_x, cursor_y) && rect_has(task_button_rect(i), cursor_x, cursor_y)) {
+        if (!logon_mode && rect_has(taskbar_rect(), cursor_x, cursor_y) && rect_has(task_button_rect(i), cursor_x, cursor_y)) {
             struct window *w = task_order[i];
             if (w->minimized) { w->minimized = 0; activate(w); }
             else if (w == active) window_minimize(w);
@@ -1340,7 +1471,7 @@ static void mouse_down_left(int doubled) {
             damage_rect(taskbar_rect());
             return;
         }
-    if (rect_has(taskbar_rect(), cursor_x, cursor_y)) return;
+    if (!logon_mode && rect_has(taskbar_rect(), cursor_x, cursor_y)) return;
     for (int i = window_count - 1; i >= 0; --i) {
         struct window *w = windows[i];
         int edges = 0, hit = w->minimized ? HIT_NONE : window_hit(w, cursor_x, cursor_y, &edges);
@@ -1374,6 +1505,7 @@ static void mouse_down_left(int doubled) {
         return;
     }
     activate(0);
+    if (logon_mode) { logon_click(cursor_x, cursor_y); return; }
     int at = icons_at(cursor_x, cursor_y);
     icons_select(at);
     if (doubled && at >= 0) icons_open(at);
@@ -1389,6 +1521,7 @@ static void mouse_up_left(void) {
 
 static void mouse_down_right(void) {
     if (menu.open) { popup_finish(-1); menu_close(); return; }
+    if (logon_mode) return;
     if (rect_has(taskbar_rect(), cursor_x, cursor_y)) return;
     for (int i = window_count - 1; i >= 0; --i) {
         struct window *w = windows[i];
@@ -1411,9 +1544,16 @@ static void mouse_down_right(void) {
 
 static void update_menu_hover(void) {
     if (!menu.open) return;
+    if (nested.open) {
+        int k = menu_item_at(&nested, cursor_x, cursor_y);
+        if (k != nested.hot) { nested.hot = k; damage_rect(nested.r); }
+        if (rect_has(nested.r, cursor_x, cursor_y)) return;
+    }
     if (submenu.open) {
         int k = menu_item_at(&submenu, cursor_x, cursor_y);
         if (k != submenu.hot) { submenu.hot = k; damage_rect(submenu.r); }
+        if (k >= 0 && submenu.items[k].sub && k != nested_index) nested_open(k);
+        else if (k >= 0 && !submenu.items[k].sub) nested_close();
         if (rect_has(submenu.r, cursor_x, cursor_y)) return;
     }
     int i = menu_item_at(&menu, cursor_x, cursor_y);
@@ -1487,6 +1627,7 @@ static void input_keyboard(void) {
         if (key == 0x116) { running = 0; return; }           /* F12: back to DOS, even without a mouse */
         if (key == 27 && menu.open) { popup_finish(-1); menu_close(); continue; }
         if (active && active->ops->key) active->ops->key(active, key);
+        else if (!active && logon_mode) logon_key(key);
         else if (!active) icons_key(key);
     }
 }
@@ -1516,7 +1657,14 @@ static void update_clock(void) {
 
 int main(int argc, char **argv) {
     icons_init();
-    config_load();
+    if (argc > 1 && !strcmp(argv[1], "/LOGON")) {
+        logon_mode = 1;
+        argc = 1;
+    }
+    accounts_on = dosxc_sys_user(DOSXC_USER_ENABLED, 0, 0) > 0;
+    dosxc_sys_user(DOSXC_USER_WHOAMI, 0, &me);
+    if (accounts_on && me.picture[0]) user_picture(me.picture, 40, &me_picture);
+    if (!logon_mode) config_load();
     dosxc_sys_console(DOSXC_CONSOLE_VOLUME, sound_volume, 0);
     {
         struct dosxc_sysinfo info;
@@ -1540,9 +1688,12 @@ int main(int argc, char **argv) {
     struct rect a = screens[main_screen].r;
     cursor_x = a.x + a.w / 2;
     cursor_y = a.y + a.h / 2;
-    wallpaper_init();
-    icon_load_png(ICON_DOSFOX, "\\Programs\\dosfox\\DOSFOX.PNG");
-    icons_reload();
+    if (logon_mode) logon_init();
+    else {
+        wallpaper_init();
+        icon_load_png(ICON_DOSFOX, "\\Programs\\dosfox\\DOSFOX.PNG");
+        icons_reload();
+    }
     damage_all();
     composite();
     struct dosxc_pointer probe;
@@ -1558,11 +1709,11 @@ int main(int argc, char **argv) {
         input_keyboard();
         update_clock();
         serve_clients();
-        icons_poll();
+        if (!logon_mode) icons_poll();
         composite();
         dosxc_sys_sleep(6 * NS_PER_MS);
     }
     kill_clients();
     leave_desktop();
-    return 0;
+    return exit_status;
 }

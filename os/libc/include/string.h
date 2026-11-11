@@ -55,5 +55,6 @@ size_t strlcat(char *__restrict, const char *__restrict, size_t);
 char *strsignal(int);
 int strcasecmp(const char *, const char *);
 int strncasecmp(const char *, const char *, size_t);
+char *strnstr(const char *haystack, const char *needle, size_t length);
 __END_DECLS
 #endif

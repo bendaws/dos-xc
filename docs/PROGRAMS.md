@@ -403,6 +403,29 @@ program started beside its parent (`DOSXC_TASK_START`) inherits every
 descriptor not marked close-on-exec.  Named sockets (`bind` to a path, `listen`) and
 datagram local sockets are not available.
 
+`dosxc_spawn_fds(&pid, path, argv, envp, map, count)` (`<spawn.h>`,
+`DOSXC_TASK_SPAWN_FDS`) starts a program beside its caller with exactly the
+descriptors in `map`: `count` pairs of the caller's descriptor and the number
+it gets in the child.  Nothing else is inherited and the caller's own
+descriptors are not touched, so other threads can keep using them.
+
+## Sandbox
+
+`dosxc_sandbox(rights)` (`<spawn.h>`, `DOSXC_TASK_SANDBOX`) gives up rights
+for good, for the process and every program it starts.  Calls that need them
+fail with `EACCES`.
+
+| Right | Given up |
+|-------|----------|
+| `DOSXC_SANDBOX_FILES` | opening files for writing, creating, truncating, renaming and removing files and folders |
+| `DOSXC_SANDBOX_SPAWN` | starting programs (`spawn`, `system`, `posix_spawn`, terminal windows) |
+| `DOSXC_SANDBOX_NET` | network sockets and settings; local sockets and shared memory still work |
+| `DOSXC_SANDBOX_SYSTEM` | disks, drivers, drives, accounts (other than asking who it is), power, the display, reading the keyboard and mouse, the PC speaker and volume, setting environment variables, shell state, the desktop's shared memory, consoles of other programs, and killing processes other than itself and its children |
+| `DOSXC_SANDBOX_AUDIO` | sound |
+
+DOSfox's content processes give up everything except sound once the browser
+process tells them to (`security.sandbox.content.level` 0 turns it off).
+
 ## The C library
 
 `os/libc` is a C library written for DOS-XC: stdio (with exact

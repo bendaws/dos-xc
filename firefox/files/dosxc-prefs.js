@@ -3,9 +3,12 @@
  * Copyright (c) 2026 Ben Daws - see LICENSE.txt
  */
 
-pref("browser.tabs.remote.autostart", false);
+pref("browser.tabs.remote.autostart", true);
 pref("fission.autostart", false);
 pref("dom.ipc.processCount", 1);
+pref("dom.ipc.processPrelaunch.enabled", false);
+pref("dom.ipc.forkserver.enable", false);
+pref("security.sandbox.content.level", 1);
 pref("network.process.enabled", false);
 pref("layers.gpu-process.enabled", false);
 pref("media.rdd-process.enabled", false);
@@ -27,6 +30,30 @@ pref("datareporting.healthreport.uploadEnabled", false);
 pref("toolkit.telemetry.enabled", false);
 pref("toolkit.telemetry.unified", false);
 pref("browser.cache.disk.enable", false);
+
+pref("network.captive-portal-service.enabled", false);
+pref("network.connectivity-service.enabled", false);
+pref("browser.region.update.enabled", false);
+pref("browser.region.network.url", "");
+pref("dom.push.enabled", false);
+pref("media.gmp-manager.updateEnabled", false);
+pref("media.gmp-gmpopenh264.enabled", false);
+pref("browser.translations.enable", false);
+pref("browser.ml.enable", false);
+pref("browser.ml.chat.enabled", false);
+pref("extensions.pocket.enabled", false);
+pref("browser.discovery.enabled", false);
+pref("browser.newtabpage.activity-stream.showSponsored", false);
+pref("browser.newtabpage.activity-stream.showSponsoredTopSites", false);
+pref("browser.newtabpage.activity-stream.feeds.section.topstories", false);
+pref("browser.newtabpage.activity-stream.feeds.snippets", false);
+pref("browser.newtabpage.activity-stream.feeds.telemetry", false);
+pref("browser.newtabpage.activity-stream.telemetry", false);
+pref("browser.urlbar.quicksuggest.enabled", false);
+pref("app.normandy.enabled", false);
+pref("app.shield.optoutstudies.enabled", false);
+pref("extensions.getAddons.cache.enabled", false);
+pref("browser.startup.homepage_override.mstone", "ignore");
 
 pref("font.name-list.serif.x-western", "DejaVu Serif");
 pref("font.name-list.sans-serif.x-western", "DejaVu Sans");

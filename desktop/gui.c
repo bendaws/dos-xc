@@ -51,6 +51,9 @@ static void simple_request(int type, struct window *w, const char *text) {
     request(&r);
 }
 
+static char icon_file[160];
+void gui_set_icon_file(const char *path) { snprintf(icon_file, sizeof(icon_file), "%s", path ? path : ""); }
+
 struct window *window_open(int w, int h, const char *title, int icon, const struct app_ops *ops, void *data) {
     if (own_count == MAX_OWN) return 0;
     struct window *win = calloc(1, sizeof(*win));
@@ -59,6 +62,7 @@ struct window *window_open(int w, int h, const char *title, int icon, const stru
     win->r = (struct rect){0, 0, w, h};
     snprintf(win->title, sizeof(win->title), "%s", title);
     win->icon = icon;
+    snprintf(win->icon_file, sizeof(win->icon_file), "%s", icon_file);
     win->ops = ops;
     win->data = data;
     win->needs_paint = 1;

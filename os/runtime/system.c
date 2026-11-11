@@ -45,7 +45,7 @@ static char *env_find(const char *name) {
     return 0;
 }
 
-static int env_set(const char *name, const char *value) {
+int env_set(const char *name, const char *value) {
     uptr length = rt_strlen(name);
     if (!length || length > 255) return -DOSXC_EINVAL;
     for (uptr i = 0; i < length; ++i)
@@ -112,7 +112,7 @@ static void env_init(void) {
     env_default("PATH", "\\SYSTEM");
     env_default("TMPDIR", "\\TEMP");
     env_default("TEMP", "\\TEMP");
-    env_default("HOME", "\\Home");
+    env_default("HOME", "\\Users\\Public");
     env_set("TERM", "ansi");
     env_set("PROMPT", "$P$G");
 }
@@ -224,6 +224,7 @@ static int api_disk(int operation, unsigned index, uptr lba, void *buffer, unsig
 }
 
 static int api_reboot(void) {
+    event_log(DOSXC_EVENT_INFO, "Power", "Restarting");
     files_flush_all();
     drivers_shutdown();
     usb_shutdown();
@@ -317,6 +318,7 @@ static int api_console(int operation, long a, long b) {
    after saying it is safe to switch off by hand. */
 static int api_power(int operation) {
     if (operation != DOSXC_POWER_OFF) return -DOSXC_EINVAL;
+    event_log(DOSXC_EVENT_INFO, "Power", "Shutting down");
     display_text();
     terminal_mouse_hide();
     power_off();
@@ -382,6 +384,47 @@ static int message_ok(const struct dosxc_message *m, int receive) {
 }
 
 /* Ring 3 programs may only hand the kernel their own memory. */
+/* What a process that gave up rights (DOSXC_TASK_SANDBOX) may not do. */
+static int sandbox_denies(struct syscall_frame *f) {
+    u32 s = current->sandbox;
+    uptr op = ARG(0);
+    switch (f->ax) {
+    case DOSXC_SYS_OPEN:
+        return (s & DOSXC_SANDBOX_FILES) && ((I(1) & DOSXC_O_ACCMODE) || (I(1) & (DOSXC_O_CREAT | DOSXC_O_TRUNC | DOSXC_O_APPEND)));
+    case DOSXC_SYS_UNLINK: case DOSXC_SYS_RENAME: case DOSXC_SYS_MKDIR: case DOSXC_SYS_RMDIR:
+        return (s & DOSXC_SANDBOX_FILES) != 0;
+    case DOSXC_SYS_FTRUNCATE:
+        return (s & DOSXC_SANDBOX_FILES) && !files_object(I(0));
+    case DOSXC_SYS_SPAWN: case DOSXC_SYS_SYSTEM:
+        return (s & DOSXC_SANDBOX_SPAWN) != 0;
+    case DOSXC_SYS_SOCKET: case DOSXC_SYS_NET:
+        return (s & DOSXC_SANDBOX_NET) != 0;
+    case DOSXC_SYS_RUNDOS: case DOSXC_SYS_REBOOT: case DOSXC_SYS_POWER: case DOSXC_SYS_DISK: case DOSXC_SYS_DRIVER:
+    case DOSXC_SYS_DRIVE: case DOSXC_SYS_DISPLAY: case DOSXC_SYS_SHELL:
+        return (s & DOSXC_SANDBOX_SYSTEM) != 0;
+    case DOSXC_SYS_AUDIO:
+        return (s & DOSXC_SANDBOX_AUDIO) != 0;
+    case DOSXC_SYS_CONSOLE:
+        return (s & DOSXC_SANDBOX_SYSTEM) && (op == DOSXC_CONSOLE_GETKEY || op == DOSXC_CONSOLE_MOUSE || op == DOSXC_CONSOLE_POINTER ||
+                                              op == DOSXC_CONSOLE_MODIFIERS || op == DOSXC_CONSOLE_SPEAKER || op == DOSXC_CONSOLE_VOLUME);
+    case DOSXC_SYS_ENVIRON:
+        return (s & DOSXC_SANDBOX_SYSTEM) && op == DOSXC_ENV_SET;
+    case DOSXC_SYS_USER:
+        return (s & DOSXC_SANDBOX_SYSTEM) && op != DOSXC_USER_ENABLED && op != DOSXC_USER_WHOAMI;
+    case DOSXC_SYS_TASK:
+        if (op == DOSXC_TASK_START || op == DOSXC_TASK_SPAWN || op == DOSXC_TASK_SPAWN_FDS || op == DOSXC_TASK_CONSOLE_OPEN)
+            return (s & DOSXC_SANDBOX_SPAWN) != 0;
+        if (op == DOSXC_TASK_SHARE_SET || op == DOSXC_TASK_SHARE_GET || op == DOSXC_TASK_CONSOLE_KEYS || op == DOSXC_TASK_CONSOLE_READ)
+            return (s & DOSXC_SANDBOX_SYSTEM) != 0;
+        if (op == DOSXC_TASK_KILL && (s & DOSXC_SANDBOX_SYSTEM)) {
+            struct process *target = process_find(I(2));
+            return target && target != current && target->parent != current;
+        }
+        return 0;
+    }
+    return 0;
+}
+
 static i64 check_arguments(struct syscall_frame *f) {
     uptr op = ARG(0);
     switch (f->ax) {
@@ -436,6 +479,23 @@ static i64 check_arguments(struct syscall_frame *f) {
         case DOSXC_TASK_CONSOLE_READ: NEED(P(1), ARG(3), 1); break;
         case DOSXC_TASK_CONSOLE_KEYS: NEED(P(1), ARG(3) * sizeof(int), 0); break;
         case DOSXC_TASK_THREAD_EXIT: BUF(P(1), sizeof(int), 1); break;
+        case DOSXC_TASK_WAIT: BUF(P(1), sizeof(int), 1); break;
+        case DOSXC_TASK_SPAWN: {
+            const struct dosxc_spawn *sp = P(1);
+            NEED(sp, sizeof(*sp), 0);
+            STR(sp->path);
+            if (!strings_ok(sp->argv) || !strings_ok(sp->envp)) return -DOSXC_EFAULT;
+            break;
+        }
+        case DOSXC_TASK_SPAWN_FDS: {
+            const struct dosxc_spawn_fds *sp = P(1);
+            NEED(sp, sizeof(*sp), 0);
+            STR(sp->path);
+            if (!strings_ok(sp->argv) || !strings_ok(sp->envp)) return -DOSXC_EFAULT;
+            if (sp->count < 0 || sp->count > 64) return -DOSXC_EINVAL;
+            if (sp->count) NEED(sp->map, (uptr)sp->count * 2 * sizeof(int), 0);
+            break;
+        }
         case DOSXC_TASK_FUTEX_WAIT: case DOSXC_TASK_FUTEX_WAKE: NEED(P(1), sizeof(int), 0); break;
         }
         break;
@@ -453,6 +513,19 @@ static i64 check_arguments(struct syscall_frame *f) {
         break;
     case DOSXC_SYS_RANDOM: NEED(P(0), ARG(1), 1); break;
     case DOSXC_SYS_SHM: STR(P(1)); break;
+    case DOSXC_SYS_EVENTS:
+        if (op == DOSXC_EVENTS_ADD) NEED(P(1), sizeof(struct dosxc_event_add), 0);
+        else if (op == DOSXC_EVENTS_READ) NEED(P(2), sizeof(struct dosxc_event), 1);
+        else if (op == DOSXC_EVENTS_RANGE) NEED(P(1), 2 * sizeof(u32), 1);
+        break;
+    case DOSXC_SYS_USER:
+        switch (op) {
+        case DOSXC_USER_LIST: case DOSXC_USER_WHOAMI: NEED(P(2), sizeof(struct dosxc_user), 1); break;
+        case DOSXC_USER_LOGIN: case DOSXC_USER_CHECK: STR(P(1)); STR(P(2)); break;
+        case DOSXC_USER_ADD: case DOSXC_USER_SET: NEED(P(2), sizeof(struct dosxc_user_change), 0); break;
+        case DOSXC_USER_REMOVE: STR(P(1)); break;
+        }
+        break;
     case DOSXC_SYS_UNIX:
         if (op == DOSXC_UNIX_PAIR) NEED(ARG(1), 2 * sizeof(int), 1);
         else {
@@ -503,6 +576,20 @@ void runtime_syscall(struct syscall_frame *f) {
         i64 bad = check_arguments(f);
         if (bad) {
             f->ax = (uptr)bad;
+            sched_restore_tp();
+            sched_syscall_end((uptr *)(f + 1));
+            return;
+        }
+    }
+    if (current->sandbox && sandbox_denies(f)) {
+        f->ax = (uptr)-DOSXC_EACCES;
+        sched_restore_tp();
+        sched_syscall_end((uptr *)(f + 1));
+        return;
+    }
+    if ((f->ax == DOSXC_SYS_DISK && I(0) != DOSXC_DISK_INFO) || f->ax == DOSXC_SYS_DRIVER || f->ax == DOSXC_SYS_RUNDOS) {
+        if (!accounts_admin()) {
+            f->ax = (uptr)-DOSXC_EACCES;
             sched_restore_tp();
             sched_syscall_end((uptr *)(f + 1));
             return;
@@ -560,6 +647,8 @@ void runtime_syscall(struct syscall_frame *f) {
     case DOSXC_SYS_LIBRARY: r = library_syscall(I(0), P(1), P(2)); break;
     case DOSXC_SYS_MEMORY: r = vm_syscall(I(0), (uptr)ARG(1), (uptr)ARG(2), (long)ARG(3), I(4), (u64)ARG(5)); break;
     case DOSXC_SYS_SHM: r = shm_syscall(I(0), P(1), I(2)); break;
+    case DOSXC_SYS_USER: r = user_syscall(I(0), P(1), P(2)); break;
+    case DOSXC_SYS_EVENTS: r = events_syscall(I(0), P(1), P(2)); break;
     case DOSXC_SYS_AUDIO: r = audio_syscall(I(0), (uptr)ARG(1), (uptr)ARG(2)); break;
     case DOSXC_SYS_RANDOM: r = random_syscall(P(0), (dosxc_size)ARG(1)); break;
     case DOSXC_SYS_SETFL: r = files_set_flags(I(0), I(1)); break;
@@ -597,6 +686,7 @@ int runtime_init(struct command_context *context) {
     power_init();
     files_init();
     env_init();
+    accounts_init();
     net_init();
     drivers_init();
     memset(&runtime_api, 0, sizeof(runtime_api));

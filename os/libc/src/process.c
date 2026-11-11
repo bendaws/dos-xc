@@ -34,7 +34,6 @@ hidden int __record_child(int status) {
 }
 
 pid_t waitpid(pid_t pid, int *status, int options) {
-    (void)options;
     for (int i = 0; i < child_count; ++i) {
         if (pid > 0 && children[i].pid != pid) continue;
         pid_t found = children[i].pid;
@@ -42,8 +41,11 @@ pid_t waitpid(pid_t pid, int *status, int options) {
         memmove(children + i, children + i + 1, sizeof(children[0]) * (size_t)(--child_count - i));
         return found;
     }
-    errno = ECHILD;
-    return -1;
+    int got = 0;
+    long r = dosxc_sys_task(DOSXC_TASK_WAIT, &got, pid > 0 ? pid : -1, (options & WNOHANG) ? 1 : 0);
+    if (r < 0) { errno = (int)-r; return -1; }
+    if (r > 0 && status) *status = got;
+    return (pid_t)r;
 }
 pid_t wait(int *status) { return waitpid(-1, status, 0); }
 pid_t wait4(pid_t pid, int *status, int options, struct rusage *usage) {
@@ -67,7 +69,7 @@ int posix_spawn_file_actions_destroy(posix_spawn_file_actions_t *a) {
     return 0;
 }
 static int add_action(posix_spawn_file_actions_t *a, struct __dosxc_spawn_action action) {
-    if (action.fd < 0 || action.fd >= 64 || action.target < 0 || action.target >= 64) return EBADF;
+    if (action.fd < 0 || action.fd >= OPEN_MAX || action.target < 0 || action.target >= OPEN_MAX) return EBADF;
     if (a->__count == a->__capacity) {
         int capacity = a->__capacity ? a->__capacity * 2 : 8;
         struct __dosxc_spawn_action *bigger = realloc(a->__actions, sizeof(*bigger) * (size_t)capacity);
@@ -160,12 +162,15 @@ static int run(pid_t *pid, const char *path, const posix_spawn_file_actions_t *a
             }
         }
     }
-    int status = error ? 0 : dosxc_sys_spawn(path, argv, envp ? envp : environ);
+    long child = 0;
+    if (!error) {
+        struct dosxc_spawn spawn = {path, argv, envp ? envp : environ};
+        child = dosxc_sys_task(DOSXC_TASK_SPAWN, &spawn, 0, 0);
+    }
     restore(saved, count);
     if (error) return error;
-    if (status < 0) return -status;
-    pid_t child = __record_child(status);
-    if (pid) *pid = child;
+    if (child < 0) return (int)-child;
+    if (pid) *pid = (pid_t)child;
     return 0;
 }
 
@@ -174,6 +179,21 @@ int posix_spawn(pid_t *pid, const char *path, const posix_spawn_file_actions_t *
     (void)attributes;
     fflush(0);
     return run(pid, path, actions, argv, envp);
+}
+
+int dosxc_spawn_fds(pid_t *pid, const char *path, char *const argv[], char *const envp[], const int *map, int count) {
+    fflush(0);
+    struct dosxc_spawn_fds spawn = {path, argv, envp ? envp : environ, map, count};
+    long child = dosxc_sys_task(DOSXC_TASK_SPAWN_FDS, &spawn, 0, 0);
+    if (child < 0) return (int)-child;
+    if (pid) *pid = (pid_t)child;
+    return 0;
+}
+
+int dosxc_sandbox(unsigned rights) {
+    long r = dosxc_sys_task(DOSXC_TASK_SANDBOX, (void *)(unsigned long)rights, 0, 0);
+    if (r < 0) { errno = (int)-r; return -1; }
+    return 0;
 }
 
 /* Find FILE in the current directory, then each PATH entry (';' separated). */
@@ -580,8 +600,12 @@ int sigaction(int number, const struct sigaction *action, struct sigaction *old)
 
 int kill(pid_t pid, int signal) {
     if (pid == 0 || pid == getpid() || pid == -1) return signal ? raise(signal) : 0;
-    errno = ESRCH;
-    return -1;
+    if (pid < 0) pid = -pid;
+    if (dosxc_sys_task(DOSXC_TASK_ALIVE, 0, pid, 0) <= 0) { errno = ESRCH; return -1; }
+    if (!signal) return 0;
+    long r = dosxc_sys_task(DOSXC_TASK_KILL, 0, pid, 0);
+    if (r < 0) { errno = (int)-r; return -1; }
+    return 0;
 }
 int killpg(pid_t group, int signal) { return kill(group, signal); }
 

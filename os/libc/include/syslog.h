@@ -20,12 +20,23 @@
 #define LOG_DAEMON (3 << 3)
 #define LOG_AUTH (4 << 3)
 #define LOG_AUTHPRIV (10 << 3)
+#define LOG_LOCAL1 (17 << 3)
+#define LOG_LOCAL2 (18 << 3)
+#define LOG_LOCAL3 (19 << 3)
+#define LOG_LOCAL4 (20 << 3)
+#define LOG_LOCAL5 (21 << 3)
+#define LOG_LOCAL6 (22 << 3)
+#define LOG_LOCAL7 (23 << 3)
 #define LOG_LOCAL0 (16 << 3)
+#define LOG_MASK(p) (1 << (p))
+#define LOG_UPTO(p) ((1 << ((p) + 1)) - 1)
 #ifdef __cplusplus
 extern "C" {
 #endif
+static __inline__ int setlogmask(int mask) { return mask; }
 void openlog(const char *, int, int);
 void syslog(int, const char *, ...);
+void vsyslog(int, const char *, __builtin_va_list);
 void closelog(void);
 #ifdef __cplusplus
 }

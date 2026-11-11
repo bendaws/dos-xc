@@ -456,12 +456,27 @@ static unsigned char rtc_read(unsigned char reg) {
     unsigned char value;__asm__ volatile("outb %0,$0x70"::"a"(reg));__asm__ volatile("inb $0x71,%0":"=a"(value));return value;
 }
 static unsigned rtc_number(unsigned value,int binary){return binary?value:(value>>4)*10+(value&15);}
+/* Programs that use this driver define it (they may not touch the clock chip). */
+extern long long fat32_clock_seconds(void) __attribute__((weak));
+
 static void timestamp(unsigned char *entry) {
+    unsigned year, month, day, hour, minute, second;
+    if (fat32_clock_seconds) {
+        unsigned t = (unsigned)fat32_clock_seconds(), days = t / 86400, rest = t % 86400;
+        hour = rest / 3600; minute = rest / 60 % 60; second = rest % 60;
+        unsigned z = days + 719468, era = z / 146097, doe = z - era * 146097;
+        unsigned yoe = (doe - doe / 1460 + doe / 36524 - doe / 146096) / 365, doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+        unsigned mp = (5 * doy + 2) / 153;
+        day = doy - (153 * mp + 2) / 5 + 1;
+        month = mp < 10 ? mp + 3 : mp - 9;
+        year = yoe + era * 400 + (month <= 2);
+    } else {
     for(unsigned n=0;n<100000;++n)if(!(rtc_read(10)&128))break;
     unsigned mode=rtc_read(11);int binary=mode&4;
-    unsigned year=2000+rtc_number(rtc_read(9),binary),month=rtc_number(rtc_read(8),binary),day=rtc_number(rtc_read(7),binary);
-    unsigned raw_hour=rtc_read(4),hour=rtc_number(raw_hour&127,binary),minute=rtc_number(rtc_read(2),binary),second=rtc_number(rtc_read(0),binary);
+    year=2000+rtc_number(rtc_read(9),binary);month=rtc_number(rtc_read(8),binary);day=rtc_number(rtc_read(7),binary);
+    unsigned raw_hour=rtc_read(4);hour=rtc_number(raw_hour&127,binary);minute=rtc_number(rtc_read(2),binary);second=rtc_number(rtc_read(0),binary);
     if(!(mode&2)){if(hour==12)hour=0;if(raw_hour&128)hour+=12;}
+    }
     if(month<1||month>12||day<1||day>31)return;
     put16(entry+24,((year-1980)<<9)|(month<<5)|day);put16(entry+22,(hour<<11)|(minute<<5)|(second/2));
 }

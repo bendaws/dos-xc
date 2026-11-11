@@ -166,13 +166,34 @@ ssize_t recvmsg(int fd, struct msghdr *message, int flags) {
     return r;
 }
 
+/* Socket options of a local socket, which the kernel does not keep: -2 when FD is not one. */
+static int unix_option(int fd, int set, int level, int name, void *value, socklen_t *length) {
+    if (dosxc_sys_fdpoll(fd, 0) < 0) return -2;
+    if (set || level != SOL_SOCKET) return 0;
+    int answer;
+    switch (name) {
+    case SO_SNDBUF: case SO_RCVBUF: answer = 4 << 20; break;
+    case SO_TYPE: answer = SOCK_STREAM; break;
+    case SO_ERROR: answer = 0; break;
+    default: errno = ENOPROTOOPT; return -1;
+    }
+    if (!value || !length || *length < sizeof(int)) { errno = EINVAL; return -1; }
+    *(int *)value = answer;
+    *length = sizeof(int);
+    return 0;
+}
+
 int getsockopt(int fd, int level, int name, void *value, socklen_t *length) {
     struct dosxc_sockopt o = {value, length};
-    return (int)__result(__dosxc_syscall5(DOSXC_SYS_SOCKOPT, fd, 0, level, name, (__dosxc_word)&o));
+    long r = __dosxc_syscall5(DOSXC_SYS_SOCKOPT, fd, 0, level, name, (__dosxc_word)&o);
+    if (r == -DOSXC_ENOTSOCK) { int local = unix_option(fd, 0, level, name, value, length); if (local != -2) return local; }
+    return (int)__result(r);
 }
 int setsockopt(int fd, int level, int name, const void *value, socklen_t length) {
     struct dosxc_sockopt o = {(void *)value, &length};
-    return (int)__result(__dosxc_syscall5(DOSXC_SYS_SOCKOPT, fd, 1, level, name, (__dosxc_word)&o));
+    long r = __dosxc_syscall5(DOSXC_SYS_SOCKOPT, fd, 1, level, name, (__dosxc_word)&o);
+    if (r == -DOSXC_ENOTSOCK) { int local = unix_option(fd, 1, level, name, (void *)value, &length); if (local != -2) return local; }
+    return (int)__result(r);
 }
 int getsockname(int fd, struct sockaddr *address, socklen_t *length) {
     return (int)__result(__dosxc_syscall4(DOSXC_SYS_SOCKNAME, fd, 0, (__dosxc_word)address, (__dosxc_word)length));

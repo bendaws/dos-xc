@@ -663,6 +663,11 @@ void net_unregister(int handle) {
 i64 net_syscall_net(int operation, long a, void *b) {
     struct net_device *d = a >= 0 && a < NET_MAX_DEVICES && devices[a].used ? &devices[a] : 0;
     switch (operation) {
+    case DOSXC_NET_FIREWALL:
+        if (!accounts_admin()) return -DOSXC_EACCES;
+        firewall_reload();
+        event_log(DOSXC_EVENT_INFO, "Firewall", firewall_enabled() ? "Rules loaded; the firewall is on" : "The firewall is off");
+        return firewall_enabled();
     case DOSXC_NET_INFO: {
         int count = 0;
         for (int i = 0; i < NET_MAX_DEVICES; ++i) count += devices[i].used != 0;

@@ -271,7 +271,7 @@ static void wp_add_folder(const char *folder) {
 
 static void user_folder(char *out, size_t size) {
     const char *home = getenv("HOME");
-    snprintf(out, size, "%s\\Wallpapers", home && *home ? home : "\\Home");
+    snprintf(out, size, "%s\\Wallpapers", home && *home ? home : "\\Users\\Public");
 }
 
 static void wp_preview(void) {

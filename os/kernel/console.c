@@ -63,7 +63,7 @@ void console_clear(void) {
 }
 
 void console_putc(char c) {
-    if (!output_char) outb(0xe9, (unsigned char)c);
+    outb(0xe9, (unsigned char)c);
     switch (c) {
     case '\r': cursor -= cursor % WIDTH; break;
     case '\n': cursor += WIDTH - cursor % WIDTH; break;

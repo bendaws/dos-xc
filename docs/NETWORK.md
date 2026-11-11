@@ -54,3 +54,24 @@ Limits: no IP fragment reassembly, 64 KiB TCP windows, no DHCPv6, one global
 IPv6 address per adapter (the interface identifier is random for each boot),
 and link-local addresses always use the first adapter because scope ids are
 ignored.
+
+## Firewall
+
+The runtime checks every connection, datagram, bound port and listening
+socket against `\SYSTEM\FIREWALL.CFG` (`os/runtime/firewall.c`); the
+Firewall program on the desktop edits it.  One rule per line:
+
+```
+enabled=1
+# action direction protocol ports program
+allow out any * DOSFOX.EXE
+allow in tcp 8000-8080 PYTHON.EXE
+block out udp 53 *
+```
+
+The first rule that matches decides; anything no rule allows is blocked with
+`EACCES` and recorded in Event Logs.  Programs are matched by file name.
+Loopback traffic and the system's own traffic (DHCP, address configuration
+and `PING`) are not filtered.  Without the file the firewall is
+on and allows DOSfox, curl, Python and PING to send.  `enabled=0` turns it off;
+`DOSXC_NET_FIREWALL` reloads the file (administrators).

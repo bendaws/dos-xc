@@ -38,6 +38,7 @@ installs one into the live system (in memory until restart).
 | `batch` | `\Programs\batch` | `BATCH.EXE`, which runs `.BAT` files |
 | `DOS-XC Desktop` | `\Programs\DOS-XC Desktop` | The graphical desktop and its programs ([DESKTOP.md](DESKTOP.md)) |
 | `dosfox` | `\Programs\dosfox` | DOSfox web browser (built from Firefox source), 64-bit only ([firefox/README.md](../firefox/README.md)) |
+| `dosoffice` | `\Programs\dosoffice` | DOS Office: DOS Writer (.docx, .odt, .rtf, .html, .txt, .md) and DOS Sheets (.xlsx, .ods, .csv, .tsv); `.gdoc`/`.gsheet` shortcuts open in the browser |
 | `GCC` | `\Programs\GCC` | GCC 15.2 (C, C++) and binutils 2.45 ([TOOLCHAIN.md](TOOLCHAIN.md)) |
 | `ethernet` | `\SYSTEM\DRIVERS` | Ethernet drivers: Intel, Broadcom, virtio ([NETWORK.md](NETWORK.md)) |
 | `sound` | `\SYSTEM\DRIVERS` | Sound drivers: Intel High Definition Audio ([DRIVERS.md](DRIVERS.md#sound)) |
@@ -77,6 +78,37 @@ also a valid (self-extracting style) ZIP:
 | `StartIn` | `program`: 16-bit programs of the package start in their own folder |
 | `Env` | `NAME=value`, repeatable; `%PACKAGE%` is the package folder as `C:/Programs/<Name>` |
 | `Driver` | `;`-separated `.DRV` files that go to `\\SYSTEM\\DRIVERS` and start at once ([DRIVERS.md](DRIVERS.md)) |
+
+### Start menu entries
+
+A package puts programs on the Start menu with a `MENU.CFG` in its folder:
+one entry of `key=value` lines per program, entries separated by a blank
+line.  Removing the package removes its entries; nothing else is registered.
+
+| Key | Meaning |
+|-----|---------|
+| `id` | required; a short name, used by `DESKTOP.CFG` for default programs |
+| `name` | required; shown on the Start menu |
+| `program` | required; the executable, relative to the package folder |
+| `icon` | a 16 x 16 PNG, relative to the package folder |
+| `category` | the Start menu folder: `Internet`, `Office`, ...; `System/Administrators` for programs that need an administrator |
+| `default` | roles it can be the default for: `browser`, `editor`, `media`, `document`, `spreadsheet`, `presentation` |
+| `types` | file extensions it opens, separated by spaces |
+| `terminal` | `1` runs it in a terminal window |
+| `url` | `1` passes files as `file://` URLs |
+
+```
+id=writer
+name=DOS Writer
+program=WRITER.EXE
+icon=WRITER.PNG
+category=Office
+default=document
+types=docx odt rtf doc htm html md gdoc
+```
+
+The live system installs `coreutils`, `batch`, the desktop, `dosfox` and
+`dosoffice`; the others are in `\Packages`.
 
 An installed package keeps its metadata in `\Programs\<Name>\PACKAGE.INF`.
 `PKG PACK` reads the metadata from `PACKAGE.INF` in the folder being

@@ -41,6 +41,24 @@ static void footer(const char *keys) {
 
 /* Clear to blue, draw the caption, then write BODY from row 4 (lines are
    indented by 4 columns).  Returns the next free row. */
+/* A line typed at ROW, COLUMN (shown as * when SECRET).  1 when ESC. */
+static int read_text(int row, int column, char *out, size_t size, int secret) {
+    size_t n = 0;
+    out[0] = 0;
+    for (;;) {
+        at(row, column);
+        for (size_t i = 0; i < n; ++i) putchar(secret ? '*' : out[i]);
+        printf(" ");
+        at(row, column + (int)n);
+        fflush(stdout);
+        int k = key();
+        if (k == 27) return 1;
+        if (k == '\n' || k == '\r') return 0;
+        if ((k == '\b' || k == 127) && n) out[--n] = 0;
+        else if (k >= 32 && k < 127 && n + 1 < size) { out[n++] = (char)k; out[n] = 0; }
+    }
+}
+
 static int screen(const char *body, const char *keys) {
     console(DOSXC_CONSOLE_COLOR, BLUE | 0x100, 0);
     console(DOSXC_CONSOLE_CLEAR, 0, 0);
@@ -177,6 +195,38 @@ packages_screen:
         if (k == ' ' && setup_package_count && !setup_packages[cursor].required) setup_packages[cursor].selected ^= 1;
         if (k == '\n' || k == '\r') break;
     }
+accounts_screen:
+    for (;;) {
+        int row = screen("User accounts give each person who uses this computer a user name,\n"
+                         "a password and folders of their own.  Only administrators can change\n"
+                         "the system and install programs.\n\n"
+                         "To set up user accounts, press Y.  You will create the first\n"
+                         "administrator now; add other users later in Control Panel.\n\n"
+                         "To use the computer without accounts, press N.",
+                         "Y=User accounts  N=No accounts  ESC=Back  F3=Exit");
+        (void)row;
+        int k = key();
+        if (k == KEY_F3) return leave();
+        if (k == 27) goto packages_screen;
+        if (k == 'n' || k == 'N') { setup_account.enabled = 0; break; }
+        if (k != 'y' && k != 'Y') continue;
+        memset(&setup_account, 0, sizeof(setup_account));
+        row = screen("Create the first administrator.\n\n"
+                     "User name (letters and digits):\n\nNickname (shown on the login screen):\n\n"
+                     "Password:\n\nPassword again:",
+                     "ENTER=Next field  ESC=Back");
+        char again[64];
+        if (read_text(row + 2, 40, setup_account.name, sizeof(setup_account.name), 0) ||
+            read_text(row + 4, 40, setup_account.nickname, sizeof(setup_account.nickname), 0) ||
+            read_text(row + 6, 40, setup_account.password, sizeof(setup_account.password), 1) ||
+            read_text(row + 8, 40, again, sizeof(again), 1)) continue;
+        const char *problem = !setup_valid_name(setup_account.name) ? "The user name may only have letters and digits."
+                            : strcmp(again, setup_account.password) ? "The two passwords are not the same." : 0;
+        memset(again, 0, sizeof(again));
+        if (!problem) { setup_account.enabled = 1; break; }
+        screen(problem, "Press any key");
+        key();
+    }
     for (;;) {
         char size[32], body[600], list[300] = "";
         setup_size_text(size, sizeof(size), setup_disks[selected_disk].sectors);
@@ -185,17 +235,20 @@ packages_screen:
             if (*list) strcat(list, ", ");
             if (strlen(list) + strlen(setup_packages[i].info.name) < sizeof(list) - 8) strcat(list, setup_packages[i].info.name);
         }
+        char users[96];
+        snprintf(users, sizeof(users), setup_account.enabled ? "on, administrator %s" : "off%s", setup_account.enabled ? setup_account.name : "");
         snprintf(body, sizeof(body),
                  "Setup is ready to install DOS-XC on disk %d (%s).\n\n"
                  "ALL DATA ON THIS DISK WILL BE ERASED.\n\n"
-                 "Programs to install: %s\n\n"
+                 "Programs to install: %s\n"
+                 "User accounts: %s\n\n"
                  "To erase the disk and install DOS-XC, press E.\n"
                  "To change your choices, press ESC.",
-                 selected_disk + 1, size, *list ? list : "(none)");
+                 selected_disk + 1, size, *list ? list : "(none)", users);
         screen(body, "E=Erase and install  ESC=Back  F3=Exit");
         int k = key();
         if (k == KEY_F3) return leave();
-        if (k == 27) goto packages_screen;
+        if (k == 27) goto accounts_screen;
         if (k == 'e' || k == 'E') break;
     }
     screen("Setup is copying files to your hard disk.\n\n"

@@ -90,6 +90,7 @@ long syscall(long number, ...) {
 #include <poll.h>
 #include <resolv.h>
 #include <stdlib.h>
+#include <stdio.h>
 #include <syslog.h>
 #include <ucontext.h>
 #include <sys/epoll.h>
@@ -117,9 +118,33 @@ int prctl(int option, ...) {
     }
 }
 
-void openlog(const char *name, int options, int facility) { (void)name; (void)options; (void)facility; }
-void syslog(int priority, const char *format, ...) { (void)priority; (void)format; }
-void closelog(void) {}
+static char log_name[32];
+
+void openlog(const char *name, int options, int facility) {
+    (void)options;
+    (void)facility;
+    snprintf(log_name, sizeof(log_name), "%s", name ? name : "");
+}
+
+/* Into the system's event log (Event Logs); debug messages are dropped. */
+void vsyslog(int priority, const char *format, va_list list) {
+    int level = priority & 7;
+    if (level == LOG_DEBUG) return;
+    struct dosxc_event_add add;
+    add.level = level <= LOG_ERR ? DOSXC_EVENT_ERROR : level == LOG_WARNING ? DOSXC_EVENT_WARNING : DOSXC_EVENT_INFO;
+    int n = log_name[0] ? snprintf(add.text, sizeof(add.text), "%s: ", log_name) : 0;
+    vsnprintf(add.text + n, sizeof(add.text) - (size_t)n, format, list);
+    __dosxc_syscall3(DOSXC_SYS_EVENTS, DOSXC_EVENTS_ADD, (__dosxc_word)&add, 0);
+}
+
+void syslog(int priority, const char *format, ...) {
+    va_list list;
+    va_start(list, format);
+    vsyslog(priority, format, list);
+    va_end(list);
+}
+
+void closelog(void) { log_name[0] = 0; }
 
 int get_nprocs(void) { return 1; }
 int get_nprocs_conf(void) { return 1; }

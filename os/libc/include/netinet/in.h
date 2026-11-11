@@ -41,6 +41,28 @@ struct sockaddr_in6 {
 #define IPV6_V6ONLY 26
 extern const struct in6_addr in6addr_any, in6addr_loopback;
 struct ip_mreq { struct in_addr imr_multiaddr, imr_interface; };
+#define IN_MULTICAST(a) ((((unsigned)(a)) & 0xf0000000u) == 0xe0000000u)
+#define IN_CLASSD(a) IN_MULTICAST(a)
+#define IN6_IS_ADDR_MULTICAST(a) (((const unsigned char *)(a))[0] == 0xff)
+struct ip_mreqn { struct in_addr imr_multiaddr, imr_address; int imr_ifindex; };
+struct ip_mreq_source { struct in_addr imr_multiaddr, imr_interface, imr_sourceaddr; };
+struct ipv6_mreq { struct in6_addr ipv6mr_multiaddr; unsigned ipv6mr_interface; };
+#ifndef IP_MULTICAST_IF
+#define IP_MULTICAST_IF 32
+#define IP_MULTICAST_TTL 33
+#define IP_MULTICAST_LOOP 34
+#define IP_ADD_MEMBERSHIP 35
+#define IP_DROP_MEMBERSHIP 36
+#define IP_ADD_SOURCE_MEMBERSHIP 39
+#define IP_DROP_SOURCE_MEMBERSHIP 40
+#define IPV6_MULTICAST_IF 17
+#define IPV6_MULTICAST_HOPS 18
+#define IPV6_MULTICAST_LOOP 19
+#define IPV6_JOIN_GROUP 20
+#define IPV6_LEAVE_GROUP 21
+#define IPV6_ADD_MEMBERSHIP IPV6_JOIN_GROUP
+#define IPV6_DROP_MEMBERSHIP IPV6_LEAVE_GROUP
+#endif
 #define IP_MTU_DISCOVER 10
 #define IP_PMTUDISC_DONT 0
 #define IP_PMTUDISC_WANT 1

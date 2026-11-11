@@ -95,6 +95,7 @@
 #define DOSXC_SHM_OPEN 1           /* name (0: anonymous), DOSXC_O_CREAT | DOSXC_O_EXCL: returns an fd */
 #define DOSXC_SHM_UNLINK 2         /* name */
 #define DOSXC_SYS_USER 91          /* DOSXC_USER_*, a, b: user accounts */
+#define DOSXC_SYS_EVENTS 92        /* DOSXC_EVENTS_*, a, b: the event log */
 
 #define DOSXC_USER_ENABLED 1   /* 1 when user accounts are on, 0 when everyone is the one public user */
 #define DOSXC_USER_LIST 2      /* a = index, b = struct dosxc_user *: returns the number of accounts */
@@ -128,6 +129,14 @@ struct dosxc_user_change {
     char old_password[64];     /* changing one's own password */
 };
 
+#define DOSXC_EVENTS_ADD 1     /* a = struct dosxc_event_add *: logged under the program's name */
+#define DOSXC_EVENTS_READ 2    /* a = event number, b = struct dosxc_event * (administrators); -ENOENT once it is gone */
+#define DOSXC_EVENTS_RANGE 3   /* a = u32[2]: the oldest number kept and the next one to be used */
+#define DOSXC_EVENTS_CLEAR 4   /* administrators */
+#define DOSXC_EVENT_INFO 0
+#define DOSXC_EVENT_WARNING 1
+#define DOSXC_EVENT_ERROR 2
+
 #define DOSXC_VM_MAP 0             /* address hint, size, prot | flags << 8; returns the address */
 #define DOSXC_VM_UNMAP 1
 #define DOSXC_VM_PROTECT 2         /* address, size, prot */
@@ -143,6 +152,16 @@ typedef __INT64_TYPE__ dosxc_i64;
 typedef __UINT64_TYPE__ dosxc_u64;
 typedef __SIZE_TYPE__ dosxc_size;
 typedef __PTRDIFF_TYPE__ dosxc_ssize;
+
+struct dosxc_event_add { int level; char text[96]; };
+struct dosxc_event {
+    dosxc_u32 number;
+    int level, pid;
+    dosxc_i64 time;            /* seconds since 1970, local time */
+    char source[24];           /* the program or part of the system */
+    char user[32];
+    char text[96];
+};
 
 struct dosxc_note_abi {
     dosxc_u32 abi_version;
@@ -304,6 +323,18 @@ struct dosxc_pointer {
 #define DOSXC_TASK_FAULT_DONE 20    /* the handler running on this thread has returned */
 #define DOSXC_TASK_SET_TP 18        /* a = this thread's thread pointer (FS base, 64-bit) */
 #define DOSXC_TASK_FUTEX_WAKE 17    /* a = int, b = how many: returns the number woken */
+#define DOSXC_TASK_SPAWN 21         /* a = struct dosxc_spawn *: a child beside its parent; returns its pid */
+#define DOSXC_TASK_WAIT 22          /* a = int status out, b = pid (-1: any child), c = 1: do not wait.  Returns the pid, 0, or -ECHILD */
+struct dosxc_spawn { const char *path; char *const *argv; char *const *envp; };
+#define DOSXC_TASK_SANDBOX 24      /* a = DOSXC_SANDBOX_* rights to give up, for good (children too); returns them all */
+#define DOSXC_SANDBOX_FILES 1       /* files are read-only: no writing, creating, renaming or removing */
+#define DOSXC_SANDBOX_SPAWN 2       /* no starting programs */
+#define DOSXC_SANDBOX_NET 4         /* no network sockets or settings (local sockets and shared memory stay) */
+#define DOSXC_SANDBOX_SYSTEM 8      /* no disks, drivers, accounts, power, display, keyboard and mouse, killing others or sharing memory */
+#define DOSXC_SANDBOX_AUDIO 16      /* no sound */
+#define DOSXC_SANDBOX_ALL 31
+#define DOSXC_TASK_SPAWN_FDS 23     /* a = struct dosxc_spawn_fds *: like SPAWN, the child gets only MAP's descriptors */
+struct dosxc_spawn_fds { const char *path; char *const *argv; char *const *envp; const int *map; int count; };   /* MAP: COUNT pairs (parent fd, child fd) */
 struct dosxc_task_info {
     int pid, parent;
     dosxc_u32 background, reserved;
@@ -389,6 +420,7 @@ struct dosxc_unix_message {
 #define DOSXC_NET_PING   4     /* a = IPv4 address (host order), b = timeout ms; returns microseconds */
 #define DOSXC_NET_INFO6  5     /* a = adapter, b = struct dosxc_netinfo6 * */
 #define DOSXC_NET_PING6  6     /* a = timeout ms, b = 16-byte address; returns microseconds */
+#define DOSXC_NET_FIREWALL 7   /* reads \SYSTEM\FIREWALL.CFG again (administrators); returns 1 when the firewall is on */
 struct dosxc_netinfo6 {        /* all zero: not configured */
     unsigned char link_local[16], global[16], router[16], dns[2][16];
 };

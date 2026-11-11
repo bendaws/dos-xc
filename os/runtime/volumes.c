@@ -372,6 +372,7 @@ static void notice(const char *a, const char *b, const char *c) {
         for (const char *p = parts[i]; p && *p && n < 79; ++p) out[n++] = *p;
     out[n] = 0;
     notice_tail = next;
+    event_log(DOSXC_EVENT_INFO, "Devices", "%s", out);
 }
 
 void volume_post_notice(const char *text) { notice(text, 0, 0); }
