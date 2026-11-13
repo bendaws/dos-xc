@@ -5,67 +5,173 @@
 
 #include "wm.h"
 
-#define CELL_W 96
-#define CELL_H 72
-#define COLUMNS 4
+#define SIDEBAR_W 184
+#define ROW_H 24
+#define HEADER_H 52
+#define PANE_W 560
+#define PANE_H 400
+#define CELL_W 110
+#define CELL_H 78
 
-static void open_packages(void) {
+static void start_app(const char *name, const char *what) {
     char app[260];
-    desktop_path(app, sizeof(app), "Apps\\PKGMGR.EXE");
-    char *argv[2] = {app, 0};
-    if (dosxc_sys_task(DOSXC_TASK_START, app, (long)argv, 0) < 0) message_box("Packages", "The package manager could not be started.", "");
+    snprintf(app, sizeof(app), "Apps\\%s", name);
+    char path[260];
+    desktop_path(path, sizeof(path), app);
+    char *argv[2] = {path, 0};
+    if (dosxc_sys_task(DOSXC_TASK_START, path, (long)argv, 0) < 0) message_box(what, "The program could not be started.", "");
 }
+static void open_packages(void) {
+    if (program_start("pkgmgr", 0)) message_box("Package Manager", "The Package Manager could not be started.", "Install the pkg package again from \\Packages.");
+}
+static void open_firewall(void) { start_app("FIREWALL.EXE", "Firewall"); }
+static void open_events(void) { start_app("EVENTS.EXE", "Event Logs"); }
+static void open_devices(void) { start_app("DEVICES.EXE", "Device Manager"); }
 
-static const struct { const char *label; int icon; void (*open)(void); } panels[] = {
-    {"Display", ICON_DISPLAY, open_display_settings},
-    {"Wallpaper", ICON_PICTURE, open_wallpaper},
-    {"Accent Color", ICON_PAINT, open_accent},
-    {"Sound", ICON_SOUND, open_sound},
-    {"Network", ICON_NET, open_network},
-    {"Default Programs", ICON_STAR, open_default_programs},
-    {"User Accounts", ICON_USER, open_user_accounts},
-    {"Packages", ICON_PACKAGE, open_packages},
+/* A page shows a panel inside the window; a tool starts a program instead. */
+struct page { const char *label, *about; int icon; void (*open)(void); int tool; };
+static const struct page pages[] = {
+    {"Home", "All settings", ICON_GEAR, 0, 0},
+    {"Display", "Screens, resolution and scaling", ICON_DISPLAY, open_display_settings, 0},
+    {"Wallpaper", "The picture behind your windows", ICON_PICTURE, open_wallpaper, 0},
+    {"Accent Color", "The color of title bars and menus", ICON_PAINT, open_accent, 0},
+    {"Sound", "Volume", ICON_SOUND, open_sound, 0},
+    {"Network", "Addresses, DNS servers, IPv4 and IPv6", ICON_NET, open_network_settings, 0},
+    {"Date and Time", "Clock, time server and time zone", ICON_GEAR, open_datetime_settings, 0},
+    {"Default Programs", "Programs that open web pages and files", ICON_STAR, open_default_programs, 0},
+    {"User Account Center", "Your account; administrators manage everyone's", ICON_USER, open_account_center, 0},
+    {"Packages", "Install and remove packages", ICON_PACKAGE, open_packages, 1},
+    {"Firewall", "Which programs may use the network", ICON_NET, open_firewall, 1},
+    {"Event Logs", "What the system has recorded", ICON_INFO, open_events, 1},
+    {"Device Manager", "Hardware, and drivers for it", ICON_COMPUTER, open_devices, 1},
 };
-#define PANELS ((int)(sizeof(panels) / sizeof(*panels)))
+#define PAGES ((int)(sizeof(pages) / sizeof(*pages)))
+#define FIRST_TOOL 9
 
+struct cp { int page, hot, failed; };
 static struct window *panel_window;
 
-static struct rect cell(int i) { return (struct rect){8 + i % COLUMNS * CELL_W, 8 + i / COLUMNS * CELL_H, CELL_W, CELL_H}; }
+static struct rect sidebar_row(int i) {
+    int y = 8 + i * ROW_H + (i >= FIRST_TOOL ? 26 : 0);
+    return (struct rect){4, y, SIDEBAR_W - 8, ROW_H};
+}
+static struct rect pane_rect(const struct window *w) { return (struct rect){SIDEBAR_W, HEADER_H, w->r.w - SIDEBAR_W, w->r.h - HEADER_H}; }
+static struct rect home_cell(int i) {
+    int columns = (PANE_W - 16) / CELL_W, at = i - 1;
+    return (struct rect){SIDEBAR_W + 8 + at % columns * CELL_W, HEADER_H + 8 + at / columns * CELL_H, CELL_W, CELL_H};
+}
+
+static void show_page(struct window *w, int page) {
+    struct cp *cp = w->data;
+    if (pages[page].tool) { pages[page].open(); return; }
+    if (w->hosted) window_close(w->hosted);
+    cp->page = page;
+    cp->failed = 0;
+    if (pages[page].open) {
+        window_host_next(w);
+        pages[page].open();
+        window_host_next(0);
+        cp->failed = !w->hosted;
+    }
+    window_paint(w);
+}
 
 static void cp_paint(struct window *w, const struct canvas *c) {
-    int *hot = w->data;
-    fill(c, 0, 0, w->r.w, w->r.h, C_BASE);
-    for (int i = 0; i < PANELS; ++i) {
-        struct rect r = cell(i);
-        if (i == *hot) fill(c, r.x + 2, r.y + 2, r.w - 4, r.h - 4, C_HOVER);
-        draw_icon_big(c, r.x + (r.w - 32) / 2, r.y + 8, &icons[panels[i].icon]);
-        int tw = text_width(&font_regular, panels[i].label);
-        text(c, r.x + (r.w - tw) / 2, r.y + 48, &font_regular, panels[i].label, C_TEXT);
+    struct cp *cp = w->data;
+    if (cp->page && !w->hosted && !cp->failed) show_page(w, cp->page);
+    fill(c, 0, 0, SIDEBAR_W, w->r.h, C_MENU_STRIPE);
+    fill(c, SIDEBAR_W - 1, 0, 1, w->r.h, C_SHADOW1);
+    for (int i = 0; i < PAGES; ++i) {
+        struct rect r = sidebar_row(i);
+        if (i == FIRST_TOOL) {
+            text(c, r.x + 6, r.y - 18, &font_bold, "Administrative Tools", C_SHADOW1);
+            fill(c, r.x + 4, r.y - 4, r.w - 8, 1, C_SHADOW1);
+        }
+        int on = i == cp->page, hot = i == cp->hot;
+        if (on) fill(c, r.x, r.y, r.w, r.h, C_SELECTION);
+        else if (hot) fill(c, r.x, r.y, r.w, r.h, C_HOVER);
+        draw_icon(c, r.x + 4, r.y + 4, pages[i].icon);
+        text(c, r.x + 26, r.y + 7, on ? &font_bold : &font_regular, pages[i].label, on ? 0xffffff : C_TEXT);
     }
+    fill(c, SIDEBAR_W, 0, w->r.w - SIDEBAR_W, w->r.h, C_WINDOW);
+    draw_icon_big(c, SIDEBAR_W + 12, 10, &icons[pages[cp->page].icon]);
+    text(c, SIDEBAR_W + 54, 12, &font_bold, pages[cp->page].label, C_TEXT);
+    text(c, SIDEBAR_W + 54, 30, &font_regular, pages[cp->page].about, C_SHADOW1);
+    fill(c, SIDEBAR_W + 8, HEADER_H - 4, w->r.w - SIDEBAR_W - 16, 1, C_SHADOW1);
+    if (cp->page == 0) {
+        for (int i = 1; i < PAGES; ++i) {
+            struct rect r = home_cell(i);
+            if (i == cp->hot) fill(c, r.x + 2, r.y + 2, r.w - 4, r.h - 4, C_HOVER);
+            draw_icon_big(c, r.x + (r.w - 32) / 2, r.y + 8, &icons[pages[i].icon]);
+            int tw = text_width(&font_regular, pages[i].label);
+            if (tw > r.w - 4) {
+                char shorter[24];
+                snprintf(shorter, sizeof(shorter), "%.12s...", pages[i].label);
+                tw = text_width(&font_regular, shorter);
+                text(c, r.x + (r.w - tw) / 2, r.y + 48, &font_regular, shorter, C_TEXT);
+            } else text(c, r.x + (r.w - tw) / 2, r.y + 48, &font_regular, pages[i].label, C_TEXT);
+        }
+        return;
+    }
+    struct rect pane = pane_rect(w);
+    if (!w->hosted) {
+        text(c, pane.x + 16, pane.y + 16, &font_regular, "This page is open in its own window.", C_TEXT);
+        return;
+    }
+    struct window *h = w->hosted;
+    h->r = (struct rect){w->r.x + pane.x, w->r.y + pane.y, pane.w, pane.h};
+    struct canvas inner = *c;
+    inner.ox += pane.x;
+    inner.oy += pane.y;
+    inner.clip = rect_both((struct rect){0, 0, pane.w, pane.h}, (struct rect){c->clip.x - pane.x, c->clip.y - pane.y, c->clip.w, c->clip.h});
+    fill(&inner, 0, 0, pane.w, pane.h, C_WINDOW);
+    h->ops->paint(h, &inner);
 }
 
 static void cp_mouse(struct window *w, int x, int y, int kind, int value) {
-    (void)value;
-    int *hot = w->data, at = -1;
-    for (int i = 0; i < PANELS; ++i)
-        if (rect_has(cell(i), x, y)) at = i;
-    if (at != *hot) { *hot = at; window_paint(w); }
-    if ((kind == M_DOWN || kind == M_DOUBLE) && at >= 0) panels[at].open();
+    struct cp *cp = w->data;
+    static int captured;
+    struct rect pane = pane_rect(w);
+    if (w->hosted && (captured || (rect_has(pane, x, y) && cp->page))) {
+        if (kind == M_DOWN) captured = 1;
+        if (kind == M_UP) captured = 0;
+        if (w->hosted->ops->mouse) w->hosted->ops->mouse(w->hosted, x - pane.x, y - pane.y, kind, value);
+        return;
+    }
+    int at = -1;
+    for (int i = 0; i < PAGES; ++i)
+        if (rect_has(sidebar_row(i), x, y) || (cp->page == 0 && i && rect_has(home_cell(i), x, y))) at = i;
+    if (at != cp->hot) { cp->hot = at; window_paint(w); }
+    if ((kind == M_DOWN || kind == M_DOUBLE) && at >= 0) show_page(w, at);
 }
 
-static void cp_closed(struct window *w) { free(w->data); panel_window = 0; }
-static const struct app_ops cp_ops = {cp_paint, cp_mouse, 0, cp_closed};
-
-void open_control_panel(void) {
-    if (panel_window) { window_raise(panel_window); return; }
-    int *hot = malloc(sizeof(int));
-    if (!hot) return;
-    *hot = -1;
-    int rows = (PANELS + COLUMNS - 1) / COLUMNS;
-    panel_window = window_open(16 + COLUMNS * CELL_W, 16 + rows * CELL_H, "Control Panel", ICON_GEAR, &cp_ops, hot);
-    if (!panel_window) { free(hot); return; }
-    panel_window->track_mouse = 1;
+static void cp_key(struct window *w, int key) {
+    if (w->hosted && w->hosted->ops->key) w->hosted->ops->key(w->hosted, key);
 }
+
+static void cp_closed(struct window *w) {
+    free(w->data);
+    panel_window = 0;
+    dosxc_sys_user(DOSXC_USER_LOCK, 0, 0);
+}
+static const struct app_ops cp_ops = {cp_paint, cp_mouse, cp_key, cp_closed};
+
+static void open_page(const char *label) {
+    if (!panel_window) {
+        struct cp *cp = calloc(1, sizeof(*cp));
+        if (!cp) return;
+        cp->hot = -1;
+        panel_window = window_open(SIDEBAR_W + PANE_W, HEADER_H + PANE_H, "Control Panel", ICON_GEAR, &cp_ops, cp);
+        if (!panel_window) { free(cp); return; }
+        panel_window->track_mouse = 1;
+    } else window_raise(panel_window);
+    for (int i = 0; i < PAGES; ++i)
+        if (!strcmp(pages[i].label, label)) show_page(panel_window, i);
+}
+
+void open_control_panel(void) { open_page("Home"); }
+void open_network(void) { open_page("Network"); }
+void open_user_accounts(void) { open_page("User Account Center"); }
 
 /* ---- Default Programs ---------------------------------------------------- */
 
@@ -142,4 +248,15 @@ void open_default_programs(void) {
     }
     struct window *w = window_open(374, 14 + KINDS * 30 + 46, "Default Programs", ICON_STAR, &dp_ops, d);
     if (!w) free(d);
+}
+
+void open_date_time(void) { open_page("Date and Time"); }
+
+void control_panel_tick(void) {
+    static unsigned long long next;
+    unsigned long long now = dosxc_sys_nanoseconds();
+    if (now < next) return;
+    next = now + 100000000ULL;
+    if (panel_window && panel_window->hosted && panel_window->hosted->ops->tick)
+        panel_window->hosted->ops->tick(panel_window->hosted);
 }

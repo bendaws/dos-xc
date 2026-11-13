@@ -6,6 +6,7 @@
 #include "libc.h"
 #include <fcntl.h>
 #include <limits.h>
+#include <pthread.h>
 #include <signal.h>
 #include <spawn.h>
 #include <stdarg.h>
@@ -137,6 +138,18 @@ static void restore(struct saved_fd *saved, int count) {
     }
 }
 
+static int search(const char *file, char *found);
+
+/* "/bin/sh", "/usr/bin/env": DOS-XC has no such folders, so a program asked
+   for there that does not exist is looked for on PATH by its name. */
+static const char *unix_program(const char *path, char *found) {
+    struct dosxc_stat s;
+    if (strncmp(path, "/bin/", 5) && strncmp(path, "/usr/bin/", 9) && strncmp(path, "/usr/local/bin/", 15)) return path;
+    if (!dosxc_sys_stat(path, &s)) return path;
+    const char *name = strrchr(path, '/') + 1;
+    return *name && !search(name, found) ? found : path;
+}
+
 /* Run PATH with the file actions applied, return 0 or an errno value. */
 static int run(pid_t *pid, const char *path, const posix_spawn_file_actions_t *actions,
                char *const argv[], char *const envp[]) {
@@ -163,6 +176,8 @@ static int run(pid_t *pid, const char *path, const posix_spawn_file_actions_t *a
         }
     }
     long child = 0;
+    char found[PATH_MAX];
+    path = unix_program(path, found);
     if (!error) {
         struct dosxc_spawn spawn = {path, argv, envp ? envp : environ};
         child = dosxc_sys_task(DOSXC_TASK_SPAWN, &spawn, 0, 0);
@@ -238,10 +253,29 @@ int posix_spawnp(pid_t *pid, const char *file, const posix_spawn_file_actions_t 
     return posix_spawn(pid, found, actions, attributes, argv, envp);
 }
 
-/* ---- exec: run the program, then leave with its status ---- */
+/* ---- exec: replace a forked process; elsewhere run the program, then
+   leave with its status ---- */
 static int exec_common(const char *path, char *const argv[], char *const envp[], int use_path) {
+    char found[PATH_MAX];
+    if (use_path) {
+        int missing = search(path, found);
+        if (missing) {
+            errno = missing;
+            return -1;
+        }
+        path = found;
+    }
+    char unix_found[PATH_MAX];
+    path = unix_program(path, unix_found);
+    fflush(0);
+    struct dosxc_spawn replacement = {path, argv, envp ? envp : environ};
+    long replaced = dosxc_sys_task(DOSXC_TASK_EXEC, &replacement, 0, 0);
+    if (replaced != -ENOSYS) {
+        errno = (int)-replaced;
+        return -1;
+    }
     pid_t pid;
-    int r = use_path ? posix_spawnp(&pid, path, 0, 0, argv, envp) : posix_spawn(&pid, path, 0, 0, argv, envp);
+    int r = posix_spawn(&pid, path, 0, 0, argv, envp);
     if (r) {
         errno = r;
         return -1;
@@ -288,8 +322,41 @@ int execle(const char *path, const char *arg, ...) {
     return execve(path, argv, envp);
 }
 
-pid_t fork(void) { errno = ENOSYS; return -1; }
-pid_t vfork(void) { errno = ENOSYS; return -1; }
+#define MAX_ATFORK 32
+static struct { void (*prepare)(void), (*parent)(void), (*child)(void); } atfork[MAX_ATFORK];
+static int atfork_count;
+
+int pthread_atfork(void (*prepare)(void), void (*parent)(void), void (*child)(void)) {
+    if (atfork_count == MAX_ATFORK) return ENOMEM;
+    atfork[atfork_count].prepare = prepare;
+    atfork[atfork_count].parent = parent;
+    atfork[atfork_count++].child = child;
+    return 0;
+}
+
+hidden void __dosxc_threads_forked(void);
+
+/* 64-bit only: the 32-bit edition has no address spaces to copy into. */
+pid_t fork(void) {
+    for (int i = atfork_count; i-- > 0;)
+        if (atfork[i].prepare) atfork[i].prepare();
+    long r = dosxc_sys_task(DOSXC_TASK_FORK, 0, 0, 0);
+    if (!r) {
+        child_count = 0;
+        __dosxc_threads_forked();
+        for (int i = 0; i < atfork_count; ++i)
+            if (atfork[i].child) atfork[i].child();
+        return 0;
+    }
+    for (int i = 0; i < atfork_count; ++i)
+        if (atfork[i].parent) atfork[i].parent();
+    if (r < 0) {
+        errno = (int)-r;
+        return -1;
+    }
+    return (pid_t)r;
+}
+pid_t vfork(void) { return fork(); }
 
 int system(const char *command) {
     if (!command) return 1;
@@ -380,6 +447,7 @@ int pclose(FILE *stream) {
 pid_t getpid(void) { return dosxc_sys_getpid(); }
 pid_t getppid(void) { return dosxc_sys_getppid(); }
 pid_t getpgrp(void) { return getpid(); }
+pid_t getpgid(pid_t pid) { return pid ? pid : getpid(); }
 pid_t getsid(pid_t pid) { (void)pid; return getpid(); }
 pid_t setsid(void) { return getpid(); }
 int setpgid(pid_t pid, pid_t group) { (void)pid; (void)group; return 0; }
@@ -390,6 +458,12 @@ gid_t getgid(void) { return 0; }
 gid_t getegid(void) { return 0; }
 int setuid(uid_t uid) { return uid ? (errno = EPERM, -1) : 0; }
 int setgid(gid_t gid) { return gid ? (errno = EPERM, -1) : 0; }
+int seteuid(uid_t uid) { return setuid(uid); }
+int setegid(gid_t gid) { return setgid(gid); }
+int setreuid(uid_t real, uid_t effective) { return (real != (uid_t)-1 && real) || (effective != (uid_t)-1 && effective) ? (errno = EPERM, -1) : 0; }
+int setregid(gid_t real, gid_t effective) { return setreuid(real, effective); }
+int setresuid(uid_t real, uid_t effective, uid_t saved) { return setreuid(real, effective) ? -1 : setreuid(saved, (uid_t)-1); }
+int setresgid(gid_t real, gid_t effective, gid_t saved) { return setresuid(real, effective, saved); }
 int getgroups(int size, gid_t list[]) { (void)size; (void)list; return 0; }
 int nice(int increment) { (void)increment; return 0; }
 char *getlogin(void) { return "user"; }
@@ -661,4 +735,17 @@ char *strsignal(int signal) {
 void psignal(int signal, const char *prefix) {
     if (prefix && *prefix) fprintf(stderr, "%s: %s\n", prefix, strsignal(signal));
     else fprintf(stderr, "%s\n", strsignal(signal));
+}
+
+size_t confstr(int name, char *buffer, size_t size) {
+    const char *value;
+    if (name == _CS_PATH) value = "/SYSTEM";
+    else { errno = EINVAL; return 0; }
+    size_t n = strlen(value) + 1;
+    if (buffer && size) {
+        size_t copy = n < size ? n : size;
+        memcpy(buffer, value, copy - 1);
+        buffer[copy - 1] = 0;
+    }
+    return n;
 }

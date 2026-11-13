@@ -138,6 +138,13 @@ void *memory_alloc(uptr size, uptr align, int owner, int zero) {
     return 0;
 }
 
+/* What a freed region becomes: free, or held by a forked process that still
+   uses its addresses (so nothing else is given them meanwhile). */
+static int released(const struct region *r) {
+    int keeper = fork_keeper(r->base, r->size);
+    return keeper > 0 ? keeper : FREE;
+}
+
 static void coalesce(void) {
     unsigned out = 0;
     for (unsigned i = 0; i < count; ++i) {
@@ -155,7 +162,7 @@ int memory_free(void *block, int owner) {
         if (regions[i].base != (uptr)block || regions[i].owner == FREE) continue;
         if (owner >= 0 && regions[i].owner != owner) return -1;
         if (regions[i].owner > 0) process_memory_removed(regions[i].base, regions[i].size);
-        regions[i].owner = FREE;
+        regions[i].owner = released(&regions[i]);
         coalesce();
         return 0;
     }
@@ -194,7 +201,7 @@ int memory_free_range(uptr base, uptr size, int owner) {
             insert(i + 1, end, r_end - end, owner);
         }
         if (owner > 0) process_memory_removed(regions[i].base, regions[i].size);
-        regions[i].owner = FREE;
+        regions[i].owner = released(&regions[i]);
     }
     coalesce();
     return 0;
@@ -204,9 +211,15 @@ void memory_free_owner(int owner) {
     for (unsigned i = 0; i < count; ++i)
         if (regions[i].owner == owner) {
             if (owner > 0) process_memory_removed(regions[i].base, regions[i].size);
-            regions[i].owner = FREE;
+            regions[i].owner = released(&regions[i]);
         }
     coalesce();
+}
+
+void memory_swap_owner(int a, int b) {
+    for (unsigned i = 0; i < count; ++i)
+        if (regions[i].owner == a) regions[i].owner = b;
+        else if (regions[i].owner == b) regions[i].owner = a;
 }
 
 u64 memory_owned(int owner) {

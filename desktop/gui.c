@@ -6,7 +6,7 @@
 #include "wm.h"
 #include <strings.h>
 
-#define MAX_OWN 16
+#define MAX_OWN 32
 #define TICK_NS 100000000ll
 
 static struct gui_board *board;
@@ -15,6 +15,7 @@ static struct window *own[MAX_OWN];
 static int own_count;
 static struct window *modal;
 static u32 accent_seen;
+int gui_key_modifiers;
 struct gui_board *gui_board(void) { return board; }
 
 int gui_connect(void) {
@@ -52,6 +53,8 @@ static void simple_request(int type, struct window *w, const char *text) {
 }
 
 static char icon_file[160];
+static int popup_next, popup_x, popup_y;
+void window_popup_next(int x, int y) { popup_next = 1; popup_x = x; popup_y = y; }
 void gui_set_icon_file(const char *path) { snprintf(icon_file, sizeof(icon_file), "%s", path ? path : ""); }
 
 struct window *window_open(int w, int h, const char *title, int icon, const struct app_ops *ops, void *data) {
@@ -66,6 +69,12 @@ struct window *window_open(int w, int h, const char *title, int icon, const stru
     win->ops = ops;
     win->data = data;
     win->needs_paint = 1;
+    if (popup_next) {
+        win->popup = 1;
+        win->r.x = popup_x;
+        win->r.y = popup_y;
+        popup_next = 0;
+    }
     own[own_count++] = win;
     simple_request(RQ_OPEN, win, 0);
     return win;
@@ -128,6 +137,7 @@ static int (*poll_hook)(void);
 void gui_set_poll(int (*poll)(void)) { poll_hook = poll; }
 void gui_set_wallpaper(const char *path) { simple_request(RQ_WALLPAPER, 0, path); }
 void gui_activate(struct gui_window_info *w) { simple_request(RQ_ACTIVATE, (struct window *)w->window, 0); }
+void window_raise(struct window *w) { simple_request(RQ_RAISE, w, 0); }
 
 void gui_clipboard_set(const char *text, int size) {
     if (size > (int)sizeof(board->clipboard)) size = sizeof(board->clipboard);
@@ -166,7 +176,10 @@ static int dispatch(void) {
         if (modal && w != modal && (e.type == EV_MOUSE || e.type == EV_KEY)) continue;
         switch (e.type) {
         case EV_MOUSE: if (w->ops->mouse) w->ops->mouse(w, e.x, e.y, e.kind, e.value); break;
-        case EV_KEY: if (w->ops->key) w->ops->key(w, e.value); break;
+        case EV_KEY:
+            gui_key_modifiers = e.kind;
+            if (w->ops->key) w->ops->key(w, e.value);
+            break;
         case EV_CLOSE:
             if ((!modal || w == modal) && (!w->ops->closing || w->ops->closing(w))) window_close(w);
             break;
@@ -201,6 +214,12 @@ static void paint_all(void) {
         if (w->ops->paint) w->ops->paint(w, &c);
         ++w->seq;
     }
+}
+
+int gui_poll(void) {
+    int did = dispatch();
+    paint_all();
+    return did;
 }
 
 void gui_pump(void) {

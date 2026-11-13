@@ -10,6 +10,7 @@ int main(int argc, char **argv) {
         puts("DRIVERS                  Lists loaded drivers\n"
              "DRIVERS /LOAD file.drv   Loads a driver now\n"
              "DRIVERS /UNLOAD name.drv Stops and unloads a driver\n"
+             "DRIVERS /DEVICES         Lists PCI devices and the driver of each\n"
              "DRIVERS /LOG             Shows the driver log");
         return 0;
     }
@@ -18,6 +19,18 @@ int main(int argc, char **argv) {
         int n = dosxc_sys_driver(DOSXC_DRIVER_LOG, 0, text, sizeof(text));
         if (n <= 0) puts("The driver log is empty.");
         else fputs(text, stdout);
+        return 0;
+    }
+    if (argc > 1 && same(argv[1], "/DEVICES")) {
+        int count = dosxc_sys_driver(DOSXC_DRIVER_DEVICES, 0, 0, 0);
+        if (count <= 0) { puts("No PCI devices were found."); return 0; }
+        printf("%-8s %-10s %-6s %-10s %s\n", "Address", "ID", "Class", "Subsystem", "Driver");
+        for (int i = 0; i < count; ++i) {
+            struct dosxc_deviceinfo d;
+            if (dosxc_sys_driver(DOSXC_DRIVER_DEVICES, i, &d, sizeof(d)) < 0) continue;
+            printf("%02x:%02x.%u  %04x:%04x  %02x%02x   %04x:%04x  %s\n", d.bus, d.device, d.function, d.vendor, d.id,
+                   d.class_code, d.subclass, d.subsystem_vendor, d.subsystem, d.driver[0] ? d.driver : "-");
+        }
         return 0;
     }
     if (argc > 2 && same(argv[1], "/LOAD")) {

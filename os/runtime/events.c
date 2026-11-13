@@ -27,6 +27,12 @@ void event_log(int level, const char *source, const char *format, ...) {
     __builtin_va_start(ap, format);
     rt_format_v(e->text, sizeof(e->text), format, ap);
     __builtin_va_end(ap);
+    {
+        const char *parts[4] = {"[event] ", e->source, ": ", e->text};
+        for (int p = 0; p < 4; ++p)
+            for (const char *c = parts[p]; *c; ++c) rt_outb(0xe9, (u8)*c);
+        rt_outb(0xe9, '\n');
+    }
 }
 
 /* The program's file name, for events about it. */

@@ -113,8 +113,13 @@ struct window {
     u32 seen;
     int popup;                       /* no frame, no taskbar button, placed by the client */
     char icon_file[160];             /* a client's own 16 x 16 PNG icon, or "" */
+    struct window *host, *hosted;    /* a window drawn inside another's pane (Control Panel), and its host */
 };
+/* The next window_open() makes a window drawn inside HOST: no frame or taskbar
+   button; HOST paints it and passes it input (see control.c). */
+void window_host_next(struct window *host);
 void gui_set_icon_file(const char *path);       /* for this program's next windows */
+void window_popup_next(int x, int y);           /* the next window_open() is borderless, at X, Y on the desktop */
 int icon_for_png(const char *path);             /* an icon slot holding it, or ICON_PROGRAM */
 struct window *window_open(int w, int h, const char *title, int icon, const struct app_ops *ops, void *data);
 void window_close(struct window *);
@@ -169,7 +174,9 @@ void icons_delete(void);
 int icons_add_shortcut(const char *label, const struct shortcut *s);
 
 void open_control_panel(void);
-void open_user_accounts(void);
+void open_user_accounts(void);                            /* the Control Panel at the User Account Center */
+void open_account_center(void);                           /* the User Account Center's panel (users.c) */
+void open_network_settings(void);                         /* the Network panel (netpanel.c) */
 void desktop_quit(int status);
 extern int logon_mode;
 void logon_init(void);
@@ -177,6 +184,7 @@ void logon_paint(const struct canvas *c, struct rect screen);
 int logon_click(int x, int y);                            /* 1 when it was on the login screen */
 void logon_key(int key);
 int user_picture(const char *path, int size, struct surface *out);   /* a square picture */
+void me_reload(void);
 void picture_chooser(void (*done)(const char *path, void *data), void *data);
 void open_default_programs(void);
 void open_network(void);
@@ -268,6 +276,8 @@ void gui_open_file(const char *path);           /* in the program that handles i
 void gui_run_text(const char *path);            /* in a terminal window */
 void gui_set_poll(int (*poll)(void));           /* called each pass of gui_run; nonzero means it did work */
 void gui_pump(void);                            /* handle input and paint during a long operation */
+int gui_poll(void);                             /* handle waiting input and paint, without waiting; nonzero if there was input */
+extern int gui_key_modifiers;                   /* 1 Shift | 2 Ctrl | 4 Alt, held with the key being handled */
 void gui_set_wallpaper(const char *path);
 void gui_activate(struct gui_window_info *w);
 void window_request_size(struct window *w, int width, int height);
@@ -281,7 +291,7 @@ int gui_clipboard_get(char *out, int capacity);
 #define GUI_WINDOWS 32
 enum { EV_MOUSE = 1, EV_KEY, EV_CLOSE, EV_RESIZE, EV_POPUP };
 struct gui_event { int type, x, y, kind, value, pad; uintptr_t window; };
-enum { RQ_OPEN = 1, RQ_CLOSE, RQ_POPUP, RQ_WALLPAPER, RQ_ACTIVATE, RQ_RESIZE };
+enum { RQ_OPEN = 1, RQ_CLOSE, RQ_POPUP, RQ_WALLPAPER, RQ_ACTIVATE, RQ_RESIZE, RQ_RAISE };
 struct gui_request { int type, x, y, tag; uintptr_t window; char text[320]; };
 struct gui_client {
     volatile int pid;
@@ -301,3 +311,7 @@ struct gui_board {
     volatile int screen_w, screen_h;  /* the main screen */
 };
 struct gui_board *gui_board(void);
+
+void open_datetime_settings(void);
+void open_date_time(void);
+void control_panel_tick(void);

@@ -59,10 +59,33 @@ void cpu_restore_idt(void);
 u64 cpu_nanoseconds(void);
 void cpu_sleep(u64 nanoseconds);
 i64 cpu_rtc_time(void);
+int cpu_rtc_set(i64 seconds);
+void clock_init(void);
+int clock_control(int op, struct dosxc_clock *value);
 void cpu_resume(void);
 void cpu_kernel_idt(void);
 void cpu_preempt_start(void);
 void cpu_preempt_stop(void);
+#define MAX_CPUS 32
+int cpu_index(void);                    /* this processor: 0 is the boot processor */
+void cpu_set_gs(uptr value);
+void cpu_ap_prepare(void);              /* on the boot processor, before others start */
+void cpu_ap_setup(int index);           /* on processor INDEX as it starts */
+
+/* smp.c: the other processors run ring 3 code only; the kernel stays on processor 0. */
+void smp_init(void);
+int smp_start(void);                    /* 1 when other processors run programs */
+void smp_stop(void);                    /* their programs go back to processor 0 */
+int smp_count(void);                    /* processors running programs, 1 when only this one */
+int smp_online(int cpu);
+void smp_poke(int cpu);                 /* wake processor CPU */
+int smp_service(void);                  /* other processors: nonzero when asked to stop */
+void smp_park(void) __attribute__((noreturn));
+void smp_tree(uptr root);               /* other processors: run in ROOT (0: the base tree) */
+void smp_tlb_flush(const void *tree);   /* the page tables of TREE changed; 0: every tree */
+void smp_set_pat(u64 value);
+void smp_eoi(void);
+const u8 *acpi_table(const char *signature);   /* power.c */
 int runtime_enter(uptr entry, uptr stack, struct saved_context *save, int sse);
 void runtime_leave(struct saved_context *save, int value) __attribute__((noreturn));
 /* setjmp: 0 now, later the value given to runtime_leave(save, value). */
@@ -113,6 +136,15 @@ int fs_rename(const char *from, const char *to);
 int fs_writable(const char *path);
 void volumes_poll(void);                 /* UEFI: disks coming and going */
 int volume_eject(char letter);
+int volume_mount_image(const char *canonical);   /* the drive letter, or -DOSXC_* */
+int volume_image_busy(const char *canonical);    /* 1 while it is mounted */
+struct iso_volume;
+struct iso_volume *iso_mount(unsigned disk);     /* 0 when DISK holds no ISO 9660 volume */
+void iso_unmount(struct iso_volume *v);
+u64 iso_bytes(const struct iso_volume *v);
+int iso_stat(struct iso_volume *v, const char *path, struct fat32_info *info);
+int iso_list(struct iso_volume *v, const char *path, fat32_list_fn fn, void *context);
+int iso_read_cursor(struct iso_volume *v, const char *path, struct fat32_cursor *c, u32 offset, void *buffer, u32 size);
 int volume_notice(char *buffer, uptr size);
 void volume_post_notice(const char *text);
 
@@ -126,7 +158,6 @@ int terminal_get_key(int wait);
 void terminal_reset(void);
 void terminal_input_reset(void);
 int terminal_mouse(struct dosxc_mouse *out);
-void terminal_mouse_hide(void);
 int terminal_interrupted(void);         /* Ctrl+C typed while a program waits */
 int terminal_pointer(struct dosxc_pointer *out);
 struct vconsole;
@@ -187,6 +218,13 @@ struct process {
     int grantees[4];             /* processes that may use all of its memory (the desktop) */
     char user[32];               /* its user account; "" for the system */
     u32 sandbox;                 /* DOSXC_SANDBOX_* rights given up, also for its children */
+    u8 unlocked;                 /* may manage accounts (DOSXC_USER_UNLOCK) */
+    u8 replaced;                 /* exec started its successor under the same pid */
+    u8 orphaned;                 /* its parent ended first (so it is no login) */
+    struct fork_remap *remaps;   /* 64-bit fork: low memory seen at the parent's addresses */
+    int remap_count, remap_capacity;
+    u8 gs_self;                  /* its C library finds the running thread at %gs:0 */
+    u8 slot_user;                /* it reads the shared thread slot, so stays on processor 0 */
 };
 /* accounts.c */
 int accounts_enabled(void);
@@ -235,6 +273,7 @@ void aspace_user_all(uptr va, uptr size, int mode);
 u64 *aspace_root(const struct aspace *a);
 struct aspace *aspace_at(int index);    /* 0 for the base tree and unused slots */
 void paging_user_base(uptr va, uptr size, int mode);   /* in every tree made after this */
+void paging_write_combining(uptr va, uptr size);       /* a framebuffer, in every tree (64-bit) */
 void sched_init(void);
 void vm_tables_free(u64 *pml4);         /* vm.c: a tree's mapping tables */
 int vm_user_ok(uptr start, uptr end, int write);
@@ -300,6 +339,8 @@ void sched_process_died(struct process *p);
 void sched_thread_leave(int wait_status);
 int socket_wait_interrupted(void);
 void sched_stop_threads(struct process *p);
+void sched_kernel_enter(void);          /* first thing on entering the kernel from a program */
+void sched_ap_start(int cpu, u8 *stack_top) __attribute__((noreturn));
 
 int volumes_driver_disk(int handle, u64 sectors, int readonly, const char *name);
 void volumes_driver_disk_gone(int handle);
@@ -328,3 +369,22 @@ void process_finish(struct process *p);
 int sched_fault_enter(void);
 void sched_fault_leave(void);
 void runtime_exception(uptr *frame, uptr *regs);
+struct process *process_at(int index);  /* slot INDEX of MAX_DEPTH, or 0 */
+long process_fork(struct syscall_frame *frame);
+long process_exec(const char *path, char *const argv[], char *const envp[]);
+int sched_fork(struct process *child, const uptr *frame, const void *fx);
+int sched_threads(const struct process *p);    /* other threads of P that run */
+uptr sched_tp(void);                    /* the running thread's thread pointer */
+
+/* fork.c (64-bit) */
+struct fork_remap { uptr va, pa, size; };     /* [va, va + size) shows the frames at pa */
+int fork_memory(struct process *child, struct process *parent, uptr sp);
+int libraries_fork(struct process *child, struct process *parent);
+int files_fork(struct process *child, struct process *parent);
+int fork_release(struct process *p, uptr block);  /* 1 when BLOCK was one of P's copies */
+void fork_forget(struct process *p);
+int fork_keeper(uptr base, uptr size);  /* a process still showing those frames' addresses, or 0 */
+int vm_fork(struct process *child, struct process *parent);
+void vm_swap_owner(int a, int b);
+void memory_swap_owner(int a, int b);
+int runtime_enter_frame(const uptr *frame, struct saved_context *save, const void *fx);

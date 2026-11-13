@@ -6,7 +6,7 @@
 #include "net.h"
 #include "elf.h"
 
-#define MAX_DRIVERS 16
+#define MAX_DRIVERS 32
 #define MAX_BOUND 8
 #define MAX_PCI 96
 #define LOG_SIZE 8192
@@ -22,6 +22,7 @@ struct driver {
 
 static struct driver drivers[MAX_DRIVERS];
 static struct pci_function pci_functions[MAX_PCI];
+static u16 pci_classes[MAX_PCI];
 static int pci_count, pci_scanned;
 static u8 claimed[MAX_PCI];
 static struct driver *probing;
@@ -379,15 +380,20 @@ static void scan_pci(void) {
                 if ((id & 0xffff) == 0xffff || pci_count == MAX_PCI) continue;
                 f.vendor = (u16)id;
                 f.id = (u16)(id >> 16);
-                f.prog_if = (u8)(pci_read32(&f, 8) >> 8);
+                u32 class_word = pci_read32(&f, 8);
+                f.prog_if = (u8)(class_word >> 8);
+                pci_classes[pci_count] = (u16)(class_word >> 16);
                 pci_functions[pci_count++] = f;
             }
         }
 }
 
-static int id_matches(const struct dk_pci_id *ids, const struct pci_function *f) {
-    for (; ids && ids->vendor; ++ids)
-        if (ids->vendor == f->vendor && (ids->device == DK_ANY || ids->device == f->id)) return 1;
+static int id_matches(const struct dk_pci_id *ids, int index) {
+    const struct pci_function *f = &pci_functions[index];
+    for (; ids && ids->vendor; ++ids) {
+        if (ids->vendor == DK_CLASS ? ids->device == pci_classes[index]
+                                    : ids->vendor == f->vendor && (ids->device == DK_ANY || ids->device == f->id)) return 1;
+    }
     return 0;
 }
 
@@ -436,7 +442,7 @@ static void bind_devices(struct driver *d) {
     }
     scan_pci();
     for (int i = 0; i < pci_count && d->bound_count < MAX_BOUND; ++i) {
-        if (claimed[i] || !id_matches(d->d->pci_ids, &pci_functions[i])) continue;
+        if (claimed[i] || !id_matches(d->d->pci_ids, i)) continue;
         struct probe_call c = {d, &pci_functions[i], -1, 0};
         probing = d;
         int r = guarded(d, call_probe, &c);
@@ -548,8 +554,10 @@ static void folder_path(char *out) {
     rt_strcpy(out + 2, "\\SYSTEM\\DRIVERS");
 }
 
+static int driver_match(const char *canonical);
+
 /* \SYSTEM\DRIVERS\STORE holds every driver DOS-XC ships: each one not
-   installed is tried, and kept when it finds a device. */
+   installed whose devices are here is started, and kept when it takes one. */
 static void autodetect(const char *folder) {
     char store[PATH_MAX_RT], path[PATH_MAX_RT];
     rt_strcpy(store, folder);
@@ -562,6 +570,8 @@ static void autodetect(const char *folder) {
         uptr n = rt_strlen(path);
         path[n++] = '\\';
         rt_strcpy(path + n, found[i]);
+        int matches = driver_match(path);
+        if (!matches || (matches < 0 && matches != -DOSXC_EOPNOTSUPP)) continue;
         if (driver_load(path)) continue;
         struct driver *d = find_by_file(found[i]);
         if (d && d->state == DOSXC_DRIVER_STATE_IDLE) driver_unload(found[i]);
@@ -591,8 +601,65 @@ void drivers_init(void) {
     cpu_restore_idt();
 }
 
+static const char *driver_of(int index) {
+    const struct pci_function *f = &pci_functions[index];
+    for (int i = 0; i < MAX_DRIVERS; ++i) {
+        const struct driver *d = &drivers[i];
+        if (!d->used || d->state != DOSXC_DRIVER_STATE_LOADED || !d->d->pci_ids) continue;
+        for (int b = 0; b < d->bound_count; ++b)
+            if (d->bound[b].f.bus == f->bus && d->bound[b].f.device == f->device && d->bound[b].f.function == f->function) return d->file;
+    }
+    return "";
+}
+
+/* How many devices without a driver the file at CANONICAL names; none of its code runs. */
+static int driver_match(const char *canonical) {
+    uptr image = 0;
+    const void *symbol = 0;
+    int r = driver_image_load(canonical, &image, &symbol), count = 0;
+    if (r) return r;
+    const struct dk_driver *descriptor = symbol;
+    if (descriptor->abi != DK_ABI_VERSION || descriptor->size < sizeof(struct dk_driver)) r = -DOSXC_ENOEXEC;
+    else if (!descriptor->pci_ids) r = -DOSXC_EOPNOTSUPP;
+    else {
+        scan_pci();
+        for (int i = 0; i < pci_count; ++i) count += !claimed[i] && id_matches(descriptor->pci_ids, i);
+    }
+    memory_free((void *)image, OWNER_KERNEL);
+    return r ? r : count;
+}
+
 i64 driver_syscall(int operation, long a, void *buffer, dosxc_size size) {
     switch (operation) {
+    case DOSXC_DRIVER_DEVICES: {
+        scan_pci();
+        if (!buffer) return pci_count;
+        if (a < 0 || a >= pci_count) return -DOSXC_ENOENT;
+        const struct pci_function *f = &pci_functions[a];
+        struct dosxc_deviceinfo *out = buffer;
+        memset(out, 0, sizeof(*out));
+        out->bus = f->bus;
+        out->device = f->device;
+        out->function = f->function;
+        out->prog_if = f->prog_if;
+        out->vendor = f->vendor;
+        out->id = f->id;
+        out->class_code = (u8)(pci_classes[a] >> 8);
+        out->subclass = (u8)pci_classes[a];
+        out->revision = pci_read8(f, 8);
+        if (!(pci_read8(f, 0x0e) & 0x7f)) {
+            out->subsystem_vendor = pci_read16(f, 0x2c);
+            out->subsystem = pci_read16(f, 0x2e);
+        }
+        rt_strcpy(out->driver, driver_of((int)a));
+        return pci_count;
+    }
+    case DOSXC_DRIVER_MATCH: {
+        char canonical[PATH_MAX_RT];
+        if (!buffer) return -DOSXC_EFAULT;
+        int r = path_resolve(current, buffer, canonical);
+        return r ? r : driver_match(canonical);
+    }
     case DOSXC_DRIVER_LIST: {
         int count = 0, index = 0;
         for (int i = 0; i < MAX_DRIVERS; ++i) count += drivers[i].used != 0;

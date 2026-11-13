@@ -176,9 +176,10 @@ static void add_port(volatile u8 *abar, unsigned index) {
 void ahci_probe(const struct pci_function *f) {
     if (f->prog_if != 1) return;
     int io;
-    u64 base = pci_bar(f, 5, &io);
+    u64 base = pci_bar_kernel(f, 5, &io);
     if (!base || io) return;
     pci_enable(f, 1, 0);
+    storage_claim();
     volatile u8 *abar = (volatile u8 *)(uptr)base;
     volatile u32 *ghc = (volatile u32 *)(abar + GHC);
     if (*(volatile u32 *)(abar + CAP2) & 1) {

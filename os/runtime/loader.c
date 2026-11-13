@@ -22,6 +22,7 @@ struct process *current;
 static struct process *root;
 
 struct process *process_root(void) { return root; }
+struct process *process_at(int index) { return index >= 0 && index < MAX_DEPTH && processes[index].used ? &processes[index] : 0; }
 static int next_pid = 1;
 static u8 header[4096];
 static Phdr phdrs[MAX_PHDRS];
@@ -291,7 +292,7 @@ static int process_prepare(struct process *parent, const char *path, char *const
     u8 magic[4];
     if ((r = files_is_executable(canonical, magic))) return r;
     if (memcmp(magic, "\177ELF", 4)) {
-        if ((magic[0] == 'M' && magic[1] == 'Z') || !memcmp(magic, "BPCM", 4) || parent)
+        if ((magic[0] == 'M' && magic[1] == 'Z') || !memcmp(magic, "BPCM", 4))   /* a script: the caller may run it */
             complain(canonical, "is not a 32/64-bit program and cannot be started from one.");
         return -DOSXC_ENOEXEC;
     }
@@ -417,6 +418,87 @@ int process_background_fds(struct process *parent, const char *path, char *const
     if (r) return r;
     if ((r = files_remap(p, parent, map, count)) || (r = sched_start(p, entry, sp)) < 0) process_finish(p);
     return r;
+}
+
+/* A copy of the running process beside it, continuing from the system call
+   FRAME with 0 as the result. */
+long process_fork(struct syscall_frame *frame) {
+#if __SIZEOF_POINTER__ == 8
+    struct process *parent = current, *p = 0;
+    if (!parent || !parent->space) return -DOSXC_ENOSYS;
+    for (unsigned i = 0; i < MAX_DEPTH && !p; ++i)
+        if (!processes[i].used) p = &processes[i];
+    if (!p) return -DOSXC_EAGAIN;
+    memset(p, 0, sizeof(*p));
+    p->used = 1;
+    p->pid = next_pid++;
+    if (next_pid > 0x7fff0000) next_pid = 1;
+    p->parent = parent;
+    rt_strcpy(p->user, parent->user);
+    rt_strcpy(p->path, parent->path);
+    p->sandbox = parent->sandbox;
+    p->unlocked = parent->unlocked;
+    p->fault_entry = parent->fault_entry;
+    p->fault_mask = parent->fault_mask;
+    p->gs_self = parent->gs_self;
+    p->slot_user = parent->slot_user;
+    p->image_base = parent->image_base;
+    p->image_size = parent->image_size;
+    p->program = parent->program;
+    memcpy(p->tls, parent->tls, sizeof(p->tls));
+    p->tls_count = parent->tls_count;
+    p->tls_static = parent->tls_static;
+    p->tp = sched_tp();
+    vc_attach(p, parent->vc);
+    int r = -DOSXC_ENOMEM;
+    const uptr *iret = (const uptr *)(frame + 1);
+    if ((p->space = aspace_new()) && !(r = files_fork(p, parent)) && !(r = fork_memory(p, parent, iret[3])) &&
+        !(r = vm_fork(p, parent)) && !(r = libraries_fork(p, parent))) {
+        uptr words[20];
+        memcpy(words, frame, 15 * sizeof(uptr));
+        memcpy(words + 15, iret, 5 * sizeof(uptr));
+        words[0] = 0;
+        r = sched_fork(p, words, (const void *)(((uptr)frame - 512) & ~(uptr)15));
+    }
+    if (r < 0) {
+        process_finish(p);
+        return r;
+    }
+    event_log(DOSXC_EVENT_INFO, "Programs", "%s (process %d) forked process %d", event_program(parent), parent->pid, p->pid);
+    return p->pid;
+#else
+    (void)frame;
+    return -DOSXC_ENOSYS;
+#endif
+}
+
+/* Replace the running process, which must run beside its parent with no
+   other threads, by PATH under the same pid.  Returns only on failure. */
+long process_exec(const char *path, char *const argv[], char *const envp[]) {
+    struct process *old = current, *p;
+    if (!old || !old->background || sched_threads(old)) return -DOSXC_ENOSYS;
+    uptr entry, sp;
+    int r = process_prepare(old, path, argv, envp, 0, 0, &p, &entry, &sp);
+    if (r) return r;
+    int pid = old->pid, temporary = p->pid;
+    memory_swap_owner(pid, temporary);
+    vm_swap_owner(pid, temporary);
+    old->pid = temporary;
+    p->pid = pid;
+    p->parent = old->parent;
+    if ((r = sched_start(p, entry, sp)) < 0) {
+        memory_swap_owner(pid, temporary);
+        vm_swap_owner(pid, temporary);
+        old->pid = pid;
+        p->pid = temporary;
+        p->parent = old;
+        process_finish(p);
+        return r;
+    }
+    for (unsigned i = 0; i < MAX_DEPTH; ++i)
+        if (processes[i].used && processes[i].parent == old) processes[i].parent = p;
+    old->replaced = 1;
+    process_exit(0);
 }
 
 /* Exit statuses of children started beside their parents, kept until collected. */
@@ -582,8 +664,9 @@ void process_exited(struct process *p, int status) {
 }
 
 void process_finish(struct process *p) {
-    if (!p->parent && p->user[0]) event_log(DOSXC_EVENT_INFO, "Accounts", "%s logged out", p->user);
-    if (!p->parent && p->user[0])                /* logging out: the user's programs end too */
+    int login = !p->parent && !p->orphaned && p->user[0];
+    if (login) event_log(DOSXC_EVENT_INFO, "Accounts", "%s logged out", p->user);
+    if (login)                                   /* logging out: the user's programs end too */
         for (unsigned i = 0; i < MAX_DEPTH; ++i)
             if (processes[i].used && &processes[i] != p && rt_equal_nocase(processes[i].user, p->user)) processes[i].killed = 1;
     sched_stop_threads(p);
@@ -592,11 +675,15 @@ void process_finish(struct process *p) {
     audio_process_finished(p->pid);
     sched_process_died(p);
     for (unsigned i = 0; i < MAX_DEPTH; ++i)
-        if (processes[i].used && processes[i].parent == p) processes[i].parent = 0;
+        if (processes[i].used && processes[i].parent == p) {
+            processes[i].parent = 0;
+            processes[i].orphaned = 1;
+        }
     vc_detach(p);
     libraries_release(p);
     files_release(p);
     vm_release(p->pid);
+    fork_forget(p);
     memory_free_owner(p->pid);
 #if __SIZEOF_POINTER__ == 8
     if (current == p || !current) aspace_activate(0);
@@ -649,6 +736,7 @@ static int deliver_fault(uptr *frame, uptr *regs, int signal, uptr vector, uptr 
 #endif
 
 void runtime_exception(uptr *frame, uptr *regs) {
+    sched_kernel_enter();
     static const char *const names[32] = {
         "Divide error", "Debug exception", "Non-maskable interrupt", "Breakpoint", "Overflow",
         "Bound range exceeded", "Invalid opcode", "FPU not available", "Double fault",

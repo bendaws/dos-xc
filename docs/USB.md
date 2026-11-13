@@ -17,8 +17,8 @@ disks) work in DOS-XC and can be plugged in and pulled out at any time.
   to it, type `EJECT E:` first: it writes back everything still waiting,
   unmounts the drive (and any other drive on the same disk) and tells the
   device it is about to be removed.  The drive comes back the next time it
-  is plugged in.  Card readers are checked every two seconds for a card
-  going in or out.
+  is plugged in.  Disk images mounted from the drive are ejected with it.
+  Card readers are checked every two seconds for a card going in or out.
 * **Keyboards** work alongside the PS/2 keyboard, with Num/Caps/Scroll Lock
   lights and key repeat.
 * **Mice** move a block cursor over the text screen.  Programs that ask for

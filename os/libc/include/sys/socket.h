@@ -57,6 +57,7 @@ struct linger { int l_onoff, l_linger; };
 #define MSG_PEEK 0x02
 #define MSG_DONTROUTE 0x04
 #define MSG_CTRUNC 0x08
+#define MSG_EOR 0x80
 #define MSG_TRUNC 0x20
 #define MSG_DONTWAIT 0x40
 #define MSG_WAITALL 0x100

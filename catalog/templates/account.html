@@ -1,0 +1,6 @@
+{% extends 'base.html' %}
+{% block content %}
+<section class="content-panel"><h1>Your account</h1><dl><dt>Username</dt><dd><a href="{{ url_for('user_profile', user_id=user.id) }}">{{ user.username }}</a></dd><dt>Email</dt><dd>{{ user.email }} · Confirmed</dd><dt>Publishing</dt><dd>{{ 'Administrator' if is_admin else 'Authorized publisher' if can_publish else 'Administrator approval required' }}</dd></dl>
+{% if can_publish %}<p><a class="button" href="{{ url_for('publish') }}">Publish a package</a></p><h2>API publishing token</h2><p>Use a bearer token to publish from your build tools. Creating a token invalidates the previous token.</p>
+{% if token %}<div class="notice"><strong>Copy this token now. It will only be shown once.</strong><pre>{{ token }}</pre></div>{% endif %}
+<form method="post"><input type="hidden" name="csrf" value="{{ csrf() }}"><button type="submit">Create / replace API token</button></form>{% else %}<p>Contact the administrator for publishing access.</p>{% endif %}</section>{% endblock %}

@@ -66,10 +66,8 @@ static void load(void) {
         char kind[16], number[8], salt[40], hash[72];
         char *p = line;
         field(&p, kind, sizeof(kind));
-        if (!rt_strcmp(kind, "accounts")) {
-            field(&p, number, sizeof(number));
-            enabled = number[0] == '1';
-        } else if (!rt_strcmp(kind, "user") && account_count < MAX_ACCOUNTS) {
+        if (!rt_strcmp(kind, "accounts")) field(&p, number, sizeof(number));
+        else if (!rt_strcmp(kind, "user") && account_count < MAX_ACCOUNTS) {
             struct account *a = &accounts[account_count];
             memset(a, 0, sizeof(*a));
             field(&p, a->user.name, sizeof(a->user.name));
@@ -89,12 +87,12 @@ static void load(void) {
         while (*line && *line != '\n') ++line;
         if (*line) ++line;
     }
-    if (!account_count) enabled = 0;
+    enabled = account_count > 0;
 }
 
 static int save(void) {
     char *at = db_text, *end = db_text + sizeof(db_text) - 600;
-    const char *head = enabled ? "accounts\t1\n" : "accounts\t0\n";
+    const char *head = "accounts\t1\n";
     for (const char *s = head; *s; ++s) *at++ = *s;
     for (int i = 0; i < account_count && at < end; ++i) {
         const struct account *a = &accounts[i];
@@ -194,6 +192,9 @@ int accounts_admin(void) {
     return a && a->user.admin;
 }
 
+/* Account changes: an administrator, or a process an administrator unlocked (DOSXC_USER_UNLOCK). */
+static int managing(void) { return accounts_admin() || (current && current->unlocked); }
+
 static int under(const char *path, const char *folder) {
     uptr n = rt_strlen(folder);
     for (uptr i = 0; i < n; ++i)
@@ -237,11 +238,12 @@ static int login(const char *name, const char *password) {
 }
 
 static int change(const struct dosxc_user_change *c, int adding) {
-    int admin = accounts_admin();
+    int admin = managing();
     if (adding) {
         if (!admin) return -DOSXC_EPERM;
         if (!valid_name(c->user.name) || find(c->user.name)) return -DOSXC_EINVAL;
         if (account_count == MAX_ACCOUNTS) return -DOSXC_ENOSPC;
+        if (!account_count && !c->user.admin) return -DOSXC_EINVAL;
     }
     struct account *a = adding ? &accounts[account_count] : find(c->user.name);
     if (!a) return -DOSXC_ENOENT;
@@ -261,6 +263,7 @@ static int change(const struct dosxc_user_change *c, int adding) {
         memset(a, 0, sizeof(*a));
         rt_strcpy(a->user.name, c->user.name);
         ++account_count;
+        enabled = 1;
     }
     if (fields & DOSXC_USER_SET_NICKNAME) rt_strcpy(a->user.nickname, c->user.nickname[0] ? c->user.nickname : a->user.name);
     if (fields & DOSXC_USER_SET_PICTURE) rt_strcpy(a->user.picture, c->user.picture);
@@ -276,7 +279,7 @@ static int change(const struct dosxc_user_change *c, int adding) {
 }
 
 static int remove_account(const char *name) {
-    if (!accounts_admin()) return -DOSXC_EPERM;
+    if (!managing()) return -DOSXC_EPERM;
     struct account *a = find(name);
     if (!a) return -DOSXC_ENOENT;
     if (current && rt_equal_nocase(current->user, name)) return -DOSXC_EBUSY;
@@ -289,16 +292,6 @@ static int remove_account(const char *name) {
     return save();
 }
 
-static int enable(int on) {
-    if (!accounts_admin()) return -DOSXC_EPERM;
-    if (on) {
-        int admins = 0;
-        for (int i = 0; i < account_count; ++i) admins += accounts[i].user.admin;
-        if (!admins) return -DOSXC_EINVAL;
-    }
-    enabled = on != 0;
-    return save();
-}
 
 long user_syscall(int operation, const void *a, void *b) {
     load();
@@ -345,11 +338,18 @@ long user_syscall(int operation, const void *a, void *b) {
         if (!r) event_log(DOSXC_EVENT_INFO, "Accounts", "Account %s was removed", (const char *)a);
         return r;
     }
-    case DOSXC_USER_ENABLE: {
-        int r = enable((int)(uptr)a);
-        if (!r) event_log(DOSXC_EVENT_INFO, "Accounts", (uptr)a ? "User accounts were turned on" : "User accounts were turned off");
-        return r;
+    case DOSXC_USER_UNLOCK: {
+        struct account *x = find(a);
+        if (!x || !x->user.admin || !password_ok(x, b)) {
+            event_log(DOSXC_EVENT_WARNING, "Accounts", "Failed unlock of account management as %s", (const char *)a);
+            return -DOSXC_EACCES;
+        }
+        current->unlocked = 1;
+        event_log(DOSXC_EVENT_INFO, "Accounts", "%s unlocked account management", x->user.name);
+        return 0;
     }
+    case DOSXC_USER_LOCK: current->unlocked = 0; return 0;
+    case DOSXC_USER_ENABLE: return a && enabled ? 0 : -DOSXC_EPERM;
     }
     return -DOSXC_EINVAL;
 }

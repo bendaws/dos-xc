@@ -1,5 +1,5 @@
 /*
- * DOS-XC /dosoffice/office.h
+ * DOS-XC /openwork/office.h
  * Copyright (c) 2026 Ben Daws - see LICENSE.txt
  */
 
@@ -31,6 +31,8 @@ void text_add(struct text *t, const char *s, size_t n);
 void text_put(struct text *t, const char *s);
 void text_printf(struct text *t, const char *format, ...);
 void text_xml(struct text *t, const char *s, size_t n);     /* escaped for XML */
+void text_utf8(struct text *t, const char *latin1, size_t n, int xml);   /* Latin-1 as UTF-8, escaped for XML if XML */
+void text_latin1(struct text *t, const char *utf8, size_t n);            /* UTF-8 as Latin-1; other characters become '?' */
 
 char *read_whole(const char *path, size_t *size);
 int write_whole(const char *path, const void *data, size_t size);

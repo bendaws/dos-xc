@@ -96,6 +96,11 @@
 #define DOSXC_SHM_UNLINK 2         /* name */
 #define DOSXC_SYS_USER 91          /* DOSXC_USER_*, a, b: user accounts */
 #define DOSXC_SYS_EVENTS 92        /* DOSXC_EVENTS_*, a, b: the event log */
+#define DOSXC_SYS_CLOCK 93         /* DOSXC_CLOCK_*, struct dosxc_clock * */
+#define DOSXC_CLOCK_GET 0
+#define DOSXC_CLOCK_SETTINGS 1     /* save preferences; preserve the UTC instant */
+#define DOSXC_CLOCK_SET 2          /* set local seconds and the hardware RTC */
+
 
 #define DOSXC_USER_ENABLED 1   /* 1 when user accounts are on, 0 when everyone is the one public user */
 #define DOSXC_USER_LIST 2      /* a = index, b = struct dosxc_user *: returns the number of accounts */
@@ -105,7 +110,9 @@
 #define DOSXC_USER_ADD 6       /* b = struct dosxc_user_change * (administrators) */
 #define DOSXC_USER_SET 7       /* b = struct dosxc_user_change *: own fields, or any for administrators */
 #define DOSXC_USER_REMOVE 8    /* a = name (administrators) */
-#define DOSXC_USER_ENABLE 9    /* a = 1 on, 0 off (administrators; on needs an administrator account) */
+#define DOSXC_USER_ENABLE 9    /* obsolete: accounts are always on once one exists; 0 when a = 1, else EPERM */
+#define DOSXC_USER_UNLOCK 10   /* a = an administrator's name, b = password: this process may manage accounts until LOCK */
+#define DOSXC_USER_LOCK 11
 struct dosxc_user {
     char name[32];             /* letters and digits */
     char nickname[64];         /* printable ASCII: shown everywhere but the home folder's name */
@@ -149,6 +156,13 @@ struct dosxc_user_change {
 typedef __INT32_TYPE__ dosxc_i32;
 typedef __UINT32_TYPE__ dosxc_u32;
 typedef __INT64_TYPE__ dosxc_i64;
+
+struct dosxc_clock {
+    dosxc_i64 seconds;            /* local seconds since 1970, as DOSXC_SYS_TIME */
+    int utc_offset;               /* minutes east of UTC, -720 through +840 */
+    int hour12;                   /* 0: 24-hour, 1: AM/PM */
+    char server[128];             /* NTP hostname or IP address */
+};
 typedef __UINT64_TYPE__ dosxc_u64;
 typedef __SIZE_TYPE__ dosxc_size;
 typedef __PTRDIFF_TYPE__ dosxc_ssize;
@@ -168,18 +182,7 @@ struct dosxc_note_abi {
     dosxc_u32 flags;
 };
 
-#define DOSXC_O_RDONLY    0x0000
-#define DOSXC_O_WRONLY    0x0001
-#define DOSXC_O_RDWR      0x0002
-#define DOSXC_O_ACCMODE   0x0003
-#define DOSXC_O_CREAT     0x0040
-#define DOSXC_O_EXCL      0x0080
-#define DOSXC_O_NOCTTY    0x0100
-#define DOSXC_O_TRUNC     0x0200
-#define DOSXC_O_APPEND    0x0400
-#define DOSXC_O_NONBLOCK  0x0800
-#define DOSXC_O_DIRECTORY 0x10000
-#define DOSXC_O_CLOEXEC   0x80000
+#include "open.h"
 
 #define DOSXC_S_IFMT   0170000
 #define DOSXC_S_IFDIR  0040000
@@ -237,9 +240,10 @@ struct dosxc_sysinfo {
 #define DOSXC_VOLUME_READONLY  2
 #define DOSXC_VOLUME_REMOVABLE 4
 #define DOSXC_VOLUME_LIVE      8     /* system volume on installation media */
+#define DOSXC_VOLUME_IMAGE    16     /* a disk image file (DOSXC_DRIVE_MOUNT) */
 struct dosxc_volume {
     char letter;
-    unsigned char type;        /* 12, 16 or 32 (FAT type) */
+    unsigned char type;        /* 12, 16 or 32 (FAT type), 0 for ISO 9660 */
     unsigned char flags;       /* DOSXC_VOLUME_* */
     unsigned char reserved;
     dosxc_u32 disk;            /* disk() index; meaningless for the system volume */
@@ -255,6 +259,7 @@ struct dosxc_volume {
 #define DOSXC_DISK_READONLY  2
 #define DOSXC_DISK_SYSTEM    4
 #define DOSXC_DISK_USB       8     /* driven by DOS-XC's own USB driver */
+#define DOSXC_DISK_IMAGE    16     /* a disk image file */
 struct dosxc_disk {
     dosxc_u64 sectors;
     dosxc_u32 flags;           /* DOSXC_DISK_* */
@@ -317,7 +322,8 @@ struct dosxc_pointer {
 #define DOSXC_TASK_CONSOLE_CLOSE 12 /* b = console: ends what runs in it */
 #define DOSXC_TASK_THREAD_CREATE 13 /* a = entry, b = stack pointer, c = thread data: returns its id */
 #define DOSXC_TASK_THREAD_EXIT 14   /* a = int to zero and wake once the stack is unused, or 0 */
-#define DOSXC_TASK_THREAD_SLOT 15   /* returns the address of a word holding the running thread's data */
+#define DOSXC_TASK_THREAD_SLOT 15   /* returns the address of a word holding the running thread's data;
+                                       a = 1: returns 1 when %gs:0 holds it instead (0 for the main thread) */
 #define DOSXC_TASK_FUTEX_WAIT 16    /* a = int, b = expected, c = nanoseconds (<= 0: forever); -EAGAIN, -ETIMEDOUT */
 #define DOSXC_TASK_FAULT_ENTRY 19   /* a = entry, b = mask of signals (1 << n) it handles */
 #define DOSXC_TASK_FAULT_DONE 20    /* the handler running on this thread has returned */
@@ -335,6 +341,9 @@ struct dosxc_spawn { const char *path; char *const *argv; char *const *envp; };
 #define DOSXC_SANDBOX_ALL 31
 #define DOSXC_TASK_SPAWN_FDS 23     /* a = struct dosxc_spawn_fds *: like SPAWN, the child gets only MAP's descriptors */
 struct dosxc_spawn_fds { const char *path; char *const *argv; char *const *envp; const int *map; int count; };   /* MAP: COUNT pairs (parent fd, child fd) */
+#define DOSXC_TASK_FORK 25          /* a copy of the calling process (64-bit): the child's pid, and 0 in the child */
+#define DOSXC_TASK_CPU_IDLE 27      /* a = u64 idle_ns per processor, b = capacity: returns how many (processor 0 first) */
+#define DOSXC_TASK_EXEC 26          /* a = struct dosxc_spawn *: replace a background process with PATH, keeping its pid; returns only on failure */
 struct dosxc_task_info {
     int pid, parent;
     dosxc_u32 background, reserved;
@@ -343,7 +352,8 @@ struct dosxc_task_info {
 };
 struct dosxc_task_stats {
     dosxc_u64 idle_ns, now_ns, memory_total, memory_free;
-    dosxc_u32 tasks, reserved;
+    dosxc_u32 tasks;
+    dosxc_u32 cpus;            /* processors idle_ns adds up; 0 from older kernels: 1 */
 };
 struct dosxc_display_mode {
     dosxc_u32 width, height;
@@ -359,6 +369,7 @@ struct dosxc_display {
 
 #define DOSXC_DRIVE_EJECT  1   /* a = drive letter: write back, unmount, safe to remove */
 #define DOSXC_DRIVE_NOTICE 2   /* next message ("USB drive ready as E:") into buffer; 0 when none */
+#define DOSXC_DRIVE_MOUNT  3   /* buffer = an .ISO or .IMG file: returns the drive letter it is mounted as */
 
 #define DOSXC_POWER_OFF 1      /* write back, switch off; never returns */
 
@@ -433,16 +444,24 @@ struct dosxc_netinfo {
     dosxc_u32 ip, mask, gateway, dns[2];   /* host byte order */
     dosxc_u32 lease;           /* seconds left of the DHCP lease */
     dosxc_u64 rx_packets, tx_packets, rx_bytes, tx_bytes, rx_dropped;
+    dosxc_u32 flags;           /* DOSXC_NETCFG_* */
 };
-struct dosxc_netconfig {
-    dosxc_u32 dhcp;            /* 1: use DHCP and ignore the rest */
+#define DOSXC_NETCFG_IPV4_OFF 1    /* no IPv4 address at all */
+#define DOSXC_NETCFG_IPV6_OFF 2    /* no IPv6 */
+#define DOSXC_NETCFG_DNS_FIXED 4   /* with DHCP: keep these DNS servers instead of the offered ones */
+struct dosxc_netconfig {       /* administrators */
+    dosxc_u32 dhcp;            /* 1: use DHCP (then only dns and flags count) */
     dosxc_u32 ip, mask, gateway, dns[2];   /* host byte order */
+    dosxc_u32 flags;           /* DOSXC_NETCFG_* */
 };
 
 #define DOSXC_DRIVER_LIST   1  /* a = index, buffer = struct dosxc_driverinfo; returns the count */
 #define DOSXC_DRIVER_LOAD   2  /* buffer = path of the .DRV file */
 #define DOSXC_DRIVER_UNLOAD 3  /* buffer = file name, e.g. "E1000.DRV" */
 #define DOSXC_DRIVER_LOG    4  /* buffer: copy of the driver log; returns its length */
+#define DOSXC_DRIVER_DEVICES 5 /* a = index, buffer = struct dosxc_deviceinfo; returns the count (anyone, like LIST) */
+#define DOSXC_DRIVER_MATCH  6  /* buffer = path of a .DRV file, which is not started: how many devices
+                                  without a driver it names; -EOPNOTSUPP when it finds its hardware itself */
 #define DOSXC_DRIVER_STATE_LOADED 1   /* running, with at least one device */
 #define DOSXC_DRIVER_STATE_IDLE   2   /* running, its hardware is not in this computer */
 #define DOSXC_DRIVER_STATE_FAILED 3   /* stopped after a processor exception */
@@ -453,6 +472,14 @@ struct dosxc_driverinfo {
     char description[64];
     dosxc_u32 state;           /* DOSXC_DRIVER_STATE_* */
     dosxc_u32 devices;
+};
+/* A PCI function, and the driver file that runs it ("" when none does). */
+struct dosxc_deviceinfo {
+    unsigned char bus, device, function, prog_if;
+    unsigned short vendor, id;
+    unsigned char class_code, subclass, revision, reserved;
+    unsigned short subsystem_vendor, subsystem;
+    char driver[32];
 };
 
 #define DOSXC_FD_CLOEXEC 1

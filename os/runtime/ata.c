@@ -331,6 +331,7 @@ void ata_probe(const struct pci_function *f) {
     u64 bar4 = pci_bar(f, 4, &io);
     if (bar4 && io) bm = (u16)bar4;
     pci_enable(f, 0, 1);
+    storage_claim();
     for (int ch = 0; ch < 2; ++ch) {
         int native = (f->prog_if >> (ch * 2)) & 1;
         u16 cmd = ch ? 0x170 : 0x1f0, control = ch ? 0x376 : 0x3f6;

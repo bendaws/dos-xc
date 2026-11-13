@@ -79,7 +79,7 @@ int main(int argc, char **argv) {
     char path[32];
     config_path(path, sizeof(path));
     if (same(argv[1], "/DHCP")) {
-        struct dosxc_netconfig config = {1, 0, 0, 0, {0, 0}};
+        struct dosxc_netconfig config = {1, 0, 0, 0, {0, 0}, 0};
         unlink(path);
         int r = dosxc_sys_net(DOSXC_NET_CONFIG, 0, &config);
         if (r < 0) { printf("Cannot change the settings: %s.\n", strerror(-r)); return 1; }
@@ -87,7 +87,7 @@ int main(int argc, char **argv) {
         return 0;
     }
     if (same(argv[1], "/STATIC") && argc >= 5) {
-        struct dosxc_netconfig config = {0, 0, 0, 0, {0, 0}};
+        struct dosxc_netconfig config = {0, 0, 0, 0, {0, 0}, 0};
         if (parse(argv[2], &config.ip) || parse(argv[3], &config.mask) || parse(argv[4], &config.gateway)) return 1;
         if (argc > 5 && parse(argv[5], &config.dns[0])) return 1;
         FILE *f = fopen(path, "wb");

@@ -22,7 +22,7 @@ VERSION = json.loads((BUILD / "version.json").read_text())
 PART = 2048
 RESERVED = 4
 ROOT_ENTRIES = 512
-FREE_SPACE = 64 << 20          # writable headroom on live media
+FREE_SPACE = 512 << 20         # writable headroom on live media (DOSfox profiles need room)
 MIN_SECTORS = 131072           # 64 MiB, the installer's minimum
 DATE = ((2026 - 1980) << 9) | (11 << 5) | 6
 TIME = 12 << 11
@@ -97,6 +97,15 @@ def load_tree(path):
         tree[child.name] = load_tree(child) if child.is_dir() else child.read_bytes()
     return tree
 
+def export(tree, destination):
+    destination.mkdir(parents=True, exist_ok=True)
+    for name, content in tree.items():
+        target = destination / name
+        if isinstance(content, dict):
+            export(content, target)
+        else:
+            target.write_bytes(content)
+
 def merge(into, extra, where=''):
     for name, content in extra.items():
         existing = next((k for k in into if k.upper() == name.upper()), None)
@@ -125,7 +134,6 @@ struct.pack_into('<I', mbr, 440, serial)
 user = BUILD / f'user{BITS}' / 'system'
 system = {
     'COMMAND.EXE': (user / 'COMMAND.EXE').read_bytes(),
-    'PKG.EXE': (user / 'PKG.EXE').read_bytes(),
     'LIB': {'libc.so': (BUILD / f'sysroot{BITS}' / 'lib' / 'libc.so').read_bytes()},
     'Drivers': {},
     'FONTS': {},
@@ -145,6 +153,19 @@ system = {
     'SHELLU.DLL': (BUILD / 'shelluefi.dll').read_bytes(),
     'VERSION.TXT': (VERSION["label"] + "\r\nSystem directory: C:\\SYSTEM\r\n").encode("ascii"),
 }
+# The system package (docs/PACKAGES.md): what PKG UPDATE replaces at the next
+# start.  The boot sector finds these by their place on the disk, so only Setup writes them.
+FIXED = ('LOADER.BIN', 'SETUP.CFG', 'DOSDATA.BIN')
+core_tree = BUILD / f'system{BITS}'
+shutil.rmtree(core_tree, ignore_errors=True)
+export({k: v for k, v in system.items() if k not in FIXED and isinstance(v, bytes) or k == 'LIB'}, core_tree)
+system_info = {'Name': 'system', 'Version': VERSION['version'], 'Author': 'Ben Daws', 'Arch': BITS, 'Required': '1',
+               'Description': 'DOS-XC system: kernel, runtime, C library and command shell'}
+system_package = BUILD.parent / 'packages' / f'system-{BITS}.dsp'
+system_package.parent.mkdir(parents=True, exist_ok=True)
+dsp.pack(core_tree, system_package, system_info)
+system['PACKAGE.INF'] = dsp.metadata_text(system_info).encode('utf-8')
+
 tree = {'SYSTEM': system, 'EFI': {'BOOT': {'BOOTX64.EFI': (BUILD / 'iso64/EFI/BOOT/BOOTX64.EFI').read_bytes()}},
         'TEMP': {}, 'Users': {'Public': {}}, 'Programs': {}, 'Packages': {}}
 
@@ -152,6 +173,7 @@ for package in sorted(PACKAGES.glob('*.dsp')):
     stem, _, bits = package.stem.rpartition('-')
     if bits in (BITS, '16'):
         tree['Packages'][stem + '.dsp'] = package.read_bytes()
+tree['Packages']['system.dsp'] = system_package.read_bytes()
 store = {}
 for package in sorted(PACKAGES.glob(f'*-{BITS}.dsp')):
     if package.stat().st_size > 64 << 20:
@@ -164,10 +186,14 @@ for package in sorted(PACKAGES.glob(f'*-{BITS}.dsp')):
 system['Drivers']['STORE'] = store
 staging = BUILD / f'live{BITS}'
 shutil.rmtree(staging, ignore_errors=True)
-for name in ('coreutils', 'batch', 'desktop', 'dosfox', 'dosoffice'):
+for name in ('coreutils', 'pkg', 'batch', 'desktop', 'dosfox', 'openwork',
+             'ethernet', 'curl', 'nano', 'VLC', 'Vim', 'xz', 'zip'):
     if (PACKAGES / f'{name}-{BITS}.dsp').exists():      # the build may leave some out
         dsp.install(PACKAGES / f'{name}-{BITS}.dsp', staging)
 tree['Programs'] = load_tree(staging / 'Programs')
+if (staging / 'SYSTEM').is_dir():
+    # Driver packages stage their payloads outside Programs; keep those on live media too.
+    merge(system, load_tree(staging / 'SYSTEM'), '/SYSTEM')
 extra_trees = os.pathsep.join(os.environ.get(name, '') for name in
                               ('DOSXC_EXTRA_TREES', f'DOSXC_EXTRA_TREES_{BITS}'))
 for extra in filter(None, extra_trees.split(os.pathsep)):
@@ -269,23 +295,17 @@ out.write_bytes(image)
 print(f'Built {out} (MBR + FAT16, {SECTORS // 2048} MiB, {cluster_bytes // 1024} KiB clusters, '
       f'{(clusters + 2 - next_cluster) * cluster_bytes >> 20} MiB free)')
 
-def export(tree, destination):
-    destination.mkdir(parents=True, exist_ok=True)
-    for name, content in tree.items():
-        target = destination / name
-        if isinstance(content, dict):
-            export(content, target)
-        else:
-            target.write_bytes(content)
-
 export({k: v for k, v in tree.items() if k in ('SYSTEM', 'EFI')}, BUILD / f'iso{BITS}')
 if BITS == '64':
     # The El Torito EFI image is the partition itself.  Small images stay
     # below 65536 sectors for firmware that cannot handle a zero length.
+    # It must also hold at least 4085 clusters, or firmware reads it as FAT12.
     used = lba_of(next_cluster) - PART
     efi_sectors = max(32768, ((used + 2047) // 2048) * 2048)
     if efi_sectors > 65535:
         efi_sectors = SECTORS - PART      # large content: keep the free space too
+    fat16 = ((DATA + 4100 * SPC - PART + 2047) // 2048) * 2048
+    efi_sectors = min(max(efi_sectors, fat16), SECTORS - PART)
     efi = bytearray(image[PART * 512:(PART + efi_sectors) * 512])
     struct.pack_into('<H', efi, 19, efi_sectors if efi_sectors < 65536 else 0)
     struct.pack_into('<I', efi, 32, 0 if efi_sectors < 65536 else efi_sectors)

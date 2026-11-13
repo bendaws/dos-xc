@@ -7,6 +7,8 @@
 #include <limits.h>
 #include <pthread.h>
 #include <semaphore.h>
+#include <signal.h>
+#include <errno.h>
 #include <stdlib.h>
 #include <string.h>
 #include <time.h>
@@ -15,6 +17,7 @@
 #define KEY_MAX PTHREAD_KEYS_MAX
 
 struct __dosxc_thread {
+    struct __dosxc_thread *self;     /* first: %gs:0 reads it (see self()) */
     void *(*start)(void *);
     void *argument, *result;
     int error;
@@ -38,11 +41,19 @@ struct __dosxc_thread {
 
 int __dosxc_threaded;
 static volatile uintptr_t *thread_slot;
+static int gs_self;                  /* the kernel keeps the running thread at %gs:0 */
 static struct __dosxc_thread main_thread;
 static struct __dosxc_thread *volatile zombies;
 static volatile int running_threads;
 
 static inline struct __dosxc_thread *self(void) {
+#ifdef __x86_64__
+    if (gs_self) {
+        struct __dosxc_thread *t;
+        __asm__("mov %%gs:0,%0" : "=r"(t));
+        return t ? t : &main_thread;
+    }
+#endif
     uintptr_t value = thread_slot ? *thread_slot : 0;
     return value ? (struct __dosxc_thread *)value : &main_thread;
 }
@@ -236,7 +247,11 @@ __asm__(".text\n"
 extern void __dosxc_thread_entry(void) __attribute__((visibility("hidden")));
 
 int pthread_create(pthread_t *out, const pthread_attr_t *attr, void *(*start)(void *), void *argument) {
-    if (!thread_slot) thread_slot = (volatile uintptr_t *)dosxc_sys_task(DOSXC_TASK_THREAD_SLOT, 0, 0, 0);
+    if (!thread_slot && !gs_self) {
+        long slot = dosxc_sys_task(DOSXC_TASK_THREAD_SLOT, (void *)1, 0, 0);
+        if (slot == 1) gs_self = 1;
+        else thread_slot = (volatile uintptr_t *)slot;
+    }
     __dosxc_threaded = 1;
     reap_zombies();
 
@@ -262,6 +277,7 @@ int pthread_create(pthread_t *out, const pthread_attr_t *attr, void *(*start)(vo
         return EAGAIN;
     }
 #endif
+    t->self = t;
     t->start = start;
     t->argument = argument;
     t->alive = 1;
@@ -329,8 +345,8 @@ int pthread_detach(pthread_t t) {
 pthread_t pthread_self(void) { return self(); }
 int pthread_equal(pthread_t a, pthread_t b) { return a == b; }
 int pthread_kill(pthread_t t, int signal) { (void)t; return signal ? ENOSYS : 0; }
-int pthread_sigmask(int how, const sigset_t *set, sigset_t *old) { (void)how; (void)set; if (old) *old = 0; return 0; }
-int pthread_atfork(void (*a)(void), void (*b)(void), void (*c)(void)) { (void)a; (void)b; (void)c; return 0; }
+int pthread_sigmask(int how, const sigset_t *set, sigset_t *old) { return sigprocmask(how, set, old) ? errno : 0; }
+hidden void __dosxc_threads_forked(void) { running_threads = 0; zombies = 0; }
 int pthread_setname_np(pthread_t t, const char *name) { (void)t; (void)name; return 0; }
 int pthread_getconcurrency(void) { return 0; }
 int pthread_setconcurrency(int n) { (void)n; return 0; }
@@ -431,9 +447,25 @@ int pthread_cond_destroy(pthread_cond_t *c) { (void)c; return 0; }
 static int condition_wait(pthread_cond_t *c, pthread_mutex_t *m, const struct timespec *absolute) {
     int sequence = c->__sequence;
     int count = m->__count;
+    /* A cancellation request cannot interrupt a kernel futex wait. Bound
+       cancellable waits so pthread_testcancel runs even without a signal.
+       Returning early is a permitted spurious condition-variable wakeup. */
+    struct timespec poll_until;
+    const struct timespec *until = absolute;
+    if (!self()->cancel_disabled) {
+        clock_gettime(c->__clock, &poll_until);
+        poll_until.tv_nsec += 50000000L;
+        if (poll_until.tv_nsec >= 1000000000L) {
+            ++poll_until.tv_sec;
+            poll_until.tv_nsec -= 1000000000L;
+        }
+        if (!absolute || poll_until.tv_sec < absolute->tv_sec ||
+            (poll_until.tv_sec == absolute->tv_sec && poll_until.tv_nsec < absolute->tv_nsec)) until = &poll_until;
+    }
     m->__owner = 0;
     word_unlock(&m->__lock);
-    int r = timed_wait(&c->__sequence, sequence, absolute, c->__clock);
+    int r = timed_wait(&c->__sequence, sequence, until, c->__clock);
+    if (until != absolute && r == ETIMEDOUT) r = 0;
     while (__atomic_exchange_n(&m->__lock, 2, __ATOMIC_ACQUIRE) != 0) futex_wait(&m->__lock, 2, 0);
     m->__owner = self();
     m->__count = count;

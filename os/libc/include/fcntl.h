@@ -9,7 +9,7 @@
 #define __NEED_pid_t
 #define __NEED_mode_t
 #include <sys/_types.h>
-#include <dosxc/abi.h>
+#include <dosxc/open.h>
 
 #define O_RDONLY DOSXC_O_RDONLY
 #define O_WRONLY DOSXC_O_WRONLY
@@ -57,6 +57,8 @@
 #define AT_SYMLINK_NOFOLLOW 0x100
 #define AT_REMOVEDIR 0x200
 #define AT_EACCESS 0x200
+#define AT_SYMLINK_FOLLOW 0x400
+#define AT_EMPTY_PATH 0x1000
 #define AT_SYMLINK_FOLLOW 0x400
 
 struct flock { short l_type, l_whence; off_t l_start, l_len; pid_t l_pid; };

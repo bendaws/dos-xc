@@ -6,6 +6,8 @@
 #ifndef _POLL_H
 #define _POLL_H
 #include <sys/cdefs.h>
+#define __NEED_sigset_t
+#include <sys/_types.h>
 #define POLLIN 0x001
 #define POLLPRI 0x002
 #define POLLOUT 0x004
@@ -18,5 +20,7 @@ typedef unsigned long nfds_t;
 struct pollfd { int fd; short events, revents; };
 __BEGIN_DECLS
 int poll(struct pollfd *, nfds_t, int);
+struct timespec;
+int ppoll(struct pollfd *, nfds_t, const struct timespec *, const sigset_t *);
 __END_DECLS
 #endif

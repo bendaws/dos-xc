@@ -1,5 +1,5 @@
 /*
- * DOS-XC /dosoffice/office.c
+ * DOS-XC /openwork/office.c
  * Copyright (c) 2026 Ben Daws - see LICENSE.txt
  */
 

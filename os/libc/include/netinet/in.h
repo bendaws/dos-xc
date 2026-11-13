@@ -33,6 +33,7 @@ struct sockaddr_in6 {
 #define IPPROTO_IPV6 41
 #define IPPROTO_RAW 255
 #define INADDR_ANY ((in_addr_t)0)
+#define IPPORT_RESERVED 1024
 #define INADDR_BROADCAST ((in_addr_t)0xffffffff)
 #define INADDR_NONE ((in_addr_t)0xffffffff)
 #define INADDR_LOOPBACK ((in_addr_t)0x7f000001)
@@ -44,6 +45,18 @@ struct ip_mreq { struct in_addr imr_multiaddr, imr_interface; };
 #define IN_MULTICAST(a) ((((unsigned)(a)) & 0xf0000000u) == 0xe0000000u)
 #define IN_CLASSD(a) IN_MULTICAST(a)
 #define IN6_IS_ADDR_MULTICAST(a) (((const unsigned char *)(a))[0] == 0xff)
+static __inline int __in6_zeros(const void *a, int n) {
+    const unsigned char *p = (const unsigned char *)a;
+    for (int i = 0; i < n; ++i)
+        if (p[i]) return 0;
+    return 1;
+}
+#define IN6_IS_ADDR_UNSPECIFIED(a) __in6_zeros((a), 16)
+#define IN6_IS_ADDR_LOOPBACK(a) (__in6_zeros((a), 15) && ((const unsigned char *)(a))[15] == 1)
+#define IN6_IS_ADDR_LINKLOCAL(a) (((const unsigned char *)(a))[0] == 0xfe && (((const unsigned char *)(a))[1] & 0xc0) == 0x80)
+#define IN6_IS_ADDR_SITELOCAL(a) (((const unsigned char *)(a))[0] == 0xfe && (((const unsigned char *)(a))[1] & 0xc0) == 0xc0)
+#define IN6_IS_ADDR_V4MAPPED(a) (__in6_zeros((a), 10) && ((const unsigned char *)(a))[10] == 0xff && ((const unsigned char *)(a))[11] == 0xff)
+#define IN_LOOPBACKNET 127
 struct ip_mreqn { struct in_addr imr_multiaddr, imr_address; int imr_ifindex; };
 struct ip_mreq_source { struct in_addr imr_multiaddr, imr_interface, imr_sourceaddr; };
 struct ipv6_mreq { struct in6_addr ipv6mr_multiaddr; unsigned ipv6mr_interface; };
@@ -62,6 +75,11 @@ struct ipv6_mreq { struct in6_addr ipv6mr_multiaddr; unsigned ipv6mr_interface; 
 #define IPV6_LEAVE_GROUP 21
 #define IPV6_ADD_MEMBERSHIP IPV6_JOIN_GROUP
 #define IPV6_DROP_MEMBERSHIP IPV6_LEAVE_GROUP
+#define IPV6_RECVPKTINFO 49
+#define IPV6_PKTINFO 50
+#define IPV6_RECVHOPLIMIT 51
+#define IPV6_HOPLIMIT 52
+struct in6_pktinfo { struct in6_addr ipi6_addr; unsigned ipi6_ifindex; };
 #endif
 #define IP_MTU_DISCOVER 10
 #define IP_PMTUDISC_DONT 0

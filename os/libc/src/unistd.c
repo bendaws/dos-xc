@@ -7,6 +7,7 @@
 #include <fcntl.h>
 #include <unistd.h>
 #include <stdarg.h>
+#include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <limits.h>
@@ -26,26 +27,17 @@ int open(const char *path, int flags, ...) {
         mode = va_arg(ap, int);
         va_end(ap);
     }
-    return (int)__result(dosxc_sys_open(path, flags, mode));
-}
-
-int openat(int dirfd, const char *path, int flags, ...) {
-    int mode = 0;
-    if (flags & O_CREAT) {
-        va_list ap;
-        va_start(ap, flags);
-        mode = va_arg(ap, int);
-        va_end(ap);
-    }
-    if (dirfd != AT_FDCWD && path[0] != '/' && path[0] != '\\' && !(path[0] && path[1] == ':')) {
-        errno = ENOSYS;
-        return -1;
-    }
-    return (int)__result(dosxc_sys_open(path, flags, mode));
+    int fd = (int)__result(dosxc_sys_open(path, flags, mode));
+    if (fd >= 0 && !(flags & (O_WRONLY | O_RDWR | O_CREAT))) __dir_record(fd, path);
+    return fd;
 }
 
 int creat(const char *path, mode_t mode) { return open(path, O_WRONLY | O_CREAT | O_TRUNC, mode); }
-int close(int fd) { return fd >= SHM_FD_BASE ? __shm_close(fd) : (int)__result(dosxc_sys_close(fd)); }
+int close(int fd) {
+    if (fd >= SHM_FD_BASE) return __shm_close(fd);
+    __dir_closed(fd);
+    return (int)__result(dosxc_sys_close(fd));
+}
 ssize_t read(int fd, void *buffer, size_t size) {
     ssize_t n = __result(dosxc_sys_read(fd, buffer, size));
     if (n > 0 && __console_raw && dosxc_sys_isatty(fd) > 0) n = __console_input(buffer, n);
@@ -78,8 +70,17 @@ ssize_t pwrite(int fd, const void *buffer, size_t size, off_t offset) {
     return n;
 }
 
-int dup(int fd) { return fd >= SHM_FD_BASE ? __shm_dup(fd) : (int)__result(dosxc_sys_dup(fd, 0)); }
-int dup2(int fd, int target) { return (int)__result(dosxc_sys_dup2(fd, target)); }
+int dup(int fd) {
+    if (fd >= SHM_FD_BASE) return __shm_dup(fd);
+    int r = (int)__result(dosxc_sys_dup(fd, 0));
+    if (r >= 0) __dir_copied(fd, r);
+    return r;
+}
+int dup2(int fd, int target) {
+    int r = (int)__result(dosxc_sys_dup2(fd, target));
+    if (r >= 0) __dir_copied(fd, r);
+    return r;
+}
 int dup3(int fd, int target, int flags) {
     if (fd == target) {
         errno = EINVAL;
@@ -110,10 +111,11 @@ int fcntl(int fd, int command, ...) {
         return -1;
     }
     switch (command) {
-    case F_DUPFD: return (int)__result(dosxc_sys_dup(fd, (int)argument));
+    case F_DUPFD:
     case F_DUPFD_CLOEXEC: {
         int r = (int)__result(dosxc_sys_dup(fd, (int)argument));
-        if (r >= 0) dosxc_sys_fdflags(r, 1, DOSXC_FD_CLOEXEC);
+        if (r >= 0 && command == F_DUPFD_CLOEXEC) dosxc_sys_fdflags(r, 1, DOSXC_FD_CLOEXEC);
+        if (r >= 0) __dir_copied(fd, r);
         return r;
     }
     case F_GETFD: return (int)__result(dosxc_sys_fdflags(fd, 0, 0));
@@ -213,18 +215,18 @@ int fstat(int fd, struct stat *out) {
     __stat_convert(&s, out);
     return 0;
 }
-int fstatat(int dirfd, const char *path, struct stat *out, int flags) {
-    (void)flags;
-    if (dirfd != AT_FDCWD && path[0] != '/' && path[0] != '\\') {
-        errno = ENOSYS;
-        return -1;
-    }
-    return stat(path, out);
-}
 
 int access(const char *path, int mode) {
     struct dosxc_stat s;
-    if (__result(dosxc_sys_stat(path, &s)) < 0) return -1;
+    if (dosxc_sys_stat(path, &s) < 0) {
+        /* Running "DIR/NAME" runs DIR/NAME.EXE, so that is what X_OK asks about. */
+        const char *base = strrchr(path, '/'), *back = strrchr(path, '\\');
+        if (back > base) base = back;
+        char exe[PATH_MAX];
+        if (!(mode & X_OK) || strchr(base ? base : path, '.') ||
+            (size_t)snprintf(exe, sizeof(exe), "%s.EXE", path) >= sizeof(exe) || dosxc_sys_stat(exe, &s) < 0)
+            return __result(dosxc_sys_stat(path, &s)) < 0 ? -1 : 0;
+    }
     if ((mode & W_OK) && (s.attributes & DOSXC_ATTR_READONLY)) {
         errno = EACCES;
         return -1;
@@ -239,11 +241,6 @@ int mkdir(const char *path, mode_t mode) {
 int rmdir(const char *path) { return (int)__result(dosxc_sys_rmdir(path)); }
 int unlink(const char *path) { return (int)__result(dosxc_sys_unlink(path)); }
 int chdir(const char *path) { return (int)__result(dosxc_sys_chdir(path)); }
-int fchdir(int fd) {
-    (void)fd;
-    errno = ENOSYS;
-    return -1;
-}
 int chmod(const char *path, mode_t mode) {
     (void)mode;
     struct dosxc_stat s;
@@ -297,10 +294,6 @@ ssize_t readlink(const char *path, char *buffer, size_t size) {
 /* FAT keeps one timestamp; DOS-XC does not let programs change it. */
 int utime(const char *path, const struct utimbuf *times) { (void)times; return chmod(path, 0); }
 int utimes(const char *path, const struct timeval times[2]) { (void)times; return chmod(path, 0); }
-int utimensat(int dirfd, const char *path, const struct timespec times[2], int flags) {
-    (void)dirfd; (void)times; (void)flags;
-    return chmod(path, 0);
-}
 int futimens(int fd, const struct timespec times[2]) { (void)times; return fchmod(fd, 0); }
 
 char *getcwd(char *buffer, size_t size) {
@@ -358,6 +351,8 @@ struct __dosxc_dir {
     struct dosxc_dirent *entries;
     size_t count, position;
     struct dirent current;
+    int fd;                      /* for dirfd: opened when asked for, or given to fdopendir */
+    char *path;
 };
 
 DIR *opendir(const char *path) {
@@ -379,6 +374,12 @@ DIR *opendir(const char *path) {
         }
         if ((size_t)n <= capacity) {
             d->count = (size_t)n;
+            d->fd = -1;
+            if (!(d->path = strdup(path))) {
+                free(d->entries);
+                free(d);
+                return 0;
+            }
             return d;
         }
         free(d->entries);
@@ -387,9 +388,14 @@ DIR *opendir(const char *path) {
 }
 
 DIR *fdopendir(int fd) {
-    (void)fd;
-    errno = ENOSYS;
-    return 0;
+    const char *path = __dir_path(fd);
+    if (!path) {
+        errno = fcntl(fd, F_GETFD) < 0 ? EBADF : ENOTDIR;
+        return 0;
+    }
+    DIR *d = opendir(path);
+    if (d) d->fd = fd;
+    return d;
 }
 
 struct dirent *readdir(DIR *d) {
@@ -412,14 +418,19 @@ int readdir_r(DIR *d, struct dirent *entry, struct dirent **result) {
 }
 
 int closedir(DIR *d) {
+    if (d->fd >= 0) close(d->fd);
     free(d->entries);
+    free(d->path);
     free(d);
     return 0;
 }
 void rewinddir(DIR *d) { d->position = 0; }
 long telldir(DIR *d) { return (long)d->position; }
 void seekdir(DIR *d, long position) { d->position = (size_t)position; }
-int dirfd(DIR *d) { (void)d; errno = ENOSYS; return -1; }
+int dirfd(DIR *d) {
+    if (d->fd < 0) d->fd = open(d->path, O_RDONLY | O_DIRECTORY);
+    return d->fd;
+}
 
 int alphasort(const struct dirent **a, const struct dirent **b) { return strcoll((*a)->d_name, (*b)->d_name); }
 

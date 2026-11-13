@@ -56,3 +56,40 @@ static char *members[] = {"user", 0};
 static struct group group = {"users", "", 0, members};
 struct group *getgrnam(const char *name) { return name && !strcmp(name, "users") ? &group : 0; }
 struct group *getgrgid(gid_t gid) { return gid == 0 ? &group : 0; }
+
+static int group_enumerated;
+struct group *getgrent(void) { return group_enumerated++ ? 0 : &group; }
+void setgrent(void) { group_enumerated = 0; }
+void endgrent(void) { group_enumerated = 0; }
+
+static int copy_group(struct group *found, struct group *out, char *buffer, size_t size, struct group **result) {
+    *result = 0;
+    if (!found) return 0;
+    if (size < 2 * sizeof(char *) + 12) return ERANGE;
+    char **list = (char **)buffer;
+    char *names = buffer + 2 * sizeof(char *);
+    strcpy(names, "users");
+    strcpy(names + 6, "user");
+    list[0] = names + 6;
+    list[1] = 0;
+    *out = *found;
+    out->gr_name = names;
+    out->gr_passwd = names + 5;
+    out->gr_mem = list;
+    *result = out;
+    return 0;
+}
+int getgrnam_r(const char *name, struct group *out, char *buffer, size_t size, struct group **result) {
+    return copy_group(getgrnam(name), out, buffer, size, result);
+}
+int getgrgid_r(gid_t gid, struct group *out, char *buffer, size_t size, struct group **result) {
+    return copy_group(getgrgid(gid), out, buffer, size, result);
+}
+int getgrouplist(const char *user, gid_t group_id, gid_t *groups, int *count) {
+    (void)user;
+    if (*count < 1) { *count = 1; return -1; }
+    groups[0] = group_id;
+    *count = 1;
+    return 1;
+}
+int initgroups(const char *user, gid_t group_id) { (void)user; (void)group_id; return 0; }

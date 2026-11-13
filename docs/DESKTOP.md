@@ -39,9 +39,11 @@ at once.
 
 ## User accounts
 
-User accounts are optional: Setup asks whether to use them and creates the
-first administrator.  Without accounts everyone is the one public user, with
-`C:\Users\Public` as home.  With them, the computer starts at a login screen
+User accounts are always on.  Setup creates the first administrator; an
+installed system that has none (made by an older Setup) asks for one at the
+first command prompt.  The live system makes a `Live` account (nickname "Live
+User", an administrator with no password and a picture chosen at random) at
+every start and logs it in.  The computer starts at a login screen
 (on the desktop when the `DOS-XC Desktop` package is installed, as text
 otherwise): a row of users with their nicknames and pictures.  Click one, or move
 with Tab or the arrow keys and press Enter, to type the password.  After logging
@@ -54,10 +56,12 @@ Each user has a user name (letters and digits), a password, a nickname (any
 printable ASCII), a square picture (nine are in the package's `Pictures` folder,
 or any picture file), a home folder (`C:\Users\<name>` unless an administrator
 chose another) and their own desktop settings there.  Control Panel > User
-Accounts changes one's own picture, nickname, password and start mode;
-administrators also add and remove users, make or unmake administrators, set
-home folders, and turn accounts on or off.  There is always at least one
-administrator.
+Account Center changes one's own picture, nickname, password and start mode.
+Managing everyone's accounts (adding and removing users, making or unmaking
+administrators, setting home folders and pictures) is locked
+until an administrator unlocks it with their name and password
+(`DOSXC_USER_UNLOCK`); it locks again when the page or the Control Panel
+closes.  There is always at least one administrator.
 
 Only administrators may write `\SYSTEM` (and `\SYSTEM\Drivers`), `\Programs`,
 `\Packages`, `\EFI` and `\AUTOEXEC.BAT`, open other users' home folders, read the
@@ -70,10 +74,40 @@ system drive; they hold against programs only where programs are isolated
 
 ## Control Panel
 
-Every setting of the desktop in one window: Display (screens, resolution,
-scale), Wallpaper, Accent Color, Sound, Network (the adapter and its address),
-Default Programs (the web browser, or none, and the text editor) and Packages
-(the Package Manager).  The settings are kept in `%HOME%\DESKTOP.CFG`.
+Every setting in one window, with a sidebar of pages and a Home page of
+icons: Display (screens, resolution, scale), Wallpaper, Accent Color, Sound,
+Network, Date and Time, Default Programs (the web browser, text editor, media player and
+office programs) and the User Account Center.  Under Administrative Tools the
+sidebar also starts Packages (the Package Manager), Firewall, Event Logs and
+Device Manager.
+The desktop's settings are kept in `%HOME%\DESKTOP.CFG`.
+
+Network shows the first adapter's state (IPv4 and IPv6 addresses, gateway, DNS
+servers, the DHCP lease) and sets it: IPv4 on or off, automatic (DHCP) or a
+fixed address, mask and gateway, DNS servers (which can also replace the ones
+DHCP gives), and IPv6 on or off.  Apply changes the adapter at once and saves
+the settings in `\SYSTEM\NET.CFG`; only administrators can.  The taskbar's
+network icon opens this page.
+
+Date and Time sets the date and local hardware clock (1970–2099), switches
+between 24-hour and 12-hour AM/PM display, and selects a fixed UTC offset
+from -12:00 through +14:00, including fractional-hour zones. Daylight saving
+changes are manual. Apply settings saves the offset, format and NTP server
+in `\SYSTEM\TIME.CFG`; changing the offset preserves the UTC instant.
+Set date/time applies the calendar fields separately. Sync now saves the
+preferences and requests the time from the selected NTP server (default
+`pool.ntp.org`), with a five-second reply timeout. These changes require an
+administrator. The default firewall allows desktop DNS (outbound UDP 53)
+and NTP (UDP 123); custom firewall rules must allow these too. Clicking the
+taskbar clock opens this page.
+
+Device Manager (`Apps\DEVICES.EXE`) lists every PCI device with its name, ID
+and what runs it: a driver file, the system itself ("built in"), the firmware's
+display ("firmware"), or nothing.  Find Drivers looks for missing drivers, and
+Driver Log shows `DRIVERS /LOG`.  The desktop also starts it with `/AUTO` at
+each login: an administrator's session then installs drivers for new hardware by
+itself and shows a New Hardware window only when it did something (see
+[DRIVERS.md](DRIVERS.md#finding-drivers-automatically)).
 
 ## Icons and shortcuts on the desktop
 
@@ -103,7 +137,7 @@ A shortcut is a text file `NAME.LNK` of `key=value` lines:
 
 | Program | File | Notes |
 | --- | --- | --- |
-| File Explorer | `EXPLORER.EXE` | Navigation pane, address bar, search, details view and pane. Right-click for copy, paste, rename, delete and Set as wallpaper |
+| File Explorer | `EXPLORER.EXE` | Navigation pane, address bar, search, details view and pane. Right-click for copy, paste, rename, delete, Set as wallpaper, archives and disk images (below) |
 | File Editor | `EDITOR.EXE` | Plain text. Ctrl+S, Ctrl+O, Ctrl+N, Ctrl+A, Ctrl+C, Ctrl+X, Ctrl+V |
 | Calculator | `CALC.EXE` | Mouse or keyboard |
 | Paint | `PAINT.EXE` | Opens BMP, PNG and JPEG; saves BMP |
@@ -120,6 +154,40 @@ A shortcut is a text file `NAME.LNK` of `key=value` lines:
 
 Double-clicking a file in File Explorer opens it in the matching program.  A
 program that is not one of these opens in a terminal window.
+
+### Archives and disk images
+
+File Explorer extracts ZIP, 7z, RAR, `.tar`, `.tar.gz` (`.tgz`) and `.tar.xz`
+(`.txz`) archives and single `.gz` and `.xz` files: right-click one for Extract
+here, Extract to "*name*\" and Extract to..., or double-click it (also from the
+desktop) to extract it into a new folder beside it, which then opens.  Any
+selected file or folder can be compressed with Compress to ZIP, 7-Zip,
+`.tar.gz` or `.tar.xz`; the archive goes next to it.  A window shows the
+progress and can cancel.
+
+| Format | Extracts | Makes |
+| --- | --- | --- |
+| ZIP | Stored, Deflate, LZMA, XZ; Zip64 | Deflate |
+| 7z | LZMA, LZMA2, Deflate, Copy, with the BCJ (x86) and Delta filters; compressed headers | Solid LZMA2, 4 MiB dictionary |
+| RAR | RAR 5 (all methods and filters, solid) and RAR 2.9/4.x (LZ and its standard filters, solid) | No (the format is not open) |
+| `.tar`, `.tar.gz`, `.tar.xz` | ustar, pax and GNU long names | ustar with GNU long names |
+
+Not yet handled: passwords and encryption, archives split into parts,
+RAR 2.9/4.x blocks packed with PPMd (WinRAR's "text" compression), RAR 1.5/2.0,
+BZip2, PPMd in 7z and ZIP, and BCJ2.  Links are skipped (FAT has none), except
+RAR 5 hard links, which become copies.  DOS-XC's FAT long names are ASCII, so
+other characters in names become `_`.  The code is in `desktop/archive`; it
+also builds on a host computer.
+
+Double-clicking an `.iso` (a CD or DVD image, ISO 9660 with Rock Ridge or Joliet
+names) or an `.img`/`.ima` (a FAT disk or floppy image, with or without a
+partition table) mounts it as the next free drive letter and opens it.  Mounted
+images are listed as CD Image or Disk Image under Computer, with an eject
+button beside them in the navigation pane and Eject on the command bar.  ISO
+images are read-only; FAT images are writable when the drive holding them is.
+While an image is mounted its file cannot be deleted, renamed or written.
+`MOUNT file` and `EJECT drive:` do the same at the prompt.  UDF-only images
+(most Windows 10 and 11 DVDs) are not supported yet.
 
 ## 16-bit programs
 

@@ -38,6 +38,8 @@
 #define SEEK_END 2
 #endif
 
+#define _CS_PATH 0
+size_t confstr(int, char *, size_t);
 #define _SC_ARG_MAX 0
 #define _SC_CHILD_MAX 1
 #define _SC_CLK_TCK 2
@@ -54,6 +56,7 @@
 #define _SC_IOV_MAX 60
 #define _SC_GETPW_R_SIZE_MAX 70
 #define _SC_TTY_NAME_MAX 72
+#define _SC_SYMLOOP_MAX 173
 #define _PC_LINK_MAX 0
 #define _PC_MAX_CANON 1
 #define _PC_MAX_INPUT 2
@@ -103,6 +106,7 @@ extern char **environ;
 int getpagesize(void);
 long syscall(long, ...);
 pid_t getpgrp(void);
+pid_t getpgid(pid_t);
 pid_t getpid(void);
 pid_t getppid(void);
 pid_t getsid(pid_t);
@@ -124,6 +128,12 @@ int setgid(gid_t);
 int setpgid(pid_t, pid_t);
 pid_t setsid(void);
 int setuid(uid_t);
+int seteuid(uid_t);
+int setegid(gid_t);
+int setreuid(uid_t, uid_t);
+int setregid(gid_t, gid_t);
+int setresuid(uid_t, uid_t, uid_t);
+int setresgid(gid_t, gid_t, gid_t);
 unsigned sleep(unsigned);
 int symlink(const char *, const char *);
 void sync(void);
@@ -136,6 +146,12 @@ int ftruncate(int, off_t);
 char *ttyname(int);
 int ttyname_r(int, char *, size_t);
 int unlink(const char *);
+int unlinkat(int, const char *, int);
+int linkat(int, const char *, int, const char *, int);
+int symlinkat(const char *, int, const char *);
+ssize_t readlinkat(int, const char *__restrict, char *__restrict, size_t);
+int faccessat(int, const char *, int, int);
+int fchownat(int, const char *, uid_t, gid_t, int);
 int usleep(useconds_t);
 ssize_t write(int, const void *, size_t);
 int lockf(int, int, off_t);

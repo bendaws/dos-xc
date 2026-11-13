@@ -161,6 +161,26 @@ POSIX wait status.  The child inherits the parent's file descriptors
 Pipes are buffered in memory, which is what lets `gcc -pipe` work without
 concurrency.
 
+### fork and exec
+
+On the x64 edition `dosxc_sys_task(DOSXC_TASK_FORK)` (the C library's
+`fork` and `vfork`) makes a copy of the calling process that runs beside
+it: the child gets its own copy of all the parent's memory at the same
+addresses, shares its open files, and returns 0 from the call; the parent
+gets the child's pid.  Only the calling thread is copied, and
+`pthread_atfork` handlers run as usual.  The copy is made at once (no
+copy-on-write), except the calling thread's stack below its stack pointer.
+The x86 edition has no address space per process, so `fork` fails there
+with `ENOSYS`.
+
+`DOSXC_TASK_EXEC` (`execve` and the other `exec*` functions) replaces a
+process that runs beside its parent, a forked one for instance, by a new
+program under the same pid: close-on-exec descriptors are closed and the
+others are kept.  A process started by `spawn` (one its parent waits for,
+like the shell's programs) or one with other threads gets `ENOSYS`; the C
+library then starts the program as a child, waits for it and exits with
+its status.
+
 ## Drives and paths
 
 The system volume keeps the letter it booted with (`C:` once installed,
@@ -177,8 +197,10 @@ supported.
 Drives come and go: a USB disk gets its letters when it is plugged in and
 loses them when it is pulled out or ejected (see [USB.md](USB.md)).  The
 `drive` system call (`DOSXC_SYS_DRIVE`) has `EJECT` (write back and unmount
-a drive's disk) and `NOTICE`, which returns the next message about drives
-("USB drive ready as E:") for the shell to show.  Files still open on a
+a drive's disk), `MOUNT` (mount an `.iso` or FAT `.img` file as a drive; it
+returns the letter, and the volume has `DOSXC_VOLUME_IMAGE`) and `NOTICE`,
+which returns the next message about drives ("USB drive ready as E:") for the
+shell to show.  Files still open on a
 drive that went away fail with `EIO`.
 
 ## The console
@@ -203,6 +225,7 @@ The last column wraps lazily, as on a VT100.  `TERM` is `ansi`.
 | `DOSXC_TASK_KILL` | Ends process `b` (not the first shell or the desktop) |
 | `DOSXC_TASK_ALIVE` | 1 if process `b` is running |
 | `DOSXC_TASK_STATS` | Fills `struct dosxc_task_stats` `a` |
+| `DOSXC_TASK_CPU_IDLE` | Fills `u64` array `a` (room for `b`) with each processor's idle nanoseconds, processor 0 first; returns how many |
 | `DOSXC_TASK_CONSOLE_OPEN` | Creates a virtual console and returns its number |
 | `DOSXC_TASK_CONSOLE_READ` | Copies up to `c` bytes that programs wrote on console `b` to `a` |
 | `DOSXC_TASK_CONSOLE_KEYS` | Queues the `c` keys in int array `a` on console `b` |
@@ -215,6 +238,18 @@ that never makes a system call keeps the processor until it does.  The kernel
 itself is not preempted, and programs share one address space without protection
 from each other.
 
+On a 64-bit BIOS boot with ring 3 programs, the other processors run program
+code too.  The kernel runs only on the first processor: a task on another
+processor comes back to it for each system call, fault or kill, and another
+processor picks it up again when it returns to its program.  Only tasks that
+run a while between system calls (about 0.2 ms) move, so programs that mostly
+make system calls stay on the first processor.  Other processors take turns of
+10 ms (their local APIC timer) when more tasks wait.  The 32-bit edition, UEFI
+boots and `\SYSTEM\RING0` use one processor; an empty `\SYSTEM\NOSMP` file
+does the same.  Programs that read the old shared thread slot (built with a C
+library before November 2026 and using threads) stay on the first processor;
+rebuild them to let their threads run in parallel.
+
 ## Threads
 
 `<pthread.h>` provides POSIX threads: creation, join and detach, mutexes,
@@ -225,7 +260,7 @@ and GCC's emulated `__thread` variables are per-thread or thread-safe.
 
 A thread is a kernel task that shares its process.  All programs and threads
 in the system share 256 task slots, and creating a thread beyond that reports
-`EAGAIN`.  The system runs on one processor.  Threads are preempted under the same rules as programs:
+`EAGAIN`.  Threads run on several processors as programs do (see above).  They are preempted under the same rules as programs:
 by a 100 Hz timer on a BIOS boot, but only at system calls under UEFI, so a
 thread spinning without system calls holds up the others there.
 
@@ -233,7 +268,7 @@ thread spinning without system calls holds up the others there.
 | --- | --- |
 | `DOSXC_TASK_THREAD_CREATE` | Starts a thread at `a` with stack pointer `b`; `c` is its data pointer |
 | `DOSXC_TASK_THREAD_EXIT` | Ends the thread; zeroes and wakes the int at `a` once its stack is unused |
-| `DOSXC_TASK_THREAD_SLOT` | Returns the address of a word holding the running thread's data (0 for the main thread) |
+| `DOSXC_TASK_THREAD_SLOT` | Returns the address of a word holding the running thread's data (0 for the main thread).  With `a` = 1 on a 64-bit ring 3 system it returns 1 instead: from then on `%gs:0` holds that data for each thread, which works on several processors |
 | `DOSXC_TASK_FUTEX_WAIT` | Sleeps while the int at `a` equals `b`, for up to `c` ns (forever if `c` <= 0) |
 | `DOSXC_TASK_FUTEX_WAKE` | Wakes up to `b` threads sleeping on `a`; returns how many |
 
@@ -350,7 +385,10 @@ memory and return `EFAULT` otherwise.  Exceptions to the separation:
 
 An empty file `\SYSTEM\SHAREMEM` on the system drive keeps ring 3 but lets
 every program use all memory; `\SYSTEM\RING0` runs programs in ring 0 as
-before.  32-bit and UEFI boots run programs in ring 0 without isolation.
+before.  32-bit boots run programs in ring 0 without isolation.  UEFI boots
+isolate programs the same way; the firmware's interrupt handlers stay in
+charge and also switch tasks (see `runtime_firmware_stubs` in
+`os/runtime/switch64.asm`).
 
 Files opened for reading are read from disk on demand; files opened for
 writing are kept in memory and written back when closed.
@@ -431,7 +469,7 @@ process tells them to (`security.sandbox.content.level` 0 turns it off).
 `os/libc` is a C library written for DOS-XC: stdio (with exact
 floating-point formatting), stdlib, string, math, time, locale stubs,
 wide characters, `setjmp`, `getopt`, directories, `posix_spawn`, `waitpid`,
-`pipe`, `select` on pipes, POSIX threads, `fork`-less process creation and the POSIX
+`pipe`, `select` on pipes, POSIX threads, `fork` and `exec` (see above) and the POSIX
 pieces GCC, binutils and libstdc++ need.  Build it with
 
 ```sh
@@ -443,12 +481,13 @@ math functions are in `libc.a`) and `OUT/include`.
 
 `os/libc/build.sh` also links `libc.so`.
 
-`fork` and `exec*` without a following exit are not available; use
-`posix_spawn`, `system` or `popen` (`popen(..., "r")` runs the command at
-once; `"w"` runs it at `pclose`).  `termios`, `ioctl` (`TIOCGWINSZ`),
+`fork` needs the x64 edition; `posix_spawn`, `system` and `popen` work on
+both (`popen(..., "r")` runs the command at once; `"w"` runs it at
+`pclose`).  `termios`, `ioctl` (`TIOCGWINSZ`),
 `poll`, `select`, `pwd.h` (one user) and a database-less `termcap` are
 provided for terminal programs.  Signals are limited to `raise`,
-`signal` and `kill` on the calling process; Ctrl+C delivers SIGINT.
+`signal` and `kill` on the calling process; Ctrl+C delivers SIGINT, and
+`kill` with any signal ends another process.
 
 ## Testing
 

@@ -15,11 +15,13 @@ struct disk {
     u32 flags;                        /* DOSXC_DISK_* */
     u8 bios;                          /* INT 13h drive number, or 0 */
     unsigned firmware;                /* UEFI disk index */
+    unsigned pci;                     /* UEFI: DISK_FLAG_PCI and its controller's location, or 0 */
     int usb;                          /* usb.c disk, or -1 */
     int driver;                       /* a driver's disk: its handle + 1, or 0 */
     int native;                       /* storage.c device + 1, or 0 */
     int absent;                       /* slot kept for a disk that went away */
     int ejected;                      /* UEFI: ejected, still in the drive */
+    int image;                        /* images[] slot + 1 for a disk image file, or 0 */
     u32 crc;                          /* of sector 0, to recognise BIOS disks on USB */
     struct window { u32 lba, count; } ahead[2];
     int recent;
@@ -29,7 +31,21 @@ struct volume {
     u32 lba;
     struct fat32_volume fs;
     struct fat32_volume *vol;
+    struct iso_volume *iso;           /* instead of vol on an ISO 9660 image */
 };
+
+/* A disk image file: its sectors are where the FAT volume holding it keeps them. */
+#define MAX_IMAGES 8
+struct run { u32 first, lba, count; };
+struct image {
+    int used;
+    char path[PATH_MAX_RT];
+    char backing;                     /* the drive holding the file */
+    struct run *runs;
+    u32 nruns, capacity;
+};
+static struct image images[MAX_IMAGES];
+static int image_io(int slot, u64 lba, unsigned count, void *buffer, int write);
 
 static struct disk disks[MAX_DISKS];
 static unsigned disk_total;
@@ -57,13 +73,14 @@ static int bios_transfer(u8 drive, u32 lba, unsigned count, void *buffer, int wr
 int disk_io(unsigned index, u64 lba, unsigned count, void *buffer, int write) {
     if (index >= disk_total || !count) return -DOSXC_EINVAL;
     struct disk *d = &disks[index];
-    if (count > READ_AHEAD && !d->native && !d->driver && d->usb < 0) return -DOSXC_EINVAL;
+    if (count > READ_AHEAD && !d->native && !d->driver && d->usb < 0 && !d->image) return -DOSXC_EINVAL;
     if (d->absent) return -DOSXC_ENODEV;
     if (lba >= d->sectors || count > d->sectors - lba) return -DOSXC_EINVAL;
     if (write && (d->flags & (DOSXC_DISK_READONLY | DOSXC_DISK_SYSTEM))) return -DOSXC_EROFS;
     if (write) forget(d);
     int r;
-    if (d->native) r = storage_io((unsigned)d->native - 1, lba, count, buffer, write);
+    if (d->image) r = image_io(d->image - 1, lba, count, buffer, write);
+    else if (d->native) r = storage_io((unsigned)d->native - 1, lba, count, buffer, write);
     else if (d->driver) r = driver_disk_io(d->driver - 1, lba, count, buffer, write);
     else if (d->usb >= 0) r = usb_disk_io(d->usb, lba, count, buffer, write);
     else if (ctx->disk_io) r = ctx->disk_io(d->firmware, lba, count, buffer, write);
@@ -107,7 +124,7 @@ static int __attribute__((sysv_abi)) sectors_read(void *context, uint32_t lba, u
     unsigned index = (unsigned)(uptr)context;
     struct disk *d = &disks[index];
     u8 *out = buffer;
-    int whole = d->native || d->usb >= 0 || d->driver;
+    int whole = d->native || d->usb >= 0 || d->driver || d->image;
     while (count) {
         u32 n = whole ? count : count < READ_AHEAD ? count : READ_AHEAD;
         if (disk_io(index, lba, n, out, 0)) return -1;
@@ -166,6 +183,7 @@ static void find_disks(void) {
             d->usb = -1;
             d->sectors = sectors;
             d->firmware = i;
+            d->pci = flags & DISK_FLAG_PCI ? flags & 0xffff0000u : 0;
             d->flags = (flags & DISK_FLAG_REMOVABLE ? DOSXC_DISK_REMOVABLE : 0) |
                        (flags & DISK_FLAG_READONLY ? DOSXC_DISK_READONLY : 0) |
                        (flags & DISK_FLAG_SYSTEM ? DOSXC_DISK_SYSTEM : 0);
@@ -224,14 +242,104 @@ static int holds_system(unsigned device, u64 base) {
     return 1;
 }
 
+#if __SIZEOF_POINTER__ == 8
+static int same_controller(const struct blockdev *dev, unsigned pci) {
+    return pci && (pci >> 16) == ((unsigned)dev->pci.bus << 8 | (unsigned)dev->pci.device << 3 | dev->pci.function);
+}
+
+/* UEFI: the native drivers take the IDE, AHCI and NVMe controllers from the
+   firmware.  The firmware's driver of a controller must not touch it again
+   (its command lists and queues are gone), so everything compared is read
+   through the firmware first: each disk's first sector and a few sectors of
+   the system volume.  Then the system volume and every disk found again
+   move to the native driver; firmware disks left on a taken controller are
+   dropped. */
+static void attach_native_uefi(void) {
+    static u8 system_sectors[3][512], first[512];
+    struct fat32_volume *v = ctx->volume;
+    u32 probe[3] = {0, 0, 0};
+    int system = v && v->read_sector && ctx->system_pci;
+    if (system) {
+        probe[0] = v->partition_lba;
+        probe[1] = v->fat_lba;
+        probe[2] = v->data_lba;
+        for (int i = 0; i < 3 && system; ++i)
+            if (v->read_sector(v->context, probe[i], system_sectors[i])) system = 0;
+    }
+    for (unsigned k = 0; k < disk_total; ++k)
+        if (disks[k].pci && !ctx->disk_io(disks[k].firmware, 0, 1, first, 0)) disks[k].crc = crc32(first, 512);
+    storage_probe();
+    int system_done = 0;
+    for (unsigned i = 0; i < storage_count(); ++i) {
+        struct blockdev *dev = storage_device(i);
+        if (system && !system_done && same_controller(dev, ctx->system_pci)) {
+            static u8 mine[512];
+            int same = 1;
+            for (int p = 0; p < 3 && same; ++p)
+                same = ctx->system_lba + probe[p] < storage_sectors(i) &&
+                       !storage_io(i, ctx->system_lba + probe[p], 1, mine, 0) && !memcmp(mine, system_sectors[p], 512);
+            if (same) {
+                cache_use_native((int)i, ctx->system_lba);
+                system_done = 1;
+            }
+        }
+        if (dev->atapi) continue;
+        u32 crc;
+        if (native_crc(i, &crc)) continue;
+        u64 sectors = storage_sectors(i);
+        struct disk *match = 0;
+        for (unsigned k = 0; k < disk_total && !match; ++k) {
+            struct disk *d = &disks[k];
+            if (!d->native && same_controller(dev, d->pci) && d->crc == crc && d->sectors == sectors) match = d;
+        }
+        if (!match) {
+            if (disk_total == MAX_DISKS) continue;
+            match = &disks[disk_total++];
+            memset(match, 0, sizeof(*match));
+            match->usb = -1;
+            match->flags = (dev->removable ? DOSXC_DISK_REMOVABLE : 0) | (dev->readonly ? DOSXC_DISK_READONLY : 0);
+        }
+        match->native = (int)i + 1;
+        match->sectors = sectors;
+        match->crc = crc;
+        forget(match);
+    }
+    int dropped = 0;
+    for (unsigned k = 0; k < disk_total; ++k)
+        if (!disks[k].native && disks[k].pci && storage_claimed(disks[k].pci >> 16)) { disks[k].absent = 1; ++dropped; }
+    if (system && storage_claimed(ctx->system_pci >> 16) && !system_done)
+        event_log(DOSXC_EVENT_ERROR, "Devices", "The system disk was not found on its controller's native driver");
+    char kinds[64];
+    uptr n = 0;
+    for (unsigned i = 0; i < storage_count(); ++i) {
+        const char *k = storage_device(i)->kind;
+        uptr length = rt_strlen(k);
+        if (n + length + 2 > sizeof(kinds)) break;
+        if (n) kinds[n++] = ' ';
+        memcpy(kinds + n, k, length);
+        n += length;
+    }
+    kinds[n] = 0;
+    if (storage_count())
+        event_log(DOSXC_EVENT_INFO, "Devices", "Native disk drivers: %s; system volume %s; %d firmware disk(s) dropped",
+                  kinds, system_done ? "moved to them" : "stays on the firmware", dropped);
+}
+#endif
+
 static void attach_native(void) {
-    if (!ctx->bios_available || ctx->disk_count) return;
     /* \SYSTEM\BIOSDISK on the system drive keeps every disk on INT 13h
-       (for a controller the native drivers get wrong). */
+       or the UEFI firmware (for a controller the native drivers get wrong). */
     char off[] = "?:\\SYSTEM\\BIOSDISK";
     struct fat32_info info;
     off[0] = (char)rt_upper(ctx->drive);
     if (ctx->volume && !ctx->stat(ctx->volume, off + 2, &info)) return;
+#if __SIZEOF_POINTER__ == 8
+    if (ctx->disk_count) {
+        attach_native_uefi();
+        return;
+    }
+#endif
+    if (!ctx->bios_available) return;
     storage_probe();
     int cd_boot = *(volatile u32 *)0x7010 == 0x46564443u;          /* "CDVF" */
     u8 boot_drive = *(volatile u8 *)0x7014;
@@ -351,10 +459,10 @@ static void scan_disk(unsigned disk) {
 
 void volumes_scan(void) {
     for (int i = 0; i < 26; ++i)
-        if (volumes[i].used && volumes[i].disk >= 0) volumes[i].used = 0;
+        if (volumes[i].used && volumes[i].disk >= 0 && !disks[volumes[i].disk].image) volumes[i].used = 0;
     for (unsigned i = 0; i < disk_total; ++i) {
         forget(&disks[i]);
-        if (!(disks[i].flags & DOSXC_DISK_SYSTEM) && !disks[i].absent) scan_disk(i);
+        if (!(disks[i].flags & DOSXC_DISK_SYSTEM) && !disks[i].absent && !disks[i].image) scan_disk(i);
     }
 }
 
@@ -420,6 +528,8 @@ static int unmount_disk(unsigned disk) {
         if (volumes[i].used && volumes[i].disk == (int)disk) {
             files_volume_gone((char)('A' + i));
             volumes[i].used = 0;
+            iso_unmount(volumes[i].iso);
+            volumes[i].iso = 0;
             ++count;
         }
     forget(&disks[disk]);
@@ -436,7 +546,10 @@ static void disk_arrived(unsigned index, const char *kind) {
     else notice(kind, " disk without a FAT volume found, ", size);
 }
 
+static void drop_images_on(unsigned disk);
+
 static void disk_left(unsigned index, const char *kind) {
+    drop_images_on(index);
     char letters[40];
     letters_of(index, letters);
     int had = unmount_disk(index);
@@ -506,6 +619,22 @@ int volume_eject(char letter) {
     if (v->disk < 0) return -DOSXC_EBUSY;
     unsigned index = (unsigned)v->disk;
     struct disk *d = &disks[index];
+    if (d->image) {
+        for (int i = 0; i < 26; ++i)
+            if (volumes[i].used && volumes[i].disk == (int)index) files_flush_volume((char)('A' + i));
+        char letters[40];
+        letters_of(index, letters);
+        unmount_disk(index);
+        struct image *img = &images[d->image - 1];
+        memory_free(img->runs, OWNER_KERNEL);
+        img->runs = 0;
+        img->used = 0;
+        d->image = 0;
+        d->absent = 1;
+        notice("", letters, " ejected");
+        return 0;
+    }
+    drop_images_on(index);
     for (int i = 0; i < 26; ++i)
         if (volumes[i].used && volumes[i].disk == (int)index) files_flush_volume((char)('A' + i));
     char letters[40];
@@ -538,8 +667,9 @@ void volumes_poll(void) {
         unsigned flags = 0;
         int present = !ctx->disk_info(f, &sectors, &flags) && sectors;
         int slot = -1;
+        if ((flags & DISK_FLAG_PCI) && storage_claimed(flags >> 16)) continue;     /* a native driver has it */
         for (unsigned i = 0; i < disk_total; ++i)
-            if (disks[i].firmware == f && disks[i].usb < 0 && !(disks[i].bios)) { slot = (int)i; break; }
+            if (disks[i].firmware == f && disks[i].usb < 0 && !disks[i].bios && !disks[i].image && !disks[i].driver && !disks[i].native) { slot = (int)i; break; }
         if (slot >= 0 && disks[slot].flags & DOSXC_DISK_SYSTEM) continue;
         if (slot >= 0 && !disks[slot].absent && (!present || sectors != disks[slot].sectors)) {
             disk_left((unsigned)slot, "Removable");
@@ -555,6 +685,7 @@ void volumes_poll(void) {
         memset(d, 0, sizeof(*d));
         d->usb = -1;
         d->firmware = f;
+        d->pci = flags & DISK_FLAG_PCI ? flags & 0xffff0000u : 0;
         d->sectors = sectors;
         d->flags = (flags & DISK_FLAG_REMOVABLE ? DOSXC_DISK_REMOVABLE : 0) |
                    (flags & DISK_FLAG_READONLY ? DOSXC_DISK_READONLY : 0);
@@ -583,10 +714,16 @@ void volumes_resume(void) {
     for (unsigned i = 0; i < disk_total; ++i) forget(&disks[i]);
 }
 
-struct fat32_volume *volume_of(const char *canonical) {
+static struct volume *find_volume(const char *canonical) {
     char c = (char)rt_upper(canonical[0]);
     if (c < 'A' || c > 'Z' || canonical[1] != ':' || !volumes[c - 'A'].used) return 0;
-    return volumes[c - 'A'].vol;
+    return &volumes[c - 'A'];
+}
+
+/* The FAT volume of a path; 0 on an ISO 9660 image. */
+struct fat32_volume *volume_of(const char *canonical) {
+    struct volume *v = find_volume(canonical);
+    return v && !v->iso ? v->vol : 0;
 }
 
 int volume_exists(char letter) {
@@ -603,15 +740,21 @@ int volumes_list(struct dosxc_volume *out, unsigned capacity) {
             struct dosxc_volume *e = &out[count];
             memset(e, 0, sizeof(*e));
             e->letter = (char)('A' + i);
-            e->type = (u8)v->vol->type;
             if (v->disk < 0) e->flags |= DOSXC_VOLUME_SYSTEM | (ctx->live ? DOSXC_VOLUME_LIVE : 0);
             else {
                 e->disk = (u32)v->disk;
                 if (disks[v->disk].flags & DOSXC_DISK_REMOVABLE) e->flags |= DOSXC_VOLUME_REMOVABLE;
+                if (disks[v->disk].image) e->flags |= DOSXC_VOLUME_IMAGE;
             }
-            if (!v->vol->write_sector) e->flags |= DOSXC_VOLUME_READONLY;
-            e->total_bytes = (u64)v->vol->cluster_count * v->vol->sectors_per_cluster * v->vol->bytes_per_sector;
-            e->free_bytes = ctx->free_bytes(v->vol);
+            if (v->iso) {
+                e->flags |= DOSXC_VOLUME_READONLY;
+                e->total_bytes = iso_bytes(v->iso);
+            } else {
+                e->type = (u8)v->vol->type;
+                if (!v->vol->write_sector) e->flags |= DOSXC_VOLUME_READONLY;
+                e->total_bytes = (u64)v->vol->cluster_count * v->vol->sectors_per_cluster * v->vol->bytes_per_sector;
+                e->free_bytes = ctx->free_bytes(v->vol);
+            }
         }
         ++count;
     }
@@ -619,16 +762,31 @@ int volumes_list(struct dosxc_volume *out, unsigned capacity) {
 }
 
 #define VOLUME(path) struct fat32_volume *volume = volume_of(path); if (!volume) return -1
-int fs_stat(const char *path, struct fat32_info *info) { VOLUME(path); return ctx->stat(volume, path + 2, info); }
-int fs_list(const char *path, fat32_list_fn fn, void *context) { VOLUME(path); return ctx->list(volume, path + 2, fn, context); }
-int fs_read(const char *path, void *buffer, u32 size) { VOLUME(path); return ctx->read(volume, path + 2, buffer, size); }
-int fs_read_at(const char *path, u32 offset, void *buffer, u32 size) {
-    VOLUME(path);
-    return ctx->read_at(volume, path + 2, offset, buffer, size);
+#define ISO(path) struct volume *found = find_volume(path); if (!found) return -1; struct iso_volume *iso = found->iso
+int fs_stat(const char *path, struct fat32_info *info) {
+    ISO(path);
+    return iso ? iso_stat(iso, path + 2, info) : ctx->stat(found->vol, path + 2, info);
+}
+int fs_list(const char *path, fat32_list_fn fn, void *context) {
+    ISO(path);
+    return iso ? iso_list(iso, path + 2, fn, context) : ctx->list(found->vol, path + 2, fn, context);
 }
 int fs_read_cursor(const char *path, struct fat32_cursor *cursor, u32 offset, void *buffer, u32 size) {
-    VOLUME(path);
-    return ctx->read_cursor(volume, path + 2, cursor, offset, buffer, size);
+    ISO(path);
+    if (iso) return iso_read_cursor(iso, path + 2, cursor, offset, buffer, size);
+    return ctx->read_cursor(found->vol, path + 2, cursor, offset, buffer, size);
+}
+int fs_read_at(const char *path, u32 offset, void *buffer, u32 size) {
+    ISO(path);
+    struct fat32_cursor cursor;
+    memset(&cursor, 0, sizeof(cursor));
+    if (iso) return iso_read_cursor(iso, path + 2, &cursor, offset, buffer, size);
+    return ctx->read_at(found->vol, path + 2, offset, buffer, size);
+}
+int fs_read(const char *path, void *buffer, u32 size) {
+    ISO(path);
+    if (iso) return fs_read_at(path, 0, buffer, size);
+    return ctx->read(found->vol, path + 2, buffer, size);
 }
 int fs_save(const char *path, const void *data, u32 size) { VOLUME(path); return ctx->save(volume, path + 2, data, size); }
 int fs_mkdir(const char *path) { VOLUME(path); return ctx->mkdir(volume, path + 2); }
@@ -642,4 +800,189 @@ int fs_rename(const char *from, const char *to) {
 int fs_writable(const char *path) {
     struct fat32_volume *volume = volume_of(path);
     return volume && volume->write_sector;
+}
+
+static int image_io(int slot, u64 lba, unsigned count, void *buffer, int write) {
+    struct image *img = &images[slot];
+    struct fat32_volume *fv = volume_of((char[]){img->backing, ':', 0});
+    if (!img->used || !fv) return -1;
+    u8 *p = buffer;
+    while (count) {
+        u32 lo = 0, hi = img->nruns;
+        while (lo + 1 < hi) {
+            u32 mid = (lo + hi) / 2;
+            if (img->runs[mid].first <= lba) lo = mid; else hi = mid;
+        }
+        const struct run *r = &img->runs[lo];
+        if (lba < r->first || lba >= (u64)r->first + r->count) return -1;
+        u32 n = (u32)((u64)r->first + r->count - lba);
+        if (n > count) n = count;
+        u32 at = r->lba + (u32)(lba - r->first);
+        if (write) {
+            if (!fv->write_sector) return -1;
+            for (u32 i = 0; i < n; ++i)
+                if (fv->write_sector(fv->context, at + i, p + (uptr)i * 512)) return -1;
+        } else if (fv->read_sectors && n > 1) {
+            if (fv->read_sectors(fv->context, at, n, p)) return -1;
+        } else {
+            for (u32 i = 0; i < n; ++i)
+                if (fv->read_sector(fv->context, at + i, p + (uptr)i * 512)) return -1;
+        }
+        p += (uptr)n * 512;
+        lba += n;
+        count -= n;
+    }
+    return 0;
+}
+
+static u8 fat_sector[1024];
+static struct fat32_volume *cached_volume;
+static u32 cached_lba;
+
+/* The cluster after CLUSTER in FV's table; 0 at the end of the chain. */
+static u32 fat_next(struct fat32_volume *fv, u32 cluster) {
+    u8 *sector = fat_sector;
+    u32 offset = fv->type == FAT_TYPE_32 ? cluster * 4 : fv->type == FAT_TYPE_16 ? cluster * 2 : cluster + cluster / 2;
+    u32 lba = fv->fat_lba + offset / 512, within = offset % 512;
+    if (cached_volume != fv || cached_lba != lba) {
+        cached_volume = 0;
+        if (fv->read_sector(fv->context, lba, sector) || fv->read_sector(fv->context, lba + 1, sector + 512)) return 0;
+        cached_volume = fv;
+        cached_lba = lba;
+    }
+    u32 v;
+    if (fv->type == FAT_TYPE_32) v = (sector[within] | (u32)sector[within + 1] << 8 | (u32)sector[within + 2] << 16 | (u32)sector[within + 3] << 24) & 0x0fffffff;
+    else if (fv->type == FAT_TYPE_16) v = sector[within] | (u32)sector[within + 1] << 8;
+    else {
+        v = sector[within] | (u32)sector[within + 1] << 8;
+        v = cluster & 1 ? v >> 4 : v & 0xfff;
+    }
+    return v >= 2 && v < fv->cluster_count + 2 ? v : 0;
+}
+
+static int add_run(struct image *img, u32 first, u32 lba, u32 count) {
+    if (img->nruns) {
+        struct run *last = &img->runs[img->nruns - 1];
+        if (last->lba + last->count == lba && last->first + last->count == first) { last->count += count; return 0; }
+    }
+    if (img->nruns == img->capacity) {
+        u32 capacity = img->capacity ? img->capacity * 2 : 64;
+        struct run *grown = memory_alloc(sizeof(struct run) * capacity, 8, OWNER_KERNEL, 0);
+        if (!grown) return -1;
+        if (img->runs) {
+            memcpy(grown, img->runs, sizeof(struct run) * img->nruns);
+            memory_free(img->runs, OWNER_KERNEL);
+        }
+        img->runs = grown;
+        img->capacity = capacity;
+    }
+    img->runs[img->nruns++] = (struct run){first, lba, count};
+    return 0;
+}
+
+int volume_image_busy(const char *canonical) {
+    for (int i = 0; i < MAX_IMAGES; ++i)
+        if (images[i].used && rt_equal_nocase(images[i].path, canonical)) return 1;
+    return 0;
+}
+
+static void drop_images_on(unsigned disk) {
+    for (int i = 0; i < 26; ++i) {
+        if (!volumes[i].used || volumes[i].disk != (int)disk) continue;
+        for (int k = 0; k < MAX_IMAGES; ++k) {
+            if (!images[k].used || rt_upper(images[k].backing) != 'A' + i) continue;
+            for (unsigned d = 0; d < disk_total; ++d)
+                if (disks[d].image == k + 1) {
+                    for (int letter = 0; letter < 26; ++letter)
+                        if (volumes[letter].used && volumes[letter].disk == (int)d) { volume_eject((char)('A' + letter)); break; }
+                    if (disks[d].image == k + 1) {
+                        disks[d].image = 0;
+                        disks[d].absent = 1;
+                        memory_free(images[k].runs, OWNER_KERNEL);
+                        images[k].runs = 0;
+                        images[k].used = 0;
+                    }
+                }
+        }
+    }
+}
+
+/* Mount the disk image file CANONICAL: an ISO 9660 image, or a FAT disk or
+   floppy image (with or without a partition table). */
+int volume_mount_image(const char *canonical) {
+    for (int i = 0; i < MAX_IMAGES; ++i)
+        if (images[i].used && rt_equal_nocase(images[i].path, canonical))
+            for (unsigned d = 0; d < disk_total; ++d)
+                if (disks[d].image == i + 1)
+                    for (int letter = 0; letter < 26; ++letter)
+                        if (volumes[letter].used && volumes[letter].disk == (int)d) return 'A' + letter;
+    struct volume *holder = find_volume(canonical);
+    if (!holder) return -DOSXC_ENOENT;
+    if (holder->iso) return -DOSXC_EXDEV;
+    struct fat32_volume *fv = holder->vol;
+    if (fv->bytes_per_sector != 512) return -DOSXC_EINVAL;
+    struct fat32_info info;
+    if (fs_stat(canonical, &info)) return -DOSXC_ENOENT;
+    if (info.attributes & DOSXC_ATTR_DIRECTORY) return -DOSXC_EISDIR;
+    if (info.size < 2048) return -DOSXC_EINVAL;
+    if (!next_letter()) return -DOSXC_ENOSPC;
+    int slot = -1;
+    for (int i = 0; i < MAX_IMAGES; ++i)
+        if (!images[i].used) { slot = i; break; }
+    if (slot < 0) return -DOSXC_EBUSY;
+    files_flush_volume(canonical[0]);
+    cached_volume = 0;
+    struct image *img = &images[slot];
+    memset(img, 0, sizeof(*img));
+    rt_strcpy(img->path, canonical);
+    img->backing = (char)rt_upper(canonical[0]);
+    struct fat32_cursor cursor;
+    memset(&cursor, 0, sizeof(cursor));
+    u8 probe[1];
+    if (fs_read_cursor(canonical, &cursor, 0, probe, 1)) return -DOSXC_EIO;
+    u32 sectors = info.size / 512, per_cluster = fv->sectors_per_cluster, cluster = cursor.first;
+    for (u32 s = 0; s < sectors;) {
+        if (cluster < 2 || cluster >= fv->cluster_count + 2) { memory_free(img->runs, OWNER_KERNEL); return -DOSXC_EIO; }
+        u32 n = sectors - s < per_cluster ? sectors - s : per_cluster;
+        if (add_run(img, s, fv->data_lba + (cluster - 2) * per_cluster, n)) { memory_free(img->runs, OWNER_KERNEL); return -DOSXC_ENOMEM; }
+        s += n;
+        if (s < sectors) cluster = fat_next(fv, cluster);
+    }
+    img->used = 1;
+    struct disk *d = new_disk();
+    if (!d) { memory_free(img->runs, OWNER_KERNEL); img->used = 0; return -DOSXC_ENOSPC; }
+    unsigned index = (unsigned)(d - disks);
+    d->image = slot + 1;
+    d->sectors = sectors;
+    d->flags = DOSXC_DISK_IMAGE | DOSXC_DISK_REMOVABLE | (fv->write_sector ? 0 : DOSXC_DISK_READONLY);
+    struct iso_volume *iso = iso_mount(index);
+    if (iso) {
+        char letter = next_letter();
+        struct volume *v = &volumes[letter - 'A'];
+        memset(v, 0, sizeof(*v));
+        v->used = 1;
+        v->disk = (int)index;
+        v->iso = iso;
+        d->flags |= DOSXC_DISK_READONLY;
+    } else {
+        scan_disk(index);
+    }
+    for (int letter = 0; letter < 26; ++letter)
+        if (volumes[letter].used && volumes[letter].disk == (int)index) {
+            char text[80], name[3] = {(char)('A' + letter), ':', 0};
+            const char *base = canonical;
+            for (const char *p = canonical; *p; ++p)
+                if (*p == '\\') base = p + 1;
+            uptr n = 0;
+            for (const char *p = base; *p && n < 50; ++p) text[n++] = *p;
+            text[n] = 0;
+            notice(text, " mounted as ", name);
+            return 'A' + letter;
+        }
+    memory_free(img->runs, OWNER_KERNEL);
+    img->runs = 0;
+    img->used = 0;
+    d->image = 0;
+    d->absent = 1;
+    return -DOSXC_EINVAL;
 }

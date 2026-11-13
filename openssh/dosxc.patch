@@ -1,0 +1,88 @@
+diff --color -ru a/authfile.c b/authfile.c
+--- a/authfile.c	2025-04-09 02:02:43
++++ b/authfile.c	2026-11-12 09:59:48
+@@ -99,7 +99,12 @@
+ #ifdef HAVE_CYGWIN
+ 	if (check_ntsec(filename))
+ #endif
++#ifdef __dosxc__
++	/* FAT has no permissions: every file reads as 0755. */
++	if (0) {
++#else
+ 	if ((st.st_uid == getuid()) && (st.st_mode & 077) != 0) {
++#endif
+ 		error("@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@");
+ 		error("@         WARNING: UNPROTECTED PRIVATE KEY FILE!          @");
+ 		error("@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@");
+diff --color -ru a/openbsd-compat/getrrsetbyname.c b/openbsd-compat/getrrsetbyname.c
+--- a/openbsd-compat/getrrsetbyname.c	2025-04-09 02:02:43
++++ b/openbsd-compat/getrrsetbyname.c	2026-11-12 10:01:29
+@@ -57,6 +57,22 @@
+ 
+ #include "getrrsetbyname.h"
+ 
++#ifdef __dosxc__
++/* DOS-XC's resolver answers address queries only: no SSHFP records. */
++int
++getrrsetbyname(const char *hostname, unsigned int rdclass, unsigned int rdtype, unsigned int flags,
++    struct rrsetinfo **res)
++{
++	*res = NULL;
++	return ERRSET_FAIL;
++}
++
++void
++freerrset(struct rrsetinfo *rrset)
++{
++}
++#else
++
+ #if defined(HAVE_DECL_H_ERRNO) && !HAVE_DECL_H_ERRNO
+ extern int h_errno;
+ #endif
+@@ -645,4 +661,5 @@
+ 	return (n);
+ }
+ 
++#endif /* __dosxc__ */
+ #endif /*  !defined (HAVE_GETRRSETBYNAME) && !defined (HAVE_LDNS) */
+diff --color -ru a/openbsd-compat/getrrsetbyname.h b/openbsd-compat/getrrsetbyname.h
+--- a/openbsd-compat/getrrsetbyname.h	2025-04-09 02:02:43
++++ b/openbsd-compat/getrrsetbyname.h	2026-11-12 10:01:29
+@@ -54,9 +54,11 @@
+ 
+ #include <sys/types.h>
+ #include <netinet/in.h>
++#ifndef __dosxc__
+ #include <arpa/nameser.h>
+-#include <netdb.h>
+ #include <resolv.h>
++#endif
++#include <netdb.h>
+ 
+ #ifndef HFIXEDSZ
+ #define HFIXEDSZ 12
+diff --color -ru a/readconf.c b/readconf.c
+--- a/readconf.c	2025-04-09 02:02:43
++++ b/readconf.c	2026-11-12 09:59:48
+@@ -13,6 +13,11 @@
+  */
+ 
+ #include "includes.h"
++#ifdef __dosxc__
++# define DOSXC_NO_MODES 1      /* FAT has no permissions: every file reads as 0755 */
++#else
++# define DOSXC_NO_MODES 0
++#endif
+ 
+ #include <sys/types.h>
+ #include <sys/stat.h>
+@@ -2582,7 +2587,7 @@
+ 		if (fstat(fileno(f), &sb) == -1)
+ 			fatal("fstat %s: %s", filename, strerror(errno));
+ 		if (((sb.st_uid != 0 && sb.st_uid != getuid()) ||
+-		    (sb.st_mode & 022) != 0))
++		    (sb.st_mode & 022) != 0) && !DOSXC_NO_MODES)
+ 			fatal("Bad owner or permissions on %s", filename);
+ 	}
+ 

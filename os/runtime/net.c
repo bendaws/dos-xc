@@ -24,6 +24,8 @@ struct net_device {
     u32 speed;
     u32 ip, mask, gateway, dns[2];
     int dhcp;                          /* DHCP_* state; DHCP_OFF means static */
+    u32 flags;                         /* DOSXC_NETCFG_* */
+    u32 fixed_dns[2];
     u32 xid, server, offered, lease_seconds;
     u64 dhcp_next, lease_start;
     unsigned dhcp_tries;
@@ -383,6 +385,8 @@ static void dhcp_start(struct net_device *d) {
     d->ip = d->mask = d->gateway = d->dns[0] = d->dns[1] = 0;
     d->dhcp_tries = 0;
     d->dhcp_next = 0;
+    if (d->flags & DOSXC_NETCFG_IPV4_OFF) d->dhcp = DHCP_OFF;
+    if (d->flags & DOSXC_NETCFG_DNS_FIXED) { d->dns[0] = d->fixed_dns[0]; d->dns[1] = d->fixed_dns[1]; }
 }
 
 static void text_ip(char *out, u32 ip) {
@@ -443,8 +447,10 @@ static void dhcp_input(struct net_device *d, const u8 *b, uptr length) {
         d->ip = yours;
         d->mask = mask ? mask : 0xffffff00u;
         d->gateway = router;
-        d->dns[0] = dns[0];
-        d->dns[1] = dns[1];
+        if (!(d->flags & DOSXC_NETCFG_DNS_FIXED)) {
+            d->dns[0] = dns[0];
+            d->dns[1] = dns[1];
+        }
         d->server = server ? server : d->server;
         d->lease_seconds = lease;
         d->lease_start = cpu_nanoseconds();
@@ -527,8 +533,8 @@ void net_receive(int handle, const void *frame, u32 length) {
     d->rx_bytes += length;
     switch (get16(f + 12)) {
     case 0x0806: arp_input(d, f + NET_ETH, length - NET_ETH); break;
-    case 0x0800: ip_input(d, f + NET_ETH, length - NET_ETH); break;
-    case 0x86dd: net6_input(handle, f + NET_ETH, length - NET_ETH); break;
+    case 0x0800: if (!(d->flags & DOSXC_NETCFG_IPV4_OFF)) ip_input(d, f + NET_ETH, length - NET_ETH); break;
+    case 0x86dd: if (!(d->flags & DOSXC_NETCFG_IPV6_OFF)) net6_input(handle, f + NET_ETH, length - NET_ETH); break;
     }
 }
 
@@ -581,7 +587,9 @@ static u32 parse_ip(const char *s) {
     return ip;
 }
 
-/* \SYSTEM\NET.CFG: IP=, MASK=, GATEWAY=, DNS= (first adapter only). */
+/* \SYSTEM\NET.CFG (first adapter only): IP=, MASK=, GATEWAY=, DNS= for fixed
+   settings; MODE=DHCP with DNS= keeps those DNS servers; IPV4=OFF, IPV6=OFF.
+   Returns 1 for fixed IPv4 settings. */
 static int read_config(struct net_device *d) {
     char path[32], text[512];
     path[0] = (char)rt_upper(ctx->drive);
@@ -591,7 +599,7 @@ static int read_config(struct net_device *d) {
     uptr size = info.size < sizeof(text) - 1 ? info.size : sizeof(text) - 1;
     if (fs_read_at(path, 0, text, (u32)size)) return 0;
     text[size] = 0;
-    int found = 0;
+    int found = 0, dhcp = 0;
     for (char *line = text; *line;) {
         char *end = line;
         while (*end && *end != '\r' && *end != '\n') ++end;
@@ -602,7 +610,10 @@ static int read_config(struct net_device *d) {
         if (*equal) {
             *equal = 0;
             u32 value = parse_ip(equal + 1);
-            if (rt_equal_nocase(line, "IP")) { d->ip = value; found = value != 0; }
+            if (rt_equal_nocase(line, "MODE") && rt_equal_nocase(equal + 1, "DHCP")) dhcp = 1;
+            else if (rt_equal_nocase(line, "IPV4") && rt_equal_nocase(equal + 1, "OFF")) d->flags |= DOSXC_NETCFG_IPV4_OFF;
+            else if (rt_equal_nocase(line, "IPV6") && rt_equal_nocase(equal + 1, "OFF")) d->flags |= DOSXC_NETCFG_IPV6_OFF;
+            else if (rt_equal_nocase(line, "IP")) { d->ip = value; found = value != 0; }
             else if (rt_equal_nocase(line, "MASK")) d->mask = value;
             else if (rt_equal_nocase(line, "GATEWAY")) d->gateway = value;
             else if (rt_equal_nocase(line, "DNS")) d->dns[d->dns[0] ? 1 : 0] = value;
@@ -611,6 +622,12 @@ static int read_config(struct net_device *d) {
         line = end;
         while (*line == '\r' || *line == '\n') ++line;
     }
+    if (dhcp && d->dns[0]) {
+        d->flags |= DOSXC_NETCFG_DNS_FIXED;
+        d->fixed_dns[0] = d->dns[0];
+        d->fixed_dns[1] = d->dns[1];
+    }
+    if (dhcp || (d->flags & DOSXC_NETCFG_IPV4_OFF)) { d->ip = d->mask = d->gateway = 0; return 0; }
     return found;
 }
 
@@ -646,7 +663,7 @@ void net_link(int handle, int up, u32 megabits) {
     d->speed = megabits;
     if (!!up == d->link) return;
     d->link = !!up;
-    net6_link(handle, d->link, d->mac);
+    net6_link(handle, d->link && !(d->flags & DOSXC_NETCFG_IPV6_OFF), d->mac);
     if (up && d->dhcp != DHCP_OFF) dhcp_start(d);
     if (up && d->dhcp == DHCP_OFF && d->ip) announce(d);
 }
@@ -686,6 +703,7 @@ i64 net_syscall_net(int operation, long a, void *b) {
         o->gateway = d->gateway;
         o->dns[0] = d->dns[0];
         o->dns[1] = d->dns[1];
+        o->flags = d->flags;
         if (d->dhcp == DHCP_BOUND || d->dhcp == DHCP_RENEWING) {
             u64 used = (cpu_nanoseconds() - d->lease_start) / 1000000000ull;
             o->lease = used < d->lease_seconds ? (u32)(d->lease_seconds - used) : 0;
@@ -700,7 +718,18 @@ i64 net_syscall_net(int operation, long a, void *b) {
     case DOSXC_NET_CONFIG: {
         const struct dosxc_netconfig *c = b;
         if (!d || !c) return -DOSXC_ENODEV;
+        if (!accounts_admin()) return -DOSXC_EACCES;
+        int ipv6_was_off = (d->flags & DOSXC_NETCFG_IPV6_OFF) != 0;
+        d->flags = c->flags & (DOSXC_NETCFG_IPV4_OFF | DOSXC_NETCFG_IPV6_OFF | DOSXC_NETCFG_DNS_FIXED);
+        d->fixed_dns[0] = c->dns[0];
+        d->fixed_dns[1] = c->dns[1];
+        if (ipv6_was_off != ((d->flags & DOSXC_NETCFG_IPV6_OFF) != 0))
+            net6_link(d->handle, d->link && !(d->flags & DOSXC_NETCFG_IPV6_OFF), d->mac);
+        event_log(DOSXC_EVENT_INFO, "Network", "%s set to %s", d->name,
+                  d->flags & DOSXC_NETCFG_IPV4_OFF ? "no IPv4" : c->dhcp ? "DHCP" : "fixed IPv4 settings");
+        if (d->flags & DOSXC_NETCFG_IPV4_OFF) { dhcp_start(d); return 0; }
         if (c->dhcp) { dhcp_start(d); return 0; }
+        d->flags &= ~(u32)DOSXC_NETCFG_DNS_FIXED;
         d->dhcp = DHCP_OFF;
         d->ip = c->ip;
         d->mask = c->mask;

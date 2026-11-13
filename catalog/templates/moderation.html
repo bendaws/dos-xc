@@ -1,0 +1,10 @@
+{% macro user_controls(profile) %}
+<form class="moderation-actions" method="post" action="{{ url_for('moderate_user', user_id=profile.id, action='restore' if profile.deleted else 'delete') }}">
+  <input type="hidden" name="csrf" value="{{ csrf() }}">
+  {% if profile.deleted %}<button type="submit">Restore user</button>
+  {% else %}
+    {% if profile.email|lower != root_admin_email and profile.id != user.id %}<button class="danger" type="submit">Delete user</button>{% endif %}
+    {% if profile.verified and not profile.appointed_admin %}<button type="submit" formaction="{{ url_for('moderate_user', user_id=profile.id, action='revoke-publisher' if profile.publisher else 'grant-publisher') }}">{{ 'Revoke publishing' if profile.publisher else 'Allow publishing' }}</button>{% endif %}
+  {% endif %}
+</form>
+{% endmacro %}

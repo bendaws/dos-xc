@@ -4,12 +4,16 @@
 # Copyright (c) 2026 Ben Daws - see LICENSE.txt
 #
 
+import lzma
+import shutil
 import struct
+import subprocess
 import sys
 import zlib
 from pathlib import Path
 
-KEYS = ('Name', 'Version', 'Author', 'Description', 'Arch', 'Path', 'StartIn', 'Env', 'Driver')
+KEYS = ('Name', 'Version', 'Author', 'Description', 'Arch', 'Path', 'StartIn', 'Required', 'Env', 'Driver',
+        'Provides', 'Requires', 'Firewall')
 DOS_DATE = ((2026 - 1980) << 9) | (1 << 5) | 1
 
 def metadata_text(info):
@@ -17,7 +21,7 @@ def metadata_text(info):
     for k in KEYS:
         if k == 'Env':
             lines += [f'Env={value}\r\n' for value in info.get('Env', '').split('\n') if value]
-        elif k in info and (k != 'StartIn' or info[k]):
+        elif k in info and (k not in ('StartIn', 'Required') or info[k]):
             lines.append(f'{k}={info[k]}\r\n')
     return ''.join(lines)
 
@@ -34,6 +38,15 @@ def parse_metadata(text):
                         info[k] = value.strip()
     return info
 
+def xz_compress(raw, x86):
+    """One .xz stream (CRC-32 checks, LZMA2 preset 6e, the x86 filter for programs), as os/pkg/unxz.c reads."""
+    tool = shutil.which('xz')
+    if tool:
+        command = [tool, '-c', '-T0', '--format=xz', '--check=crc32'] + (['--x86'] if x86 else []) + ['--lzma2=preset=6e']
+        return subprocess.run(command, input=raw, stdout=subprocess.PIPE, check=True).stdout
+    filters = ([{'id': lzma.FILTER_X86}] if x86 else []) + [{'id': lzma.FILTER_LZMA2, 'preset': 6 | lzma.PRESET_EXTREME}]
+    return lzma.compress(raw, format=lzma.FORMAT_XZ, check=lzma.CHECK_CRC32, filters=filters)
+
 def pack(folder, out, info):
     for required in ('Name', 'Version', 'Arch'):
         if not info.get(required):
@@ -42,28 +55,17 @@ def pack(folder, out, info):
     info.setdefault('Description', '')
     info.setdefault('Path', '')
     meta = metadata_text(info).encode('utf-8')
-    data = bytearray(b'DSPK' + struct.pack('<HHI', 1, 0, len(meta)) + meta)
-    central = bytearray()
-    count = 0
+    data = bytearray(b'DSPK' + struct.pack('<HHI', 2, 0, len(meta)) + meta)
     files = sorted(p for p in Path(folder).rglob('*') if p.is_file() and not p.name.startswith('.'))
+    files = [p for p in files if p.relative_to(folder).as_posix().upper() != 'PACKAGE.INF']
+    data += struct.pack('<I', len(files))
+    stream = bytearray()
     for path in files:
-        name = path.relative_to(folder).as_posix()
-        if name.upper() == 'PACKAGE.INF':
-            continue
         raw = path.read_bytes()
-        compressor = zlib.compressobj(9, zlib.DEFLATED, -15)
-        packed = compressor.compress(raw) + compressor.flush()
-        method, body = (8, packed) if len(packed) < len(raw) else (0, raw)
-        crc = zlib.crc32(raw) & 0xffffffff
-        encoded = name.encode('utf-8')
-        offset = len(data)
-        data += struct.pack('<IHHHHHIIIHH', 0x04034b50, 20, 0, method, 0, DOS_DATE, crc, len(body), len(raw),
-                            len(encoded), 0) + encoded + body
-        central += struct.pack('<IHHHHHHIIIHHHHHII', 0x02014b50, 20, 20, 0, method, 0, DOS_DATE, crc, len(body),
-                               len(raw), len(encoded), 0, 0, 0, 0, 0, offset) + encoded
-        count += 1
-    start = len(data)
-    data += central + struct.pack('<IHHHHIIH', 0x06054b50, 0, 0, count, count, len(central), start, 0)
+        encoded = path.relative_to(folder).as_posix().encode('utf-8')
+        data += struct.pack('<HII', len(encoded), len(raw), zlib.crc32(raw) & 0xffffffff) + encoded
+        stream += raw
+    data += xz_compress(bytes(stream), str(info.get('Arch')) != '16')
     Path(out).write_bytes(bytes(data))
     return info
 
@@ -73,6 +75,24 @@ def read(path):
         raise SystemExit(f'error: {path} is not a DOS-XC package')
     version, _, length = struct.unpack_from('<HHI', blob, 4)
     info = parse_metadata(blob[12:12 + length].decode('utf-8'))
+    if version == 2:
+        at = 12 + length
+        count, = struct.unpack_from('<I', blob, at)
+        at += 4
+        listed = []
+        for _ in range(count):
+            nlen, size, crc = struct.unpack_from('<HII', blob, at)
+            listed.append((blob[at + 10:at + 10 + nlen].decode('utf-8'), size, crc))
+            at += 10 + nlen
+        stream = lzma.decompress(blob[at:], format=lzma.FORMAT_XZ)
+        entries, offset = [], 0
+        for name, size, crc in listed:
+            raw = stream[offset:offset + size]
+            offset += size
+            if len(raw) != size or zlib.crc32(raw) & 0xffffffff != crc:
+                raise SystemExit(f'error: {path}: {name} is damaged')
+            entries.append((name, raw))
+        return info, entries
     end = blob.rfind(b'PK\x05\x06')
     count, size, start = struct.unpack_from('<HII', blob, end + 10)
     entries, at = [], start
@@ -111,7 +131,7 @@ def install(path, root):
 
 def main():
     if len(sys.argv) < 3:
-        raise SystemExit('Build and inspect DOS-XC packages (.dsp) on the build machine.\n\n  tools/dsp.py pack FOLDER OUT.dsp Name=... Version=... Author=... \\\n               Description=... Arch=16|32|64 [Path=...] [StartIn=program]\n               [Env=NAME=value ...] [Driver=A.DRV;B.DRV]\n  tools/dsp.py list FILE.dsp\n  tools/dsp.py install FILE.dsp ROOT      extract to ROOT/Programs/<Name>\n                                          and write its PACKAGE.INF\n\nThe format (see os/pkg/dsp.h): "DSPK", u16 version 1, u16 flags,\nu32 metadata length, the metadata ("Key=value" lines), then a ZIP archive\nwhose offsets count from the start of the file.\n')
+        raise SystemExit('Build and inspect DOS-XC packages (.dsp) on the build machine.\n\n  tools/dsp.py pack FOLDER OUT.dsp Name=... Version=... Author=... \\\n               Description=... Arch=16|32|64 [Path=...] [StartIn=program]\n               [Env=NAME=value ...] [Driver=A.DRV;B.DRV]\n               [Provides=role;...] [Requires=name[>=version];...]\n  tools/dsp.py list FILE.dsp\n  tools/dsp.py install FILE.dsp ROOT      extract to ROOT/Programs/<Name>\n                                          and write its PACKAGE.INF\n\nThe format (see docs/PACKAGES.md): "DSPK", u16 version 2, u16 flags,\nu32 metadata length, the metadata ("Key=value" lines), the file list, then\none .xz stream of the files\' data.  Version 1 (a ZIP archive) is still read.\n')
     command = sys.argv[1]
     if command == 'pack':
         info = {}
@@ -135,7 +155,7 @@ def main():
         info = install(sys.argv[2], sys.argv[3])
         print(f'Installed {info["Name"]} {info["Version"]} into {sys.argv[3]}/Programs/{info["Name"]}')
     else:
-        raise SystemExit('Build and inspect DOS-XC packages (.dsp) on the build machine.\n\n  tools/dsp.py pack FOLDER OUT.dsp Name=... Version=... Author=... \\\n               Description=... Arch=16|32|64 [Path=...] [StartIn=program]\n               [Env=NAME=value ...] [Driver=A.DRV;B.DRV]\n  tools/dsp.py list FILE.dsp\n  tools/dsp.py install FILE.dsp ROOT      extract to ROOT/Programs/<Name>\n                                          and write its PACKAGE.INF\n\nThe format (see os/pkg/dsp.h): "DSPK", u16 version 1, u16 flags,\nu32 metadata length, the metadata ("Key=value" lines), then a ZIP archive\nwhose offsets count from the start of the file.\n')
+        raise SystemExit('Build and inspect DOS-XC packages (.dsp) on the build machine.\n\n  tools/dsp.py pack FOLDER OUT.dsp Name=... Version=... Author=... \\\n               Description=... Arch=16|32|64 [Path=...] [StartIn=program]\n               [Env=NAME=value ...] [Driver=A.DRV;B.DRV]\n               [Provides=role;...] [Requires=name[>=version];...]\n  tools/dsp.py list FILE.dsp\n  tools/dsp.py install FILE.dsp ROOT      extract to ROOT/Programs/<Name>\n                                          and write its PACKAGE.INF\n\nThe format (see docs/PACKAGES.md): "DSPK", u16 version 2, u16 flags,\nu32 metadata length, the metadata ("Key=value" lines), the file list, then\none .xz stream of the files\' data.  Version 1 (a ZIP archive) is still read.\n')
 
 if __name__ == '__main__':
     main()

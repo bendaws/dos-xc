@@ -130,6 +130,7 @@ int sigaddset(sigset_t *, int);
 int sigdelset(sigset_t *, int);
 int sigismember(const sigset_t *, int);
 int sigprocmask(int, const sigset_t *__restrict, sigset_t *__restrict);
+int pthread_sigmask(int, const sigset_t *__restrict, sigset_t *__restrict);
 int sigpending(sigset_t *);
 int sigsuspend(const sigset_t *);
 int sigwait(const sigset_t *, int *);

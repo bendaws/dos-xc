@@ -4,6 +4,7 @@
  */
 
 #include "dsp.h"
+#include "xz/xz.h"
 #include <ctype.h>
 #include <stdlib.h>
 #include <string.h>
@@ -68,6 +69,9 @@ int dsp_parse_info(const char *text, size_t length, struct dsp_info *info) {
             else if (KEY("Path")) field(info->path, sizeof(info->path), value, value_length);
             else if (KEY("StartIn")) field(info->start_in, sizeof(info->start_in), value, value_length);
             else if (KEY("Driver")) field(info->driver, sizeof(info->driver), value, value_length);
+            else if (KEY("Provides")) field(info->provides, sizeof(info->provides), value, value_length);
+            else if (KEY("Requires")) field(info->requires, sizeof(info->requires), value, value_length);
+            else if (KEY("Firewall")) field(info->firewall, sizeof(info->firewall), value, value_length);
             else if (KEY("Env")) {
                 size_t used = strlen(info->env);
                 if (used + value_length + 2 < sizeof(info->env)) {
@@ -75,6 +79,7 @@ int dsp_parse_info(const char *text, size_t length, struct dsp_info *info) {
                     field(info->env + used, sizeof(info->env) - used, value, value_length);
                 }
             }
+            else if (KEY("Required")) info->required = value_length && *value == '1';
             else if (KEY("Arch")) {
                 char number[8];
                 field(number, sizeof(number), value, value_length);
@@ -94,8 +99,16 @@ int dsp_format_info(const struct dsp_info *info, char *out, size_t size) {
                      info->name, info->version, info->author, info->description, info->arch, info->path,
                      info->start_in[0] ? "StartIn=" : "", info->start_in, info->start_in[0] ? "\r\n" : "");
     if (n < 0 || (size_t)n >= size) return -1;
-    if (info->driver[0]) {
-        int m = snprintf(out + n, size - (size_t)n, "Driver=%s\r\n", info->driver);
+    if (info->required) {
+        int m = snprintf(out + n, size - (size_t)n, "Required=1\r\n");
+        if (m < 0 || (size_t)(n + m) >= size) return -1;
+        n += m;
+    }
+    const char *keys[4] = {"Driver", "Provides", "Requires", "Firewall"};
+    const char *values[4] = {info->driver, info->provides, info->requires, info->firewall};
+    for (int i = 0; i < 4; ++i) {
+        if (!values[i][0]) continue;
+        int m = snprintf(out + n, size - (size_t)n, "%s=%s\r\n", keys[i], values[i]);
         if (m < 0 || (size_t)(n + m) >= size) return -1;
         n += m;
     }
@@ -126,6 +139,34 @@ int dsp_compare_versions(const char *a, const char *b) {
     return 0;
 }
 
+const char *dsp_next_item(const char *list, char *out, size_t size) {
+    while (*list == ';' || *list == ' ') ++list;
+    if (!*list) return 0;
+    size_t n = strcspn(list, ";"), length = n;
+    while (length && list[length - 1] == ' ') --length;
+    field(out, size, list, length);
+    return list + n;
+}
+
+int dsp_meets(const struct dsp_info *info, const char *requirement) {
+    char name[64], version[32] = "";
+    const char *at = strstr(requirement, ">=");
+    size_t n = at ? (size_t)(at - requirement) : strlen(requirement);
+    while (n && requirement[n - 1] == ' ') --n;
+    field(name, sizeof(name), requirement, n);
+    if (at) {
+        at += 2;
+        while (*at == ' ') ++at;
+        field(version, sizeof(version), at, strlen(at));
+    }
+    if (!strcasecmp(name, info->name)) return !version[0] || dsp_compare_versions(info->version, version) >= 0;
+    if (version[0]) return 0;
+    char role[64];
+    for (const char *p = info->provides; (p = dsp_next_item(p, role, sizeof(role)));)
+        if (!strcasecmp(role, name)) return 1;
+    return 0;
+}
+
 /* ---- reading ------------------------------------------------------------ */
 
 static int fail(char *error, size_t size, const char *message) {
@@ -133,10 +174,11 @@ static int fail(char *error, size_t size, const char *message) {
     return -1;
 }
 
-static int read_header(FILE *f, struct dsp_info *info, unsigned long *zip_start, char *error, size_t error_size) {
+static int read_header(FILE *f, struct dsp_info *info, unsigned long *zip_start, unsigned *format, char *error, size_t error_size) {
     unsigned char head[12];
     if (fread(head, 1, 12, f) != 12 || memcmp(head, DSP_MAGIC, 4)) return fail(error, error_size, "not a DOS-XC package (.dsp)");
-    if (get16(head + 4) != DSP_VERSION) return fail(error, error_size, "made for a newer package format");
+    *format = get16(head + 4);
+    if (*format < 1 || *format > DSP_VERSION) return fail(error, error_size, "made for a newer package format");
     unsigned long length = get32(head + 8);
     if (length > 65536) return fail(error, error_size, "damaged package header");
     char *text = malloc(length + 1);
@@ -153,9 +195,94 @@ int dsp_read_info(const char *path, struct dsp_info *info, char *error, size_t e
     FILE *f = fopen(path, "rb");
     if (!f) return fail(error, error_size, "cannot open the file");
     unsigned long start;
-    int r = read_header(f, info, &start, error, error_size);
+    unsigned format;
+    int r = read_header(f, info, &start, &format, error, error_size);
     fclose(f);
     return r;
+}
+
+/* Version 2: u32 count, then per file u16 name length, u32 size, u32 CRC-32
+   and the name; then one .xz stream of every file's data in that order. */
+static int open_stream(struct dsp *package, FILE *f, unsigned long at) {
+    unsigned char head[10];
+    if (fseek(f, (long)at, SEEK_SET) || fread(head, 1, 4, f) != 4) return -1;
+    unsigned long count = get32(head), offset = 0;
+    if (count > 1000000) return -1;
+    package->entries = calloc(count ? count : 1, sizeof(*package->entries));
+    if (!package->entries) return -1;
+    for (unsigned long i = 0; i < count; ++i) {
+        struct dsp_entry *e = &package->entries[package->count];
+        if (fread(head, 1, 10, f) != 10) return -1;
+        unsigned length = get16(head);
+        char name[1024];
+        if (length >= sizeof(name) || fread(name, 1, length, f) != length) return -1;
+        name[length] = 0;
+        e->method = 14;
+        e->size = e->compressed = get32(head + 2);
+        e->crc = get32(head + 6);
+        e->offset = offset;
+        if (offset + e->size < offset) return -1;
+        offset += e->size;
+        field(e->name, sizeof(e->name), name, length);
+        for (char *p = e->name; *p; ++p) if (*p == '\\') *p = '/';
+        if (e->name[0] == '/' || strstr(e->name, "..") || strchr(e->name, ':')) continue;
+        ++package->count;
+    }
+    long start = ftell(f);
+    if (start < 0) return -1;
+    package->stream_start = (unsigned long)start;
+    return 0;
+}
+
+struct dsp_xz {
+    struct xz_dec *decoder;
+    struct xz_buf buffer;
+    int ended;
+    unsigned char in[65536];
+};
+
+static int stream_restart(struct dsp *package) {
+    if (!package->xz) {
+        package->xz = calloc(1, sizeof(*package->xz));
+        if (!package->xz) return -1;
+        xz_crc32_init();
+        package->xz->decoder = xz_dec_init(XZ_DYNALLOC, 1u << 27);
+        if (!package->xz->decoder) return -1;
+    } else xz_dec_reset(package->xz->decoder);
+    struct dsp_xz *x = package->xz;
+    x->buffer.in = x->in;
+    x->buffer.in_pos = x->buffer.in_size = 0;
+    x->ended = 0;
+    package->position = 0;
+    return fseek(package->file, (long)package->stream_start, SEEK_SET) ? -1 : 0;
+}
+
+/* The next SIZE unpacked bytes into OUT (or dropped, when OUT is 0). */
+static int stream_read(struct dsp *package, unsigned char *out, unsigned long size) {
+    static unsigned char scratch[65536];
+    struct dsp_xz *x = package->xz;
+    while (size) {
+        if (x->ended) return -1;
+        unsigned long part = out ? size : size < sizeof(scratch) ? size : sizeof(scratch);
+        x->buffer.out = out ? out : scratch;
+        x->buffer.out_pos = 0;
+        x->buffer.out_size = part;
+        while (x->buffer.out_pos < part) {
+            if (x->buffer.in_pos == x->buffer.in_size) {
+                x->buffer.in_size = fread(x->in, 1, sizeof(x->in), package->file);
+                x->buffer.in_pos = 0;
+            }
+            size_t before_in = x->buffer.in_pos, before_out = x->buffer.out_pos;
+            enum xz_ret r = xz_dec_run(x->decoder, &x->buffer);
+            if (r == XZ_STREAM_END) { x->ended = 1; break; }
+            if (r != XZ_OK || (x->buffer.in_pos == before_in && x->buffer.out_pos == before_out)) return -1;
+        }
+        if (x->buffer.out_pos < part) return -1;
+        package->position += part;
+        size -= part;
+        if (out) out += part;
+    }
+    return 0;
 }
 
 int dsp_open(struct dsp *package, const char *path, char *error, size_t error_size) {
@@ -163,7 +290,12 @@ int dsp_open(struct dsp *package, const char *path, char *error, size_t error_si
     FILE *f = fopen(path, "rb");
     if (!f) return fail(error, error_size, "cannot open the file");
     unsigned long zip_start;
-    if (read_header(f, &package->info, &zip_start, error, error_size)) { fclose(f); return -1; }
+    if (read_header(f, &package->info, &zip_start, &package->format, error, error_size)) { fclose(f); return -1; }
+    if (package->format == 2) {
+        if (open_stream(package, f, zip_start)) { dsp_close(package); fclose(f); return fail(error, error_size, "the package archive is damaged"); }
+        package->file = f;
+        return 0;
+    }
     if (fseek(f, 0, SEEK_END)) { fclose(f); return fail(error, error_size, "cannot read the file"); }
     long end = ftell(f);
     long tail_size = end < 65558 ? end : 65558;
@@ -219,14 +351,17 @@ int dsp_read_entry(struct dsp *package, unsigned index, unsigned char **data, si
     unsigned char local[30];
     *data = 0;
     *size = 0;
-    if (fseek(package->file, (long)e->offset, SEEK_SET) || fread(local, 1, 30, package->file) != 30 ||
-        get32(local) != 0x04034b50ul)
-        return -1;
-    long skip = (long)get16(local + 26) + get16(local + 28);
-    if (fseek(package->file, skip, SEEK_CUR)) return -1;
+    if (package->format != 2) {
+        if (fseek(package->file, (long)e->offset, SEEK_SET) || fread(local, 1, 30, package->file) != 30 ||
+            get32(local) != 0x04034b50ul || fseek(package->file, (long)get16(local + 26) + get16(local + 28), SEEK_CUR))
+            return -1;
+    }
     unsigned char *out = malloc(e->size ? e->size : 1);
     if (!out) return -1;
-    if (e->method == 0) {
+    if (package->format == 2) {
+        if ((e->offset < package->position || !package->xz) && stream_restart(package)) { free(out); return -1; }
+        if (stream_read(package, 0, e->offset - package->position) || stream_read(package, out, e->size)) { free(out); return -1; }
+    } else if (e->method == 0) {
         if (e->compressed != e->size || fread(out, 1, e->size, package->file) != e->size) { free(out); return -1; }
     } else if (e->method == 8) {
         unsigned char *in = malloc(e->compressed ? e->compressed : 1);
@@ -250,6 +385,11 @@ int dsp_read_entry(struct dsp *package, unsigned index, unsigned char **data, si
 void dsp_close(struct dsp *package) {
     if (package->file) fclose(package->file);
     free(package->entries);
+    if (package->xz) {
+        if (package->xz->decoder) xz_dec_end(package->xz->decoder);
+        free(package->xz);
+    }
+    package->xz = 0;
     package->file = 0;
     package->entries = 0;
     package->count = 0;
@@ -275,7 +415,7 @@ struct dsp_writer *dsp_create(const char *path, const struct dsp_info *info) {
     if (!w->file) { free(w); return 0; }
     unsigned char head[12];
     memcpy(head, DSP_MAGIC, 4);
-    put16(head + 4, DSP_VERSION);
+    put16(head + 4, 1);
     put16(head + 6, 0);
     put32(head + 8, (unsigned long)length);
     if (fwrite(head, 1, 12, w->file) != 12 || fwrite(text, 1, (size_t)length, w->file) != (size_t)length) w->failed = 1;
@@ -342,5 +482,35 @@ int dsp_finish(struct dsp_writer *w) {
     int failed = w->failed;
     free(w->directory);
     free(w);
+    return failed ? -1 : 0;
+}
+
+int dsp_write_solid(const char *path, const struct dsp_info *info, const struct dsp_file *files, unsigned count, FILE *xz) {
+    char text[1024];
+    int length = dsp_format_info(info, text, sizeof(text));
+    if (length < 0) return -1;
+    FILE *f = fopen(path, "wb");
+    if (!f) return -1;
+    unsigned char head[12];
+    memcpy(head, DSP_MAGIC, 4);
+    put16(head + 4, 2);
+    put16(head + 6, 0);
+    put32(head + 8, (unsigned long)length);
+    int failed = fwrite(head, 1, 12, f) != 12 || fwrite(text, 1, (size_t)length, f) != (size_t)length;
+    put32(head, count);
+    failed |= fwrite(head, 1, 4, f) != 4;
+    for (unsigned i = 0; i < count && !failed; ++i) {
+        size_t name_length = strlen(files[i].name);
+        put16(head, (unsigned)name_length);
+        put32(head + 2, files[i].size);
+        put32(head + 6, files[i].crc);
+        failed |= fwrite(head, 1, 10, f) != 10 || fwrite(files[i].name, 1, name_length, f) != name_length;
+    }
+    static unsigned char buffer[65536];
+    size_t n;
+    while (!failed && (n = fread(buffer, 1, sizeof(buffer), xz)) > 0) failed |= fwrite(buffer, 1, n, f) != n;
+    failed |= ferror(xz) != 0;
+    if (fclose(f)) failed = 1;
+    if (failed) remove(path);
     return failed ? -1 : 0;
 }

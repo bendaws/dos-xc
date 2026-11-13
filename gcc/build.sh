@@ -118,6 +118,9 @@ gcc() {
     mkdir -p gcc/d gcc/rust     # genhooks writes their hook headers even when disabled
     run_logged gcc-cross-make $MAKE -j"$JOBS" all-gcc all-target-libgcc MAKEINFO=true
     run_logged gcc-cross-install $MAKE install-strip-gcc install-strip-target-libgcc MAKEINFO=true
+    # fixincludes copies libc's stdio.h (to add <stdarg.h>), which would then
+    # hide every later change to the real one.
+    rm -f "$CROSS/lib/gcc/$TARGET/$GCC_VERSION/include-fixed/stdio.h"
     # libstdc++'s configure links test programs against libc.so.  On i686 that
     # needs libgcc's 64-bit division, which did not exist at the libc stage.
     ( libc )
@@ -191,6 +194,7 @@ native_gcc() {
     mkdir -p gcc/d gcc/rust
     run_logged gcc-native-make $MAKE -j"$JOBS" all-gcc MAKEINFO=true
     run_logged gcc-native-install $MAKE install-strip-gcc DESTDIR="$STAGING" MAKEINFO=true
+    rm -f "$STAGING$PREFIX/lib/gcc/$TARGET/$GCC_VERSION/include-fixed/stdio.h"
     cd "$HERE" && remove_tree "$b"
 }
 

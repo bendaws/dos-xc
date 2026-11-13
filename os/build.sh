@@ -54,8 +54,8 @@ compile_runtime() {
     runtime_emulation=$3
     mkdir -p "$PART/runtime$runtime_bits"
     objects=
-    for unit in system loader dynamic paging files terminal volumes cache memory cpu support \
-                usb pci xhci ehci ohci uhci storage ata ahci nvme accounts sha256 events bridge power drivers net net6 tcp socket firewall display sched random vm; do
+    for unit in system clock loader dynamic paging files terminal volumes cache memory cpu support \
+                usb pci xhci ehci ohci uhci storage ata ahci nvme iso9660 accounts sha256 events bridge power drivers net net6 tcp socket firewall display sched smp random vm fork; do
         spawn "$CC" --target="$runtime_target" -ffreestanding -fno-stack-protector -fno-pic -mno-red-zone -mno-sse -mno-sse2 \
             -nostdinc -O2 -Wall -Wextra -Wno-unused-parameter -I"$ROOT/os" \
             -c "$ROOT/os/runtime/$unit.c" -o "$PART/runtime$runtime_bits/$unit.o"
@@ -80,9 +80,7 @@ for edition in $EDITIONS; do
     use_edition "$edition"
     mkdir -p "$out/system"
     spawn "$cc" $flags -I"$ROOT/os/shell" "$ROOT/os/shell/command.c" -o "$out/system/COMMAND.EXE"
-    spawn "$cc" $flags "$ROOT/os/pkg/pkg.c" "$ROOT/os/pkg/dsp.c" "$ROOT/os/pkg/inflate.c" "$ROOT/os/pkg/deflate.c" \
-        -o "$out/system/PKG.EXE"
     spawn "$cc" $flags -I"$ROOT/os" "$ROOT/os/setup/setup.c" "$ROOT/os/setup/install.c" "$ROOT/os/runtime/sha256.c" "$ROOT/os/setup/target.c" "$ROOT/os/drivers/fat32.c" \
-        "$ROOT/os/pkg/dsp.c" "$ROOT/os/pkg/inflate.c" "$ROOT/os/pkg/deflate.c" -o "$out/system/SETUP.EXE"
+        "$ROOT/os/pkg/dsp.c" "$ROOT/os/pkg/unxz.c" "$ROOT/os/pkg/inflate.c" "$ROOT/os/pkg/deflate.c" -o "$out/system/SETUP.EXE"
     finish_jobs
 done

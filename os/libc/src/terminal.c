@@ -198,3 +198,13 @@ int select(int count, fd_set *read_set, fd_set *write_set, fd_set *error_set, st
         poll_pause();
     }
 }
+
+int ppoll(struct pollfd *fds, nfds_t count, const struct timespec *timeout, const sigset_t *mask) {
+    (void)mask;
+    int ms = -1;
+    if (timeout) {
+        long long total = (long long)timeout->tv_sec * 1000 + (timeout->tv_nsec + 999999) / 1000000;
+        ms = total > 0x7fffffff ? 0x7fffffff : (int)total;
+    }
+    return poll(fds, count, ms);
+}

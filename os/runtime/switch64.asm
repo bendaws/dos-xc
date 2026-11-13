@@ -9,14 +9,50 @@ section .text
 
 global runtime_enter, runtime_leave, runtime_spurious, bios_call, runtime_save, runtime_switch
 global runtime_exception_stubs, runtime_syscall_entry
-global runtime_timer_gate, runtime_on_stack
+global runtime_timer_gate, runtime_on_stack, runtime_enter_frame, runtime_ap_timer, runtime_ap_ipi
+global runtime_firmware_stubs
+extern runtime_firmware_vectors
 extern vm_fault, fault_stack, runtime_exception, runtime_syscall, runtime_fxsr, sched_tick, sched_preempted
-extern runtime_ring3, runtime_tss_rsp0, runtime_user_cs, runtime_user_ss
+extern runtime_ring3, runtime_tss_area, runtime_tss_selector, runtime_user_cs, runtime_user_ss
+extern sched_ap_interrupt, smp_kernel_interrupt
+
+; RCX = the RSP0 field of this processor's task state segment (128 bytes
+; each, in the order of their descriptors).
+%macro TSS_RSP0 0
+    str cx
+    movzx ecx, cx
+    sub ecx, [rel runtime_tss_selector]
+    shl ecx, 3
+    add rcx, [rel runtime_tss_area]
+%endmacro
+
+; Null FS and GS selectors, keeping both bases (the thread pointer and the
+; running thread's data).  Clobbers rax, rcx, rdx.
+%macro NULL_SEGMENTS 0
+    mov ecx, 0xc0000101
+    rdmsr
+    push rax
+    push rdx
+    mov ecx, 0xc0000100
+    rdmsr
+    push rax
+    push rdx
+    xor eax, eax
+    mov fs, ax
+    mov gs, ax
+    pop rdx
+    pop rax
+    wrmsr
+    pop rdx
+    pop rax
+    mov ecx, 0xc0000101
+    wrmsr
+%endmacro
 
 ; Before an IRETQ with RSP at its frame: when it returns to ring 3, the
 ; next entry from ring 3 must land just above this frame (RSP0), and FS/GS
 ; must hold null selectors (IRETQ to ring 3 would replace a ring 0 selector
-; with null and lose the FS base, the thread pointer).
+; with null and lose the FS and GS bases).
 %macro USER_RETURN 0
     test byte [rsp+8], 3
     jz %%done
@@ -24,20 +60,13 @@ extern runtime_ring3, runtime_tss_rsp0, runtime_user_cs, runtime_user_ss
     push rcx
     push rdx
     lea rax, [rsp+24+40]
-    mov rcx, [rel runtime_tss_rsp0]
+    TSS_RSP0
     mov [rcx], rax
     mov ax, fs
     mov cx, gs
     or ax, cx
     jz %%segments
-    mov ecx, 0xc0000100
-    rdmsr
-    push rax
-    xor eax, eax
-    mov fs, ax
-    mov gs, ax
-    pop rax
-    wrmsr
+    NULL_SEGMENTS
 %%segments:
     pop rdx
     pop rcx
@@ -87,24 +116,13 @@ runtime_enter:
 .ring3:
     lea rax, [rsp-64]
     and rax, -16
-    mov rcx, [rel runtime_tss_rsp0]
+    TSS_RSP0
     mov [rcx], rax
     mov ax, fs
     mov cx, gs
     or ax, cx
     jz .null_segments
-    push rdi
-    push rsi
-    mov ecx, 0xc0000100
-    rdmsr
-    push rax
-    xor eax, eax
-    mov fs, ax
-    mov gs, ax
-    pop rax
-    wrmsr
-    pop rsi
-    pop rdi
+    NULL_SEGMENTS
 .null_segments:
     movzx eax, word [rel runtime_user_ss]
     push rax
@@ -129,6 +147,60 @@ runtime_enter:
     xor r13d, r13d
     xor r14d, r14d
     xor r15d, r15d
+    iretq
+
+; int runtime_enter_frame(const uptr *frame, struct saved_context *save, const void *fx)
+; Like runtime_enter, but continues a forked program where its system call
+; returns: FRAME holds struct syscall_frame and the IRETQ frame (20 words), FX
+; its fxsave (or fnsave) image.
+runtime_enter_frame:
+    mov [rsi+0], rbx
+    mov [rsi+8], rbp
+    mov [rsi+16], r12
+    mov [rsi+24], r13
+    mov [rsi+32], r14
+    mov [rsi+40], r15
+    lea rax, [rsp+8]
+    mov [rsi+48], rax
+    mov rax, [rsp]
+    mov [rsi+56], rax
+    pushfq
+    pop qword [rsi+64]
+    fnstcw [rsi+72]
+    mov eax, [rel runtime_fxsr]
+    mov [rsi+80], eax
+    test eax, eax
+    jz .x87
+    stmxcsr [rsi+76]
+    fxrstor [rdx]
+    jmp .copy
+.x87:
+    frstor [rdx]
+.copy:
+    lea rax, [rsp-256]
+    and rax, -16
+    mov ecx, 20
+.word:
+    mov r8, [rdi+rcx*8-8]
+    mov [rax+rcx*8-8], r8
+    loop .word
+    mov rsp, rax
+    pop rax
+    pop rbx
+    pop rcx
+    pop rdx
+    pop rsi
+    pop rdi
+    pop rbp
+    pop r8
+    pop r9
+    pop r10
+    pop r11
+    pop r12
+    pop r13
+    pop r14
+    pop r15
+    USER_RETURN
     iretq
 
 ; uptr runtime_on_stack(uptr (*fn)(uptr), uptr argument, void *top)
@@ -448,6 +520,12 @@ runtime_timer_gate:
 ; The timer interrupted ring 3 code: already on the task's kernel stack, so
 ; switch tasks right here if its time is up.
 timer_from_ring3:
+    push rax
+    mov al, 0x20
+    out 0x20, al
+    pop rax
+; Also where a UEFI firmware interrupt of ring 3 continues, its handler done.
+tick_from_ring3:
     push r15
     push r14
     push r13
@@ -464,8 +542,6 @@ timer_from_ring3:
     push rbx
     push rax
     cld
-    mov al, 0x20
-    out 0x20, al
     mov rbx, rsp
     mov rdi, [rsp+15*8]         ; rip
     and rsp, -16
@@ -488,6 +564,119 @@ timer_from_ring3:
 .frstor:
     frstor [rsp]
 .return:
+    mov rsp, rbx
+    pop rax
+    pop rbx
+    pop rcx
+    pop rdx
+    pop rsi
+    pop rdi
+    pop rbp
+    pop r8
+    pop r9
+    pop r10
+    pop r11
+    pop r12
+    pop r13
+    pop r14
+    pop r15
+    USER_RETURN
+    iretq
+
+; UEFI: the firmware keeps its interrupt handlers (its timer drives its
+; console, disk and pointer drivers).  Each wrapped vector's stub runs the
+; firmware's handler as if the interrupt had gone straight there, on a
+; frame of its own that returns here; an interrupt of ring 3 then goes on to
+; tick_from_ring3, which may switch tasks.
+%assign vector 32
+%rep 224
+firmware_stub_%+vector:
+    push qword vector
+    jmp firmware_interrupt
+%assign vector vector+1
+%endrep
+
+firmware_interrupt:
+    push rax
+    push rdx
+    movzx eax, byte [rsp+16]
+    lea rdx, [rel runtime_firmware_vectors]
+    mov rax, [rdx+rax*8]
+    mov [rsp+16], rax           ; the vector's slot now holds its handler
+    mov rdx, rsp
+    and rsp, -16
+    mov eax, ss
+    push rax
+    push rdx
+    pushfq
+    mov eax, cs
+    push rax
+    lea rax, [rel .back]
+    push rax
+    jmp [rdx+16]
+.back:
+    pop rdx
+    pop rax
+    add rsp, 8
+    test byte [rsp+8], 3
+    jnz tick_from_ring3
+    iretq
+
+; The other processors' LAPIC timer and wake-up interrupts.  From ring 3
+; (on the task's kernel stack) the task may move or stop, as with
+; timer_from_ring3; from the kernel (an idle processor) they only acknowledge.
+runtime_ap_timer:
+runtime_ap_ipi:
+    test byte [rsp+8], 3
+    jnz .user
+    push rax
+    push rcx
+    push rdx
+    push rsi
+    push rdi
+    push r8
+    push r9
+    push r10
+    push r11
+    push rbp
+    mov rbp, rsp
+    and rsp, -16
+    cld
+    call smp_kernel_interrupt
+    leave
+    pop r11
+    pop r10
+    pop r9
+    pop r8
+    pop rdi
+    pop rsi
+    pop rdx
+    pop rcx
+    pop rax
+    iretq
+.user:
+    push r15
+    push r14
+    push r13
+    push r12
+    push r11
+    push r10
+    push r9
+    push r8
+    push rbp
+    push rdi
+    push rsi
+    push rdx
+    push rcx
+    push rbx
+    push rax
+    cld
+    mov rbx, rsp
+    and rsp, -16
+    sub rsp, 512
+    fxsave [rsp]
+    call sched_ap_interrupt
+    fxrstor [rsp]
     mov rsp, rbx
     pop rax
     pop rbx
@@ -596,3 +785,76 @@ align 16
 bridge_saved: resq 1
 bridge_stack: resb 65536
 bridge_stack_top:
+
+; Other processors start here in real mode at 0x8000 (the startup IPI's
+; page; smp.c copies this there and fills in the fields at the end), and
+; reach smp_ap_entry(index) in long mode on their own stack.
+AP_BASE equ 0x8000
+global ap_trampoline, ap_trampoline_end, ap_cr3, ap_efer, ap_stack, ap_entry, ap_index
+section .rodata
+align 16
+ap_trampoline:
+bits 16
+    cli
+    cld
+    mov ax, cs
+    mov ds, ax
+    o32 lgdt [ap_gdtr - ap_trampoline]
+    mov eax, cr0
+    and eax, 0x9fffffff         ; caches on
+    or al, 1
+    mov cr0, eax
+    jmp dword 0x08:(AP_BASE + ap_protected - ap_trampoline)
+bits 32
+ap_protected:
+    mov ax, 0x10
+    mov ds, ax
+    mov es, ax
+    mov ss, ax
+    mov eax, cr4
+    or eax, 0x20                ; PAE
+    mov cr4, eax
+    mov eax, [AP_BASE + ap_cr3 - ap_trampoline]
+    mov cr3, eax
+    mov ecx, 0xc0000080
+    mov eax, [AP_BASE + ap_efer - ap_trampoline]
+    mov edx, [AP_BASE + ap_efer - ap_trampoline + 4]
+    wrmsr
+    mov eax, cr0
+    or eax, 0x80000001
+    mov cr0, eax
+    jmp 0x18:(AP_BASE + ap_long - ap_trampoline)
+bits 64
+ap_long:
+    mov rsp, [abs AP_BASE + ap_stack - ap_trampoline]
+    mov edi, [abs AP_BASE + ap_index - ap_trampoline]
+    mov rax, [abs AP_BASE + ap_entry - ap_trampoline]
+    call rax
+.halt:
+    hlt
+    jmp .halt
+align 8
+ap_gdt:
+    dq 0
+    dq 0x00cf9a000000ffff       ; 32-bit code
+    dq 0x00cf92000000ffff       ; data
+    dq 0x00af9a000000ffff       ; 64-bit code
+ap_gdtr:
+    dw 31
+    dd AP_BASE + ap_gdt - ap_trampoline
+align 8
+ap_cr3: dq 0
+ap_efer: dq 0
+ap_stack: dq 0
+ap_entry: dq 0
+ap_index: dq 0
+ap_trampoline_end:
+
+section .data
+align 8
+runtime_firmware_stubs:
+%assign vector 32
+%rep 224
+    dq firmware_stub_%+vector
+%assign vector vector+1
+%endrep

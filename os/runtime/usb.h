@@ -17,6 +17,7 @@ void pci_write8(const struct pci_function *f, u8 offset, u8 value);
 /* Memory BAR address (0 when absent or above 4 GiB); *io set for I/O BARs. */
 u64 pci_bar(const struct pci_function *f, int index, int *io);
 u64 pci_bar64(const struct pci_function *f, int index, int *io);   /* no 4 GiB limit */
+u64 pci_bar_kernel(const struct pci_function *f, int index, int *io);   /* above 4 GiB too where mapped (UEFI) */
 void pci_enable(const struct pci_function *f, int memory, int io);
 typedef void (*pci_found_fn)(const struct pci_function *f);
 void pci_scan_class(u8 class_code, u8 subclass, pci_found_fn found);
@@ -89,7 +90,7 @@ struct usb_hc_ops {
     void (*shutdown)(struct usb_hc *);
 };
 
-#define USB_MAX_PORTS 16
+#define USB_MAX_PORTS 32
 struct usb_hc {
     int used;
     const struct usb_hc_ops *ops;

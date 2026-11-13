@@ -5,12 +5,18 @@ DOS-XC speaks IPv4 and IPv6 over wired Ethernet.  Install the `ethernet` package
 X:\Packages\ethernet.dsp`) and the adapter configures itself with DHCP.  The
 shell announces the address before its next prompt.  IPv6 configures itself
 from router advertisements (SLAAC), with a link-local address always present;
-`IPCONFIG` shows both, and `PING` accepts either kind of address.
+`IPCONFIG` shows both, and `PING` accepts either kind of address.  Without the
+package, the driver for the adapter still starts from the driver store, and the
+desktop installs the package when it finds it (see [DRIVERS.md](DRIVERS.md)).
+
+Realtek's 2.5 Gbit/s RTL8125 and Intel's I210/I211/I225/I226 have no driver yet.
 
 | Hardware | Driver | Tested |
 |----------|--------|--------|
 | QEMU, VirtualBox and VMware Intel adapters (e1000, e1000e, 82540/82545/82574) | `E1000.DRV` | QEMU e1000, e1000-82545em, e1000e |
 | virtio-net, legacy and modern (QEMU/KVM, Proxmox, VirtualBox) | `VIRTIONET.DRV` | QEMU, BIOS and UEFI |
+| Intel I217/I218/I219 chipset Ethernet (most Intel desktops since 2013; ThinkStation P330: I219-LM) | `I219.DRV` | Not yet run on hardware |
+| Realtek RTL8111/8168, RTL8101/8102/8105/8106 and RTL8169 | `RTL8168.DRV` | Not yet run on hardware |
 | Broadcom BCM5761/5764/5784, including the HP Z400 onboard port | `TG3.DRV` | Not yet run on hardware |
 
 ## Commands
@@ -22,6 +28,13 @@ IPCONFIG /STATIC ip mask gateway [dns]    fixed settings, saved in \SYSTEM\NET.C
 IPCONFIG /DHCP                            back to DHCP
 PING [/N count] host                      ICMP echo
 ```
+
+Control Panel > Network does the same on the desktop, and more.  The settings
+of the first adapter are in `\SYSTEM\NET.CFG`, one `KEY=value` a line:
+`IP=`, `MASK=`, `GATEWAY=` and up to two `DNS=` for a fixed address;
+`MODE=DHCP` with `DNS=` lines to keep those DNS servers with DHCP;
+`IPV4=OFF` and `IPV6=OFF`.  Without the file the adapter uses DHCP and IPv6.
+Changing the settings (`DOSXC_NET_CONFIG`) needs an administrator.
 
 `PKG INSTALL X:\Packages\curl.dsp` adds `CURL`, which speaks HTTP and HTTPS.
 Ctrl+C interrupts a program that is blocked on the network.
@@ -73,5 +86,9 @@ The first rule that matches decides; anything no rule allows is blocked with
 `EACCES` and recorded in Event Logs.  Programs are matched by file name.
 Loopback traffic and the system's own traffic (DHCP, address configuration
 and `PING`) are not filtered.  Without the file the firewall is
-on and allows DOSfox, curl, Python and PING to send.  `enabled=0` turns it off;
+on and allows DOSfox, curl, Python and PING to send.  Installed packages
+add their own programs: each `Firewall=A.EXE;B.EXE` line of a
+`\Programs\<Name>\PACKAGE.INF` becomes `allow out any * A.EXE` after the
+file's rules (so a rule in the file can still block them), and PKG reloads
+the rules when it installs or removes such a package.  `enabled=0` turns it off;
 `DOSXC_NET_FIREWALL` reloads the file (administrators).

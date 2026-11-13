@@ -6,6 +6,8 @@
 #include <errno.h>
 #include <sys/epoll.h>
 #include <sys/stat.h>
+#include <sys/statfs.h>
+#include <sys/statvfs.h>
 #include <sys/uio.h>
 #include <sched.h>
 #include <fcntl.h>
@@ -340,6 +342,8 @@ int feupdateenv(const fenv_t *env) {
 #endif
 
 #include <sys/stat.h>
+#include <sys/statfs.h>
+#include <sys/statvfs.h>
 #include <mntent.h>
 #include <netdb.h>
 #include <resolv.h>
@@ -447,36 +451,6 @@ int sigwait(const sigset_t *set, int *sig) { (void)set; (void)sig; return ENOSYS
 unsigned if_nametoindex(const char *name) { (void)name; errno = ENODEV; return 0; }
 char *if_indextoname(unsigned index, char *name) { (void)index; (void)name; errno = ENXIO; return NULL; }
 
-/* DOS-XC has no directory handles to be relative to: only the current
-   directory and absolute paths work with the *at family. */
-static int relative_ok(int dir, const char *path) {
-    if (dir == AT_FDCWD || path[0] == '/' || path[0] == '\\') return 1;
-    errno = ENOSYS;
-    return 0;
-}
-
-int unlinkat(int dir, const char *path, int flags) {
-    if (!relative_ok(dir, path)) return -1;
-    return (flags & AT_REMOVEDIR) ? rmdir(path) : unlink(path);
-}
-
-int renameat(int from_dir, const char *from, int to_dir, const char *to) {
-    if (!relative_ok(from_dir, from) || !relative_ok(to_dir, to)) return -1;
-    return rename(from, to);
-}
-
-int linkat(int from_dir, const char *from, int to_dir, const char *to, int flags) {
-    (void)flags;
-    if (!relative_ok(from_dir, from) || !relative_ok(to_dir, to)) return -1;
-    return link(from, to);
-}
-
-int fchmodat(int dir, const char *path, mode_t mode, int flags) {
-    (void)flags;
-    if (!relative_ok(dir, path)) return -1;
-    return chmod(path, mode);
-}
-
 ssize_t preadv(int fd, const struct iovec *vector, int count, off_t offset) {
     ssize_t total = 0;
 
@@ -548,4 +522,30 @@ int fallocate(int fd, int mode, off_t offset, off_t length) {
 
 int posix_fallocate(int fd, off_t offset, off_t length) {
     return fallocate(fd, 0, offset, length) < 0 ? errno : 0;
+}
+
+static void to_statvfs(const struct statfs *in, struct statvfs *out) {
+    memset(out, 0, sizeof(*out));
+    out->f_bsize = (unsigned long)in->f_bsize;
+    out->f_frsize = (unsigned long)(in->f_frsize ? in->f_frsize : in->f_bsize);
+    out->f_blocks = in->f_blocks;
+    out->f_bfree = in->f_bfree;
+    out->f_bavail = in->f_bavail;
+    out->f_files = in->f_files;
+    out->f_ffree = out->f_favail = in->f_ffree;
+    out->f_namemax = (unsigned long)in->f_namelen;
+}
+
+int statvfs(const char *path, struct statvfs *out) {
+    struct statfs s;
+    if (statfs(path, &s)) return -1;
+    to_statvfs(&s, out);
+    return 0;
+}
+
+int fstatvfs(int fd, struct statvfs *out) {
+    struct statfs s;
+    if (fstatfs(fd, &s)) return -1;
+    to_statvfs(&s, out);
+    return 0;
 }

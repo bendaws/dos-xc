@@ -114,6 +114,8 @@ def main():
                         help='stay on the desktop instead of pressing F12 to reach the prompt')
     parser.add_argument('--timeout', type=float, default=300, help='seconds allowed per command')
     parser.add_argument('--boot-timeout', type=float, default=60)
+    parser.add_argument('--no-prompt', action='store_true',
+                        help='run the commands at once, without waiting for a prompt (AUTOEXEC.BAT starts a program)')
     parser.add_argument('--screendump', help='write a PPM screenshot here when finished')
     parser.add_argument('--qemu-arg', action='append', default=[], help='extra QEMU options (split at spaces)')
     args = parser.parse_args()
@@ -123,12 +125,21 @@ def main():
     try:
         deadline = time.time() + args.boot_timeout
         next_exit = time.time() + 6
-        while time.time() < deadline and not PROMPT.search(session.text().rstrip(' ')):
+        answered = 0
+        while not args.no_prompt and time.time() < deadline and not PROMPT.search(session.text().rstrip(' ')):
             time.sleep(1.5)
+            body = session.text().rstrip(' ')
+            if body.endswith('User name:') and body.count('User name:') > answered:   # the live account
+                answered = body.count('User name:')
+                session.type('Live\n')
+                time.sleep(1)
+                if session.text().rstrip(' ').endswith('Password:'):
+                    session.type('\n')
+                continue
             if args.exit_desktop and time.time() >= next_exit:   # F12: the desktop comes up at boot
                 session.hmp('sendkey f12')
                 next_exit = time.time() + 3
-        if not PROMPT.search(session.text().rstrip(' ')):
+        if not args.no_prompt and not PROMPT.search(session.text().rstrip(' ')):
             print('error: no shell prompt after boot', file=sys.stderr)
             ok = False
         for command in args.command if ok else []:

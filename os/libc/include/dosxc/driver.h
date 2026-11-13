@@ -10,13 +10,15 @@
 
 #define DK_ABI_VERSION 1
 #define DK_ANY 0xffff
+#define DK_CLASS 0xffff
 
 /* Identifies a PCI function (the same layout the runtime uses). */
 struct dk_pci_device {
     unsigned char bus, device, function, prog_if;
     unsigned short vendor, id;
 };
-/* A table of these ends with vendor 0.  DK_ANY matches any device id. */
+/* A table of these ends with vendor 0.  DK_ANY matches any device id.
+   {DK_CLASS, 0x0403} matches every function of class 04h, subclass 03h. */
 struct dk_pci_id { unsigned short vendor, device; };
 
 /* Network adapters (DK_NET_*). */

@@ -4,6 +4,8 @@
  */
 
 #include "wm.h"
+#include <setjmp.h>
+#include <signal.h>
 #include <strings.h>
 
 #define TITLE_H 19
@@ -11,7 +13,7 @@
 #define FRAME_SIDE 4
 #define FRAME_BOTTOM 4
 #define TASKBAR_H 27
-#define MAX_WINDOWS 32
+#define MAX_WINDOWS 64
 #define MAX_DAMAGE 48
 #define NS_PER_MS 1000000ull
 
@@ -248,6 +250,9 @@ static void default_layout(void) {
     for (int i = 0; i < screen_count; ++i) {
         struct screen *s = &screens[i];
         int m = mode_index(s, s->preferred_width, s->preferred_height);
+        if (m < 0 && s->preferred_width)                      /* modes are sorted: the largest that fits */
+            for (int i = 0; i < s->mode_count; ++i)
+                if ((int)s->modes[i].width <= s->preferred_width && (int)s->modes[i].height <= s->preferred_height) m = i;
         if (m < 0) m = mode_index(s, 1024, 768);
         if (m < 0) m = s->mode_count - 1;
         s->mode = m;
@@ -281,6 +286,17 @@ static int screens_init(void) {
 
 static void damage_window(const struct window *w) { damage_rect(frame_of(w)); }
 
+/* Change stacking independently of keyboard focus (menus keep their owner's focus). */
+static void raise_window(struct window *w) {
+    for (int i = 0; i < window_count; ++i)
+        if (windows[i] == w) {
+            memmove(windows + i, windows + i + 1, (size_t)(window_count - i - 1) * sizeof(*windows));
+            windows[window_count - 1] = w;
+            damage_window(w);
+            break;
+        }
+}
+
 static void activate(struct window *w) {
     if (active == w) {
         if (!w) return;
@@ -295,23 +311,35 @@ static void activate(struct window *w) {
         damage_rect(bar);
     }
     if (!w) return;
-    for (int i = 0; i < window_count; ++i)
-        if (windows[i] == w) {
-            memmove(windows + i, windows + i + 1, (size_t)(window_count - i - 1) * sizeof(*windows));
-            windows[window_count - 1] = w;
-            damage_window(w);
-            break;
-        }
+    raise_window(w);
 }
 
 static void activate_top(void) {
     struct window *found = 0;
     for (int i = window_count - 1; i >= 0 && !found; --i)
-        if (!windows[i]->minimized) found = windows[i];
+        if (!windows[i]->minimized && !windows[i]->popup) found = windows[i];
     activate(found);
 }
 
-static struct window *window_create(int w, int h, const char *title, int icon, const struct app_ops *ops, void *data, int remote) {
+static struct window *next_host;
+void window_host_next(struct window *host) { next_host = host; }
+
+static struct window *window_create(int w, int h, const char *title, int icon, const struct app_ops *ops, void *data, int remote, int popup) {
+    if (next_host && !remote) {
+        struct window *host = next_host, *win = calloc(1, sizeof(*win));
+        next_host = 0;
+        if (!win) return 0;
+        win->r = (struct rect){host->r.x, host->r.y, w, h};
+        snprintf(win->title, sizeof(win->title), "%s", title);
+        win->icon = icon;
+        win->ops = ops;
+        win->data = data;
+        win->host = host;
+        win->needs_paint = 1;
+        host->hosted = win;
+        host->needs_paint = 1;
+        return win;
+    }
     if (window_count == MAX_WINDOWS) return 0;
     struct window *win = calloc(1, sizeof(*win));
     if (!win) return 0;
@@ -327,21 +355,33 @@ static struct window *window_create(int w, int h, const char *title, int icon, c
     win->ops = ops;
     win->data = data;
     win->needs_paint = !remote;
+    win->popup = popup;
     if (!remote && surface_size(&win->content, w, h)) { free(win); return 0; }
     windows[window_count++] = win;
-    task_order[task_count++] = win;
-    activate(win);
+    if (!popup) {
+        task_order[task_count++] = win;
+        activate(win);
+    }
     return win;
 }
 
 struct window *window_open(int w, int h, const char *title, int icon, const struct app_ops *ops, void *data) {
-    return window_create(w, h, title, icon, ops, data, 0);
+    return window_create(w, h, title, icon, ops, data, 0, 0);
 }
 
 void window_modal(struct window *w) { (void)w; }
 void window_popup(struct window *w, int x, int y, const char *items, int tag) { (void)w; (void)x; (void)y; (void)items; (void)tag; }
 
 void window_close(struct window *w) {
+    if (w->host) {
+        struct window *host = w->host;
+        host->hosted = 0;
+        if (w->ops->closed) w->ops->closed(w);
+        free(w);
+        host->needs_paint = 1;
+        return;
+    }
+    if (w->hosted) window_close(w->hosted);
     for (int i = 0; i < window_count; ++i)
         if (windows[i] == w) {
             memmove(windows + i, windows + i + 1, (size_t)(window_count - i - 1) * sizeof(*windows));
@@ -368,6 +408,7 @@ void window_close(struct window *w) {
 
 void window_title(struct window *w, const char *title) {
     snprintf(w->title, sizeof(w->title), "%s", title);
+    if (w->host) return;
     damage_window(w);
     struct rect bar = screens[main_screen].r;
     bar.y += bar.h - TASKBAR_H;
@@ -511,10 +552,17 @@ static void paint_frame(const struct canvas *c, struct window *w) {
     paint_title_glyph(c, min, 2);
 }
 
+/* A client's borderless window covering the main screen, such as a slide show, hides the taskbar. */
+static int fullscreen_active(void) {
+    struct rect s = screens[main_screen].r;
+    return active && active->popup && !active->minimized && active->r.x <= s.x && active->r.y <= s.y &&
+           active->r.x + active->r.w >= s.x + s.w && active->r.y + active->r.h >= s.y + s.h;
+}
+
 static struct rect taskbar_rect(void) {
     struct rect r = screens[main_screen].r;
     r.y += r.h - TASKBAR_H;
-    r.h = TASKBAR_H;
+    r.h = fullscreen_active() ? 0 : TASKBAR_H;
     return r;
 }
 
@@ -530,7 +578,7 @@ static struct rect start_button_rect(void) {
 
 static struct rect clock_rect(void) {
     struct rect b = taskbar_rect();
-    int w = text_width(&font_regular, "00/00/0000  00:00") + 12;
+    int w = text_width(&font_regular, "00/00/0000  00:00 PM") + 12;
     return (struct rect){b.x + b.w - w - 3, b.y + 3, w, b.h - 5};
 }
 
@@ -562,7 +610,12 @@ static void clock_text(char *out, size_t size) {
     int year = (int)((long long)yoe + era * 400), day = (int)(doy - (153 * mp + 2) / 5 + 1), month = (int)(mp < 10 ? mp + 3 : mp - 9);
     if (month <= 2) ++year;
     int minutes = (int)((now % 86400 + 86400) % 86400) / 60;
-    snprintf(out, size, "%02d/%02d/%04d  %d:%02d", month, day, year, minutes / 60, minutes % 60);
+    struct dosxc_clock settings;
+    int hour12 = dosxc_sys_clock(DOSXC_CLOCK_GET, &settings) == 0 && settings.hour12;
+    int hour = minutes / 60;
+    if (hour12) snprintf(out, size, "%02d/%02d/%04d  %d:%02d %s", month, day, year,
+                         hour % 12 ? hour % 12 : 12, minutes % 60, hour >= 12 ? "PM" : "AM");
+    else snprintf(out, size, "%02d/%02d/%04d  %d:%02d", month, day, year, hour, minutes % 60);
 }
 
 static void paint_clipped_label(const struct canvas *c, struct rect r, const struct font *f, const char *s, u32 color) {
@@ -710,6 +763,46 @@ static void paint_identify(const struct canvas *c, int s) {
     text_big(c, bx + bw / 2 - 30, by + 20, label, 0xffffff, 10);
 }
 
+/* A client's memory can go away while we read it: it freed a window buffer
+   after resizing, or it ended.  A fault there costs the read, not the desktop. */
+static sigjmp_buf client_fault;
+static volatile sig_atomic_t reading_client;
+static void client_fault_handler(int signal_number) {
+    if (reading_client) {
+        reading_client = 0;
+        siglongjmp(client_fault, 1);
+    }
+    signal(signal_number, SIG_DFL);
+    raise(signal_number);
+}
+
+/* Runs FN(ARG), which reads a client's memory; nonzero if that faulted. */
+static int client_read(void (*fn)(void *), void *arg) {
+    int faulted = 0;
+    reading_client = 1;
+    if (!sigsetjmp(client_fault, 1)) fn(arg);
+    else faulted = 1;
+    reading_client = 0;
+    return faulted;
+}
+
+static int tracking;
+static void read_track_mouse(void *arg) { tracking = ((struct window *)arg)->remote->track_mouse; }
+
+static const struct canvas *blit_target;
+static void blit_content(void *arg) {
+    struct window *w = arg;
+    blit(blit_target, w->r.x, w->r.y, &w->content);
+}
+
+static void blit_client(const struct canvas *c, struct window *w) {
+    blit_target = c;
+    if (client_read(blit_content, w)) {
+        w->content.px = 0;
+        w->seen = ~w->seen;
+    }
+}
+
 static void paint_scene(const struct canvas *c, int s) {
     if (logon_mode) logon_paint(c, screens[s].r);
     else if (screens[s].wall.px) blit(c, screens[s].r.x, screens[s].r.y, &screens[s].wall);
@@ -721,9 +814,12 @@ static void paint_scene(const struct canvas *c, int s) {
         paint_frame(c, w);
         struct canvas inner = *c;
         inner.clip = rect_both(c->clip, w->r);
-        if (w->content.px) blit(&inner, w->r.x, w->r.y, &w->content);
+        if (w->content.px) {
+            if (w->remote) blit_client(&inner, w);
+            else blit(&inner, w->r.x, w->r.y, &w->content);
+        }
     }
-    if (s == main_screen && !logon_mode) paint_taskbar(c);
+    if (s == main_screen && !logon_mode && !fullscreen_active()) paint_taskbar(c);
     paint_menu(c);
     paint_identify(c, s);
     paint_cursor(c);
@@ -770,6 +866,7 @@ static void present(const struct screen *s, struct rect r) {
 static void paint_windows(void) {
     for (int i = 0; i < window_count; ++i) {
         struct window *w = windows[i];
+        if (w->hosted && w->hosted->needs_paint) { w->hosted->needs_paint = 0; w->needs_paint = 1; }
         if (!w->needs_paint || w->remote) continue;
         w->needs_paint = 0;
         struct canvas c = {&w->content, 0, 0, {0, 0, w->content.w, w->content.h}};
@@ -911,7 +1008,6 @@ LAUNCHER(act_solitaire, "SOLITAIRE.EXE")
 LAUNCHER(act_mines, "MINES.EXE")
 LAUNCHER(act_chess, "CHESS.EXE")
 LAUNCHER(act_prompt, "TERMINAL.EXE")
-LAUNCHER(act_packages, "PKGMGR.EXE")
 LAUNCHER(act_setup, "SETUPGUI.EXE")
 
 static void act_browser(void) {
@@ -935,7 +1031,6 @@ static void ask_shutdown(void) { confirm_box("Shut Down", "Shut down the compute
 #define ADMIN_FOLDER "System/Administrators"
 /* Programs that need an administrator: System, Administrators (packages add theirs with category=System/Administrators). */
 static const struct menu_item admin_items[] = {
-    {"Package Manager", ICON_PACKAGE, act_packages},
     {"Event Logs", ICON_INFO, act_events},
     {"Firewall", ICON_NET, act_firewall},
 };
@@ -1191,6 +1286,7 @@ void desktop_damage(struct rect r) { damage_rect(r); }
 struct rect desktop_area(void) { return main_work(); }
 
 void window_raise(struct window *w) {
+    if (w->host) w = w->host;
     if (w->minimized) w->minimized = 0;
     activate(w);
     damage_window(w);
@@ -1269,29 +1365,40 @@ static struct window *find_remote(int slot, uintptr_t pointer) {
     return 0;
 }
 
+/* The fields of a client's new window the desktop needs, copied out of its memory. */
+struct opening { struct window *c, copy; };
+static void copy_opening(void *arg) {
+    struct opening *o = arg;
+    o->copy = *o->c;
+    o->copy.title[sizeof(o->copy.title) - 1] = 0;
+    o->copy.icon_file[sizeof(o->copy.icon_file) - 1] = 0;
+}
+
 static void client_request(int slot, const struct gui_request *r) {
     struct window *w = find_remote(slot, r->window);
     switch (r->type) {
     case RQ_OPEN: {
-        struct window *c = (struct window *)r->window;
+        struct opening o = {(struct window *)r->window};
+        if (client_read(copy_opening, &o)) break;
+        const struct window *c = &o.copy;
         int icon = c->icon >= 0 && c->icon < ICON_SLOTS ? c->icon : ICON_PROGRAM;
         if (icon == ICON_DOSFOX) icon_load_png(ICON_DOSFOX, "\\Programs\\dosfox\\DOSFOX.PNG");
         if (c->icon_file[0]) icon = icon_for_png(c->icon_file);
-        struct window *fresh = window_create(c->content.w, c->content.h, c->title, icon, &remote_ops, 0, 1);
+        struct window *fresh = window_create(c->content.w, c->content.h, c->title, icon, &remote_ops, 0, 1, c->popup);
         if (fresh) {
-            fresh->remote = c;
+            fresh->remote = o.c;
             fresh->client = slot;
             fresh->resizable = c->resizable;
             if (c->popup) {
                 fresh->popup = 1;
                 fresh->r = (struct rect){c->r.x, c->r.y, c->content.w, c->content.h};
-                for (int i = 0; i < task_count; ++i)
-                    if (task_order[i] == fresh) { task_order[i] = task_order[--task_count]; break; }
+                damage_window(fresh);
             }
         }
         break;
     }
     case RQ_CLOSE: if (w) window_close(w); break;
+    case RQ_RAISE: if (w) raise_window(w); break;
     case RQ_POPUP: if (w) popup_open(w, r->x, r->y, r->text, r->tag); break;
     case RQ_RESIZE:
         if (w && !w->maximized) {
@@ -1314,32 +1421,43 @@ static void client_request(int slot, const struct gui_request *r) {
     }
 }
 
+static void sync_client_window(void *arg) {
+    struct window *w = arg, *c = w->remote;
+    char title[sizeof(c->title)];
+    if (c->seq != w->seen) {
+        w->seen = c->seq;
+        w->content.px = c->content.px;
+        w->content.w = c->content.w;
+        w->content.h = c->content.h;
+        damage_window(w);
+    }
+    if (w->popup) {
+        if (w->r.x != c->r.x || w->r.y != c->r.y || w->r.w != c->content.w || w->r.h != c->content.h) {
+            damage_window(w);
+            w->r = (struct rect){c->r.x, c->r.y, c->content.w, c->content.h};
+            damage_window(w);
+        }
+    } else {
+        c->r.x = w->r.x;
+        c->r.y = w->r.y;
+    }
+    w->resizable = c->resizable;
+    if (!c->icon_file[0] && w->icon != c->icon && c->icon >= 0 && c->icon < ICON_SLOTS) { w->icon = c->icon; damage_window(w); }
+    memcpy(title, c->title, sizeof(title));
+    title[sizeof(title) - 1] = 0;
+    if (strcmp(w->title, title)) window_title(w, title);
+}
+
 static void sync_client_windows(void) {
     board->screen_w = screens[main_screen].r.w;
     board->screen_h = screens[main_screen].r.h;
     for (int i = 0; i < window_count; ++i) {
-        struct window *w = windows[i], *c = w->remote;
-        if (!c) continue;
-        if (c->seq != w->seen) {
-            w->seen = c->seq;
-            w->content.px = c->content.px;
-            w->content.w = c->content.w;
-            w->content.h = c->content.h;
-            damage_window(w);
-        }
-        if (w->popup) {
-            if (w->r.x != c->r.x || w->r.y != c->r.y || w->r.w != c->content.w || w->r.h != c->content.h) {
-                damage_window(w);
-                w->r = (struct rect){c->r.x, c->r.y, c->content.w, c->content.h};
-                damage_window(w);
-            }
-        } else {
-            c->r.x = w->r.x;
-            c->r.y = w->r.y;
-        }
-        w->resizable = c->resizable;
-        if (w->icon != c->icon && c->icon >= 0 && c->icon < ICON_SLOTS) { w->icon = c->icon; damage_window(w); }
-        if (strcmp(w->title, c->title)) window_title(w, c->title);
+        struct window *w = windows[i];
+        if (!w->remote || !client_read(sync_client_window, w)) continue;
+        int slot = w->client;
+        if (dosxc_sys_task(DOSXC_TASK_ALIVE, 0, board->clients[slot].pid, 0) <= 0) client_gone(slot);
+        else window_close(w);
+        i = -1;
     }
 }
 
@@ -1426,17 +1544,6 @@ static void update_drag(void) {
     }
 }
 
-void open_network(void) {
-    struct dosxc_netinfo info;
-    int count = dosxc_sys_net(DOSXC_NET_INFO, 0, &info);
-    if (count <= 0) { message_box("Network", "No network adapter was found.", "Install the ethernet package to add drivers."); return; }
-    char line1[80], line2[80];
-    snprintf(line1, sizeof(line1), "%s: %s", info.name, info.link ? "connected" : "no cable");
-    if (info.ip) snprintf(line2, sizeof(line2), "Address %u.%u.%u.%u", info.ip >> 24, info.ip >> 16 & 255, info.ip >> 8 & 255, info.ip & 255);
-    else snprintf(line2, sizeof(line2), "%s", "Waiting for an address (DHCP).");
-    message_box("Network", line1, line2);
-}
-
 static void mouse_down_left(int doubled) {
     if (menu.open) {
         int n = menu_item_at(&nested, cursor_x, cursor_y);
@@ -1461,6 +1568,7 @@ static void mouse_down_left(int doubled) {
     }
     if (!logon_mode && rect_has(volume_rect(), cursor_x, cursor_y)) { open_sound(); return; }
     if (!logon_mode && rect_has(net_rect(), cursor_x, cursor_y)) { open_network(); return; }
+    if (!logon_mode && rect_has(clock_rect(), cursor_x, cursor_y)) { open_date_time(); return; }
     for (int i = 0; i < task_count; ++i)
         if (!logon_mode && rect_has(taskbar_rect(), cursor_x, cursor_y) && rect_has(task_button_rect(i), cursor_x, cursor_y)) {
             struct window *w = task_order[i];
@@ -1476,7 +1584,7 @@ static void mouse_down_left(int doubled) {
         struct window *w = windows[i];
         int edges = 0, hit = w->minimized ? HIT_NONE : window_hit(w, cursor_x, cursor_y, &edges);
         if (hit == HIT_NONE) continue;
-        activate(w);
+        if (!w->popup) activate(w);
         drag.w = w;
         drag.grab_x = cursor_x;
         drag.grab_y = cursor_y;
@@ -1526,7 +1634,7 @@ static void mouse_down_right(void) {
     for (int i = window_count - 1; i >= 0; --i) {
         struct window *w = windows[i];
         if (w->minimized || !rect_has(frame_of(w), cursor_x, cursor_y)) continue;
-        activate(w);
+        if (!w->popup) activate(w);
         if (rect_has(w->r, cursor_x, cursor_y) && w->ops->mouse)
             w->ops->mouse(w, cursor_x - w->r.x, cursor_y - w->r.y, M_RIGHT, 0);
         return;
@@ -1586,7 +1694,7 @@ static void input_mouse(void) {
         for (int i = window_count - 1; i >= 0; --i) {
             struct window *w = windows[i];
             if (w->minimized || !rect_has(frame_of(w), cursor_x, cursor_y)) continue;
-            if (w->remote && w->remote->track_mouse && w == active && rect_has(w->r, cursor_x, cursor_y))
+            if (w->remote && (w == active || w->popup) && rect_has(w->r, cursor_x, cursor_y) && !client_read(read_track_mouse, w) && tracking)
                 post_event(w, EV_MOUSE, cursor_x - w->r.x, cursor_y - w->r.y, M_MOVE, 0);
             break;
         }
@@ -1634,7 +1742,11 @@ static void input_keyboard(void) {
 
 static void update_clock(void) {
     int minute = (int)(dosxc_sys_time() / 60);
-    if (minute != clock_minute) {
+    static int last_format = -1;
+    struct dosxc_clock settings;
+    int format = dosxc_sys_clock(DOSXC_CLOCK_GET, &settings) == 0 && settings.hour12;
+    if (minute != clock_minute || format != last_format) {
+        last_format = format;
         clock_minute = minute;
         damage_rect(clock_rect());
     }
@@ -1655,15 +1767,22 @@ static void update_clock(void) {
     }
 }
 
+void me_reload(void) {
+    accounts_on = dosxc_sys_user(DOSXC_USER_ENABLED, 0, 0) > 0;
+    dosxc_sys_user(DOSXC_USER_WHOAMI, 0, &me);
+    free(me_picture.px);
+    me_picture = (struct surface){0};
+    if (accounts_on && me.picture[0]) user_picture(me.picture, 40, &me_picture);
+}
+
 int main(int argc, char **argv) {
+    signal(SIGSEGV, client_fault_handler);
     icons_init();
     if (argc > 1 && !strcmp(argv[1], "/LOGON")) {
         logon_mode = 1;
         argc = 1;
     }
-    accounts_on = dosxc_sys_user(DOSXC_USER_ENABLED, 0, 0) > 0;
-    dosxc_sys_user(DOSXC_USER_WHOAMI, 0, &me);
-    if (accounts_on && me.picture[0]) user_picture(me.picture, 40, &me_picture);
+    me_reload();
     if (!logon_mode) config_load();
     dosxc_sys_console(DOSXC_CONSOLE_VOLUME, sound_volume, 0);
     {
@@ -1693,6 +1812,10 @@ int main(int argc, char **argv) {
         wallpaper_init();
         icon_load_png(ICON_DOSFOX, "\\Programs\\dosfox\\DOSFOX.PNG");
         icons_reload();
+        char devices[260];
+        desktop_path(devices, sizeof(devices), "Apps\\DEVICES.EXE");
+        char *device_argv[3] = {devices, "/AUTO", 0};
+        dosxc_sys_task(DOSXC_TASK_START, devices, (long)device_argv, 0);
     }
     damage_all();
     composite();
@@ -1708,6 +1831,7 @@ int main(int argc, char **argv) {
         input_mouse();
         input_keyboard();
         update_clock();
+        control_panel_tick();
         serve_clients();
         if (!logon_mode) icons_poll();
         composite();

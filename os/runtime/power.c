@@ -52,6 +52,11 @@ static const u8 *find_table(const u8 *rsdp, const char *signature) {
     return 0;
 }
 
+const u8 *acpi_table(const char *signature) {
+    const u8 *rsdp = find_rsdp();
+    return rsdp ? find_table(rsdp, signature) : 0;
+}
+
 /* SLP_TYPa/b from the DSDT's \_S5 package: Name(_S5, Package(){a, b, ...}). */
 static void find_s5(const u8 *dsdt) {
     u32 length = *(u32 *)(dsdt + 4);
@@ -131,7 +136,6 @@ static void button_pressed(void) {
     if (current && !fs_stat(path, &info)) {
         char *argv[3] = {"SHUTDOWN.EXE", "/B", 0};
         display_text();
-        terminal_mouse_hide();
         process_spawn(current, path, argv, 0, 0, 0);
     } else {
         rt_print("\r\nThe power button was pressed: shutting down.\r\n");

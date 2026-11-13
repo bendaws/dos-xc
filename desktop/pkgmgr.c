@@ -5,7 +5,9 @@
 
 #include "wm.h"
 #include "../os/pkg/dsp.h"
+#include "../os/pkg/repo.h"
 #include <strings.h>
+#include <unistd.h>
 
 #define MAX_ITEMS 128
 #define ROW 20
@@ -13,8 +15,10 @@
 #define LOG_WIDTH 100
 
 struct item { struct dsp_info info; char file[300]; int state; };   /* state: 0 new, 1 same, 2 older installed */
-static struct item installed[MAX_ITEMS], available[MAX_ITEMS];
-static int installed_count, available_count, tab, selected;
+static struct item installed[MAX_ITEMS], available[MAX_ITEMS], online[MAX_ITEMS];
+static int installed_count, available_count, online_count, online_loaded, selected;
+static int tab = 2; /* Open the online catalog by default. */
+static char online_dir[300], online_file[340];
 static struct vscroll scroll, log_scroll;
 static struct window *win;
 
@@ -22,7 +26,8 @@ static char log_text[LOG_LINES][LOG_WIDTH];
 static int log_count, log_column;
 static int console = -1, pkg_pid;
 
-static const struct rect tabs[2] = {{12, 8, 90, 24}, {106, 8, 90, 24}};
+static const struct rect tabs[3] = {{106, 8, 90, 24}, {200, 8, 90, 24}, {12, 8, 90, 24}};
+static const struct rect act_refresh = {492, 8, 136, 24};
 static const struct rect list = {12, 36, 616, 200}, log_area = {12, 324, 616, 100};
 static const struct rect act_install = {12, 276, 110, 24}, act_update = {130, 276, 110, 24};
 static const struct rect act_remove = {248, 276, 110, 24}, act_details = {366, 276, 110, 24};
@@ -31,6 +36,8 @@ static const struct rect act_from_file = {484, 276, 144, 24};
 static const char *const details_label[] = {"Show Details", "Show Details"};
 
 static int is_busy(void) { return console >= 0; }
+static int item_count(void) { return tab == 2 ? online_count : tab ? available_count : installed_count; }
+static const struct item *items(void) { return tab == 2 ? online : tab ? available : installed; }
 
 static void log_append(char c) {
     if (c == '\n') {
@@ -79,6 +86,13 @@ static void load_installed(void) {
         ++installed_count;
     }
     free(entries);
+    char inf[32], text[2048];
+    snprintf(inf, sizeof(inf), "%c:\\SYSTEM\\PACKAGE.INF", info.drive);
+    FILE *f = installed_count < MAX_ITEMS ? fopen(inf, "rb") : 0;
+    if (!f) return;
+    size_t got = fread(text, 1, sizeof(text), f);
+    fclose(f);
+    if (!dsp_parse_info(text, got, &installed[installed_count].info)) ++installed_count;
 }
 
 static const struct item *installed_named(const char *name) {
@@ -122,7 +136,19 @@ static void load_available(void) {
 static void refresh(void) {
     load_installed();
     load_available();
-    int total = tab ? available_count : installed_count;
+    if (online_file[0]) {
+        struct repo_entry *entries=malloc(REPO_MAX_PACKAGES*sizeof(*entries));
+        int next=0,n=entries ? repo_read_index(online_file,entries,MAX_ITEMS,&next) : -1;
+        online_count=n<0 ? 0 : n;
+        for (int i=0;i<online_count;++i) {
+            online[i].info=entries[i].info;
+            const struct item *old=installed_named(online[i].info.name);
+            online[i].state=!old ? 0 : dsp_compare_versions(online[i].info.version,old->info.version)>0 ? 2 : 1;
+        }
+        free(entries);
+        qsort(online,(size_t)online_count,sizeof(online[0]),order);
+    }
+    int total = item_count();
     if (selected >= total) selected = total - 1;
     scroll.total = total;
     scroll.visible = list.h / ROW;
@@ -135,7 +161,7 @@ static void run_pkg(const char *verb, const char *argument, int yes, int force) 
     struct dosxc_sysinfo info;
     dosxc_sys_sysinfo(&info);
     char path[32], line[320];
-    snprintf(path, sizeof(path), "%c:\\SYSTEM\\PKG.EXE", info.drive);
+    snprintf(path, sizeof(path), "%c:\\Programs\\pkg\\PKG.EXE", info.drive);
     snprintf(line, sizeof(line), "> PKG %s %s", verb, argument ? argument : "");
     log_write(line);
     console = (int)dosxc_sys_task(DOSXC_TASK_CONSOLE_OPEN, 0, 0, 0);
@@ -151,6 +177,22 @@ static void run_pkg(const char *verb, const char *argument, int yes, int force) 
     }
     pkg_pid = (int)pid;
     window_paint(win);
+}
+
+static void refresh_online(void) {
+    if (is_busy()) return;
+    if (!online_dir[0]) {
+        const char *temp=getenv("TMPDIR");
+        if (!temp || !*temp) temp="\\TEMP";
+        if (snprintf(online_dir,sizeof(online_dir),"%s/pkgmgr-XXXXXX",temp)>=(int)sizeof(online_dir) || !mkdtemp(online_dir)) {
+            online_dir[0]=0; log_write("Cannot create a temporary catalog directory."); return;
+        }
+        snprintf(online_file,sizeof(online_file),"%s/catalog.inf",online_dir);
+    }
+    remove(online_file);
+    online_count=0; selected=0; scroll.top=0; scroll.total=0;
+    online_loaded=1;
+    run_pkg("CATALOG",online_file,0,0);
 }
 
 static int pkg_poll(void) {
@@ -181,13 +223,13 @@ static void paint_list(const struct canvas *c) {
     fill(c, list.x, list.y + 16, list.w - 14, 1, C_SHADOW1);
     struct canvas clip = *c;
     clip.clip = rect_both(c->clip, (struct rect){list.x, list.y + 18, list.w - 14, list.h - 18});
-    const struct item *items = tab ? available : installed;
-    int count = tab ? available_count : installed_count;
+    const struct item *entries = items();
+    int count = item_count();
     scroll.total = count;
     scroll.visible = (list.h - 18) / ROW;
     vscroll_clamp(&scroll);
     for (int i = 0; i < scroll.visible && scroll.top + i < count; ++i) {
-        const struct item *it = &items[scroll.top + i];
+        const struct item *it = &entries[scroll.top + i];
         int y = list.y + 18 + i * ROW, on = scroll.top + i == selected;
         if (on) fill(&clip, list.x, y, list.w - 14, ROW, C_SELECTION);
         u32 color = on ? 0xffffff : C_TEXT;
@@ -209,16 +251,17 @@ static void action_button(const struct canvas *c, struct rect r, const char *lab
 }
 
 static const struct item *selected_item(void) {
-    int count = tab ? available_count : installed_count;
+    int count = item_count();
     if (selected < 0 || selected >= count) return 0;
-    return tab ? &available[selected] : &installed[selected];
+    return &items()[selected];
 }
 
 static void pm_paint(struct window *w, const struct canvas *c) {
-    for (int i = 0; i < 2; ++i) {
-        static const char *const names[2] = {"Installed", "Available"};
+    for (int i = 0; i < 3; ++i) {
+        static const char *const names[3] = {"Installed", "Local", "Online"};
         button(c, tabs[i], names[i], tab == i, tab == i);
     }
+    if (tab==2) action_button(c,act_refresh,"Refresh",!is_busy());
     paint_list(c);
     const struct item *it = selected_item();
     char line[300] = "";
@@ -274,21 +317,26 @@ static void pm_mouse(struct window *w, int x, int y, int kind, int value) {
         return;
     }
     if (kind != M_DOWN && kind != M_DOUBLE) return;
-    for (int i = 0; i < 2; ++i)
-        if (rect_has(tabs[i], x, y)) { tab = i; selected = 0; scroll.top = 0; window_paint(w); return; }
+    for (int i = 0; i < 3; ++i)
+        if (rect_has(tabs[i], x, y)) {
+            tab = i; selected = 0; scroll.top = 0; scroll.total=item_count();
+            if (tab==2 && !online_loaded) refresh_online();
+            window_paint(w); return;
+        }
     if (rect_has(list, x, y) && y >= list.y + 18) {
         int at = scroll.top + (y - list.y - 18) / ROW;
-        if (at < (tab ? available_count : installed_count)) selected = at;
+        if (at < item_count()) selected = at;
         window_paint(w);
         return;
     }
     if (is_busy()) return;
+    if (tab==2 && rect_has(act_refresh,x,y)) { refresh_online(); return; }
     const struct item *it = selected_item();
     if (rect_has(act_from_file, x, y)) { file_dialog("Install Package", 0, 0, installed_file, 0); return; }
     if (!it) return;
-    if (rect_has(act_details, x, y)) { run_pkg("INFO", tab ? it->file : it->info.name, 0, 0); return; }
-    if (rect_has(act_install, x, y) && tab && !it->state) { run_pkg("INSTALL", it->file, 1, 0); return; }
-    if (rect_has(act_update, x, y) && tab && it->state >= 1) { run_pkg("UPDATE", it->file, 1, it->state == 1); return; }
+    if (rect_has(act_details, x, y)) { run_pkg(tab==2 ? "SHOW" : "INFO",tab==1 ? it->file : it->info.name,0,0); return; }
+    if (rect_has(act_install, x, y) && tab && !it->state) { run_pkg("INSTALL",tab==2 ? it->info.name : it->file,1,0); return; }
+    if (rect_has(act_update, x, y) && tab && it->state >= 1) { run_pkg("UPDATE",tab==2 ? it->info.name : it->file,1,it->state==1); return; }
     if (rect_has(act_remove, x, y) && !tab) {
         char question[160];
         if (!strcasecmp(it->info.name, "DOS-XC Desktop"))
@@ -301,7 +349,7 @@ static void pm_mouse(struct window *w, int x, int y, int kind, int value) {
 }
 
 static void pm_key(struct window *w, int key) {
-    int count = tab ? available_count : installed_count;
+    int count = item_count();
     if (key == 0x101 && selected > 0) --selected;
     else if (key == 0x102 && selected + 1 < count) ++selected;
     else return;
@@ -310,7 +358,12 @@ static void pm_key(struct window *w, int key) {
     window_paint(w);
 }
 
-static const struct app_ops pm_ops = {pm_paint, pm_mouse, pm_key};
+static int pm_closing(struct window *w) {
+    (void)w;
+    if (is_busy()) { log_write("Wait for the package operation to finish before closing."); return 0; }
+    return 1;
+}
+static const struct app_ops pm_ops = {.paint=pm_paint,.mouse=pm_mouse,.key=pm_key,.closing=pm_closing};
 
 int main(void) {
     if (gui_connect()) return 1;
@@ -319,6 +372,9 @@ int main(void) {
     (void)details_label;
     refresh();
     gui_set_poll(pkg_poll);
+    refresh_online();
     gui_run();
+    if (online_file[0]) remove(online_file);
+    if (online_dir[0]) rmdir(online_dir);
     return 0;
 }

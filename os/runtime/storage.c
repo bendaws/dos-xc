@@ -9,11 +9,15 @@ static struct blockdev *devices[STORAGE_MAX];
 static unsigned device_count;
 static u8 *bounce;                      /* STORAGE_BUFFER bytes, 64 KiB aligned */
 
+static struct pci_function probing;    /* the controller a driver is looking at */
+static unsigned claimed[16], claimed_count;
+
 int storage_add(struct blockdev *device) {
     if (device_count == STORAGE_MAX || !device->blocks || !device->transfer) return -1;
     if (device->block_size != 512 && device->block_size != 2048 && device->block_size != 4096) return -1;
     u32 most = STORAGE_BUFFER / device->block_size;
     if (!device->max_blocks || device->max_blocks > most) device->max_blocks = most;
+    device->pci = probing;
     devices[device_count++] = device;
     return 0;
 }
@@ -96,11 +100,42 @@ void storage_flush_all(void) {
         if (devices[i]->flush && !devices[i]->readonly) devices[i]->flush(devices[i]);
 }
 
+static void raid_probe(const struct pci_function *f) {
+    if (f->vendor != 0x8086) return;
+    struct pci_function ahci = *f;
+    ahci.prog_if = 1;
+    ahci_probe(&ahci);
+}
+
+static pci_found_fn probe_driver;
+static void probe(const struct pci_function *f) {
+    probing = *f;
+    probe_driver(f);
+}
+
+void storage_claim(void) {
+    if (claimed_count < sizeof(claimed) / sizeof(*claimed))
+        claimed[claimed_count++] = (unsigned)probing.bus << 8 | (unsigned)probing.device << 3 | probing.function;
+}
+
+int storage_claimed(unsigned location) {
+    for (unsigned i = 0; i < claimed_count; ++i)
+        if (claimed[i] == location) return 1;
+    return 0;
+}
+
 void storage_probe(void) {
     static int probed;
     if (probed) return;
     probed = 1;
-    pci_scan_class(1, 0x01, ata_probe);       /* IDE */
-    pci_scan_class(1, 0x06, ahci_probe);      /* SATA (AHCI) */
-    pci_scan_class(1, 0x08, nvme_probe);      /* NVMe */
+    static const struct { u8 subclass; pci_found_fn driver; } kinds[] = {
+        {0x01, ata_probe},                    /* IDE */
+        {0x06, ahci_probe},                   /* SATA (AHCI) */
+        {0x04, raid_probe},                   /* Intel RST "RAID" mode: AHCI underneath */
+        {0x08, nvme_probe},                   /* NVMe */
+    };
+    for (unsigned k = 0; k < sizeof(kinds) / sizeof(*kinds); ++k) {
+        probe_driver = kinds[k].driver;
+        pci_scan_class(1, kinds[k].subclass, probe);
+    }
 }

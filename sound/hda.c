@@ -377,6 +377,17 @@ static int hda_probe(const struct dk_pci_device *device, void **instance) {
     a->regs = dk->mmio_map(bar, 0x4000);
     if (!a->regs) { dk->free(a); return -DOSXC_ENODEV; }
 
+    /* Intel PCH: traffic class 0, snooped DMA (our buffers are cached), and
+       no clock gating while the link resets (Skylake and later need that). */
+    int intel = device->vendor == 0x8086;
+    dosxc_u32 clock_gating = 0;
+    if (intel) {
+        dk->pci_write8(device, 0x44, (unsigned char)(dk->pci_read8(device, 0x44) & ~7u));
+        dk->pci_write16(device, 0x78, (unsigned short)(dk->pci_read16(device, 0x78) & ~0x800u));
+        clock_gating = dk->pci_read32(device, 0x48);
+        dk->pci_write32(device, 0x48, clock_gating & ~0x40u);
+    }
+
     dk_write32(a->regs, GCTL, 0);
     dosxc_u64 deadline = dk->nanoseconds() + 100000000ull;
     while ((dk_read32(a->regs, GCTL) & 1u) && dk->nanoseconds() < deadline) {}
@@ -389,6 +400,9 @@ static int hda_probe(const struct dk_pci_device *device, void **instance) {
     dk_write32(a->regs, INTCTL, 0);
 
     if (start_rings(a)) { release(a); return -DOSXC_ENOMEM; }
+    deadline = dk->nanoseconds() + 100000000ull;
+    while (!dk_read16(a->regs, STATESTS) && dk->nanoseconds() < deadline) dk->sleep(1000000ull);
+    if (intel) dk->pci_write32(device, 0x48, clock_gating);
     unsigned codecs = dk_read16(a->regs, STATESTS), pins = 0;
     for (unsigned c = 0; c < 15u && !pins; ++c)
         if (codecs & 1u << c) {
@@ -436,10 +450,10 @@ static void hda_remove(void *instance) {
 }
 
 static const struct dk_pci_id ids[] = {
-    {0x8086, DK_ANY}, {0x1002, DK_ANY}, {0x1022, DK_ANY}, {0x10de, DK_ANY}, {0x1106, DK_ANY}, {0, 0},
+    {DK_CLASS, 0x0403}, {0, 0},
 };
 
 DK_DRIVER = {
-    DK_ABI_VERSION, sizeof(struct dk_driver), "HDA", "1.0", "Intel High Definition Audio", ids,
+    DK_ABI_VERSION, sizeof(struct dk_driver), "HDA", "1.1", "Intel High Definition Audio", ids,
     hda_load, hda_probe, hda_poll, hda_remove, 0,
 };

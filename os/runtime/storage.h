@@ -18,6 +18,7 @@ struct blockdev {
     int (*transfer)(struct blockdev *, u64 block, u32 blocks, void *buffer, int write);
     int (*flush)(struct blockdev *);  /* the device's write cache; may be 0 */
     int (*capacity)(struct blockdev *);   /* removable media: look again; may be 0 */
+    struct pci_function pci;          /* its controller (set by storage_add) */
 };
 
 #define STORAGE_MAX 16
@@ -25,6 +26,9 @@ struct blockdev {
 
 int storage_add(struct blockdev *device);       /* drivers: a device found */
 void storage_probe(void);                       /* scan PCI (volumes.c) */
+void storage_claim(void);                       /* drivers: the controller being probed is now ours */
+/* Did a driver take the controller at PCI LOCATION (bus << 8 | device << 3 | function)? */
+int storage_claimed(unsigned location);
 unsigned storage_count(void);
 struct blockdev *storage_device(unsigned index);
 u64 storage_sectors(unsigned index);            /* 512-byte sectors */

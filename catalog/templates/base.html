@@ -1,0 +1,37 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="description" content="Find and download software, drivers and system updates for DOS-XC.">
+  <title>{% block title %}DOS-XC Package Catalog{% endblock %}</title>
+  <link rel="stylesheet" href="{{ url_for('static', filename='catalog.css') }}">
+  <link rel="icon" href="{{ url_for('static', filename='favicon.svg') }}" type="image/svg+xml">
+  {% block scripts %}{% endblock %}
+</head>
+<body>
+<a class="skip" href="#content">Skip to content</a>
+<div class="site">
+  <header class="masthead">
+    <a class="brand" href="{{ url_for('index') }}">DOS-XC Package Catalog</a>
+    <form class="search" action="{{ url_for('index') }}" role="search"><label class="sr-only" for="header-search">Search packages</label><input id="header-search" type="search" name="q" placeholder="Search packages" value="{{ q|default('') }}" maxlength="160"><button type="submit">Search</button></form>
+  </header>
+  <nav class="navigation" aria-label="Main">
+    <a href="{{ url_for('index') }}" {% if request.endpoint == 'index' %}aria-current="page"{% endif %}>Packages</a>
+    {% if can_publish %}<a href="{{ url_for('publish') }}">Publish</a>{% endif %}
+    {% if is_admin %}<a href="{{ url_for('admin_panel') }}">Admin</a>{% endif %}
+    <a href="{{ url_for('api_help') }}">API &amp; help</a>
+    <div class="account-nav">
+      {% if user %}<a href="{{ url_for('account') }}">{{ user.username }}</a>
+      <form class="inline" action="{{ url_for('logout') }}" method="post"><input type="hidden" name="csrf" value="{{ csrf() }}"><button class="link" type="submit">Sign out</button></form>
+      {% else %}<a href="{{ url_for('login') }}">Sign in</a><a href="{{ url_for('register') }}">Register</a>{% endif %}
+    </div>
+  </nav>
+  <main id="content">
+    {% for message in get_flashed_messages() %}<div class="notice" role="status">{{ message }}</div>{% endfor %}
+    {% block content %}{% endblock %}
+  </main>
+
+</div>
+</body>
+</html>

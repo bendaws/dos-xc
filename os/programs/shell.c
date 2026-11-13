@@ -34,6 +34,13 @@ static void reboot(void){
  __asm__ volatile("cli");
  for(unsigned n=0;n<100000;++n){unsigned char status;__asm__ volatile("inb $0x64,%0":"=a"(status));if(!(status&2))break;}
  __asm__ volatile("outb %0,$0x64"::"a"((unsigned char)0xfe));
+ for(volatile unsigned n=0;n<50000000;++n){}
+ /* No keyboard controller (most current PCs): the chipset's reset control register. */
+ __asm__ volatile("outb %0,%1"::"a"((unsigned char)2),"Nd"((unsigned short)0xcf9));
+ __asm__ volatile("outb %0,%1"::"a"((unsigned char)6),"Nd"((unsigned short)0xcf9));
+ for(volatile unsigned n=0;n<50000000;++n){}
+ struct __attribute__((packed)){unsigned short limit;unsigned long base;}none={0,0};
+ __asm__ volatile("lidt %0;int3"::"m"(none));
  for(;;)__asm__ volatile("hlt");
 }
 
@@ -60,6 +67,134 @@ static void halt(const char *message){
  for(;;)__asm__ volatile("hlt");
 }
 
+/* System updates (PKG UPDATE of the system package, os/pkg/pkg.c): PKG unpacks
+   the new files into \SYSTEM.NEW.  At the next start every file moves into
+   \SYSTEM one at a time, and each file it replaces goes to \SYSTEM.OLD; the
+   steps can be repeated, so an interrupted update carries on at the next
+   start.  \SYSTEM.OLD\TRIAL counts the starts until COMMAND.EXE confirms the
+   new version by deleting it; after TRIAL_STARTS the old files come back. */
+#define NEW_DIR "\\SYSTEM.NEW"
+#define OLD_DIR "\\SYSTEM.OLD"
+#define TRIAL OLD_DIR "\\TRIAL"
+#define ADDED OLD_DIR "\\ADDED.LST"
+#define NOTICE "\\SYSTEM\\UPDATE.MSG"
+#define TRIAL_STARTS 3
+static int on_trial;
+static char added[8192];
+
+static int exists(const char *path){struct fat32_info info;return !fat32_stat(context.volume,path,&info);}
+static int join(char *out,const char *a,const char *b,const char *c){
+ if(length(a)+length(b)+length(c)+2>=PATH_LIMIT)return -1;
+ copy(out,a);append(out,b);if(*c){append(out,"\\");append(out,c);}return 0;
+}
+
+struct first_entry{char name[PATH_LIMIT];int directory,found,top;};
+static int take_first(void *data,const struct fat32_info *info){
+ struct first_entry *f=data;
+ if(equal(info->name,".")||equal(info->name,"..")||(f->top&&(equal(info->name,"TRIAL")||equal(info->name,"ADDED.LST"))))return 0;
+ copy(f->name,info->name);f->directory=(info->attributes&16)!=0;f->found=1;return 1;
+}
+/* The first entry of DIRECTORY in F (F->found 0: empty); TOP skips the update's own files. */
+static int first(const char *directory,int top,struct first_entry *f){f->found=0;f->top=top;return fat32_list(context.volume,directory,take_first,f);}
+
+static int remove_tree(const char *path){
+ struct first_entry f;char child[PATH_LIMIT];
+ for(;;){
+  if(first(path,0,&f))return -1;
+  if(!f.found)return fat32_rmdir(context.volume,path);
+  if(join(child,path,"",f.name)||(f.directory?remove_tree(child):fat32_delete(context.volume,child)))return -1;
+ }
+}
+
+/* REL ("" or "\\LIB") and NAME were not in \SYSTEM before: listed so that going back removes them. */
+static int note_added(const char *rel,const char *name){
+ struct fat32_info info;unsigned used=0;
+ if(!fat32_stat(context.volume,ADDED,&info)){used=info.size;if(used>=sizeof(added)||fat32_read(context.volume,ADDED,added,used))return -1;}
+ if(used+length(rel)+length(name)+3>=sizeof(added))return -1;
+ added[used]=0;append(added,rel);append(added,"\\");append(added,name);append(added,"\n");
+ return fat32_write(context.volume,ADDED,added,length(added));
+}
+
+static int apply_tree(const char *rel){
+ struct first_entry f;char from[PATH_LIMIT],to[PATH_LIMIT],keep[PATH_LIMIT],sub[PATH_LIMIT];
+ struct fat32_volume *v=context.volume;
+ for(;;){
+  if(join(from,NEW_DIR,rel,"")||first(from,0,&f))return -1;
+  if(!f.found)return 0;
+  if(join(from,NEW_DIR,rel,f.name)||join(to,"\\SYSTEM",rel,f.name)||join(keep,OLD_DIR,rel,f.name)||join(sub,rel,"",f.name))return -1;
+  if(f.directory){
+   if(!exists(to)&&(note_added(rel,f.name)||fat32_mkdir(v,to)))return -1;
+   if(!exists(keep)&&fat32_mkdir(v,keep))return -1;
+   if(apply_tree(sub)||fat32_rmdir(v,from))return -1;
+   continue;
+  }
+  if(exists(to)){if(exists(keep)||fat32_rename(v,to,keep))return -1;}
+  else if(!exists(keep)&&note_added(rel,f.name))return -1;
+  if(fat32_rename(v,from,to))return -1;
+ }
+}
+
+static int restore_tree(const char *rel){
+ struct first_entry f;char from[PATH_LIMIT],to[PATH_LIMIT],sub[PATH_LIMIT];
+ struct fat32_volume *v=context.volume;
+ for(;;){
+  if(join(from,OLD_DIR,rel,"")||first(from,!*rel,&f))return -1;
+  if(!f.found)return 0;
+  if(join(from,OLD_DIR,rel,f.name)||join(to,"\\SYSTEM",rel,f.name)||join(sub,rel,"",f.name))return -1;
+  if(f.directory){
+   if(!exists(to)&&fat32_mkdir(v,to))return -1;
+   if(restore_tree(sub)||fat32_rmdir(v,from))return -1;
+   continue;
+  }
+  if((exists(to)&&fat32_delete(v,to))||fat32_rename(v,from,to))return -1;
+ }
+}
+
+static void save_notice(const char *text){fat32_write(context.volume,NOTICE,text,length(text));}
+
+/* Puts the files in \SYSTEM.OLD back and restarts.  TRIAL is set to the
+   limit first, so a start that interrupts this carries on with it. */
+static void go_back(const char *why){
+ struct fat32_volume *v=context.volume;struct fat32_info info;char path[PATH_LIMIT];unsigned char starts=TRIAL_STARTS;
+ console_write(why);console_write("  Going back to the previous version of DOS-XC...\r\n");
+ if(exists(OLD_DIR))fat32_write(v,TRIAL,&starts,1);
+ if(exists(NEW_DIR)&&remove_tree(NEW_DIR))halt("The update could not be undone.  Start DOS-XC Setup to repair the system.\r\n");
+ if(restore_tree(""))halt("The previous version could not be restored.  Start DOS-XC Setup to repair the system.\r\n");
+ if(!fat32_stat(v,ADDED,&info)&&info.size<sizeof(added)&&!fat32_read(v,ADDED,added,info.size)){
+  added[info.size]=0;
+  for(int end=(int)info.size;end>0;){
+   int start=end-1;while(start>0&&added[start-1]!='\n')--start;
+   added[end-1]=0;
+   if(!join(path,"\\SYSTEM",added+start,"")&&fat32_delete(v,path))fat32_rmdir(v,path);
+   end=start;
+  }
+  fat32_delete(v,ADDED);
+ }
+ fat32_delete(v,TRIAL);
+ fat32_rmdir(v,OLD_DIR);
+ save_notice(why);
+ reboot();
+}
+
+/* Before the runtime loads, on a start from the disk (not after a 16-bit program). */
+static void system_update(void){
+ struct fat32_volume *v=context.volume;unsigned char starts=0;
+ if(!v||!v->write_sector||context.live)return;
+ if(!fat32_read(v,TRIAL,&starts,1)&&starts>=TRIAL_STARTS)go_back("The updated system did not start.");
+ starts=0;
+ if(exists(NEW_DIR)){
+  console_write("Installing the DOS-XC system update...\r\n");
+  if(!exists(OLD_DIR)&&fat32_mkdir(v,OLD_DIR))go_back("The system update could not be started.");
+  if(!exists(TRIAL)&&fat32_write(v,TRIAL,&starts,1))go_back("The system update could not be started.");
+  if(apply_tree("")||fat32_rmdir(v,NEW_DIR))go_back("The system update could not be installed.");
+  reboot();
+ }
+ if(fat32_read(v,TRIAL,&starts,1))return;
+ ++starts;
+ if(fat32_write(v,TRIAL,&starts,1))return;
+ on_trial=1;
+}
+
 void shell_run(struct fat32_volume *volume,int native_dos_available,char drive,uint64_t memory_base,uint64_t memory_size){
  int returning=native_dos_available && *(volatile unsigned char *)0x702c==1;
  if(returning){memcpy(&context,(void *)(__UINTPTR_TYPE__)CONTEXT_SAVE,sizeof(context));context.errorlevel=*(volatile unsigned char *)0x702d;}
@@ -82,12 +217,19 @@ void shell_run(struct fat32_volume *volume,int native_dos_available,char drive,u
    runtime=resident;
    if(((runtime_resume_fn)(__UINTPTR_TYPE__)resident->resume)(&context,context.errorlevel)<0)runtime=0;
   }
- }else console_clear();
- if(!runtime&&load_runtime())halt("DOS-XC cannot start: \\SYSTEM\\ELFAPI.DLL is missing or damaged.\r\n");
+ }else{console_clear();system_update();}
+ if(!runtime&&load_runtime()){
+  if(on_trial)go_back("The updated system could not load \\SYSTEM\\ELFAPI.DLL.");
+  halt("DOS-XC cannot start: \\SYSTEM\\ELFAPI.DLL is missing or damaged.\r\n");
+ }
  for(unsigned failures=0;;){
   int status=((runtime_run_fn)(__UINTPTR_TYPE__)runtime->run)("\\SYSTEM\\COMMAND.EXE","");
-  if(status<0){if(++failures==3)halt("DOS-XC cannot start the command shell, \\SYSTEM\\COMMAND.EXE.\r\n");}
-  else failures=0;
+  if(status<0){
+   if(++failures<3)continue;
+   if(on_trial&&exists(TRIAL))go_back("The updated system could not start \\SYSTEM\\COMMAND.EXE.");
+   halt("DOS-XC cannot start the command shell, \\SYSTEM\\COMMAND.EXE.\r\n");
+  }
+  failures=0;
  }
 }
 
@@ -95,7 +237,9 @@ void shell_firmware(disk_count_fn count,disk_info_fn info,disk_io_fn io,void (__
                     unsigned (__attribute__((sysv_abi)) *rescan)(void),
                     int (__attribute__((sysv_abi)) *pointer)(int *,int *,int *,unsigned *),
                     void (__attribute__((sysv_abi)) *poweroff)(void),uint64_t rsdp,
-                    int (__attribute__((sysv_abi)) *display)(int,unsigned,unsigned *,unsigned *,unsigned *,uint64_t *)){
+                    int (__attribute__((sysv_abi)) *display)(int,unsigned,unsigned *,unsigned *,unsigned *,uint64_t *),
+                    unsigned system_pci,uint64_t system_lba,uint64_t ap_page){
  context.disk_count=count;context.disk_info=info;context.disk_io=io;firmware_reboot=reset;
  context.disk_rescan=rescan;context.pointer=pointer;context.poweroff=poweroff;context.acpi_rsdp=rsdp;context.display=display;
+ context.system_pci=system_pci;context.system_lba=system_lba;context.ap_page=ap_page;
 }

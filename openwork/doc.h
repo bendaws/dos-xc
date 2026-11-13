@@ -1,5 +1,5 @@
 /*
- * DOS-XC /dosoffice/doc.h
+ * DOS-XC /openwork/doc.h
  * Copyright (c) 2026 Ben Daws - see LICENSE.txt
  */
 

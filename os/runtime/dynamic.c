@@ -541,6 +541,23 @@ void libraries_release(struct process *p) {
     p->library_count = 0;
 }
 
+/* A forked CHILD uses PARENT's libraries, with its copies of their data. */
+int libraries_fork(struct process *child, struct process *parent) {
+    for (int i = 0; i < parent->library_count; ++i) {
+        struct library *l = parent->libraries[i];
+        child->libraries[i] = l;
+        child->library_count = i + 1;
+        ++l->refs;
+        aspace_user(child->space, l->image, l->image_size, 1);
+        if (!parent->library_data[i]) continue;
+        uptr size = l->data_end - l->data_start;
+        if (!(child->library_data[i] = memory_alloc(size, PAGE, child->pid, 0))) return -DOSXC_ENOMEM;
+        memcpy(child->library_data[i], parent->library_data[i], size);
+        map_instance(child, l, child->library_data[i]);
+    }
+    return 0;
+}
+
 /* Link a dynamically linked program: load its libraries, give the process
    its copies of their data, relocate everything and list the constructors
    and destructors to run.  Returns 0 or a negative errno value. */

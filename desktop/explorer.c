@@ -4,6 +4,7 @@
  */
 
 #include "wm.h"
+#include "archive/archive.h"
 #include <sys/stat.h>
 #include <ctype.h>
 #include <strings.h>
@@ -24,7 +25,7 @@
 #define SELECT_LINE 0x7da2ce
 #define HISTORY 64
 
-struct node { char path[260], label[64]; int depth, expanded, kids_loaded, icon, header; };
+struct node { char path[260], label[64]; int depth, expanded, kids_loaded, icon, header, eject; };
 static struct node nodes[MAX_NODES];
 static int node_count;
 static struct vscroll nav_scroll;
@@ -46,6 +47,53 @@ static char copied_path[300];
 static int nav_drag_active;
 
 static void load_folder(void);
+static void build_nav(void);
+
+static struct dosxc_volume vols[26];
+static int vol_count;
+
+static void read_volumes(void) {
+    vol_count = dosxc_sys_volumes(vols, 26);
+    if (vol_count < 0) vol_count = 0;
+    if (vol_count > 26) vol_count = 26;
+}
+
+static const struct dosxc_volume *volume_info(char letter) {
+    for (int i = 0; i < vol_count; ++i)
+        if (toupper((unsigned char)vols[i].letter) == toupper((unsigned char)letter)) return &vols[i];
+    return 0;
+}
+
+static int ejectable(char letter) {
+    const struct dosxc_volume *v = volume_info(letter);
+    return v && !(v->flags & DOSXC_VOLUME_SYSTEM) && (v->flags & (DOSXC_VOLUME_REMOVABLE | DOSXC_VOLUME_IMAGE));
+}
+
+static const char *drive_kind(char letter) {
+    const struct dosxc_volume *v = volume_info(letter);
+    if (v && (v->flags & DOSXC_VOLUME_IMAGE)) return v->type ? "Disk Image" : "CD Image";
+    if (v && (v->flags & DOSXC_VOLUME_REMOVABLE)) return "Removable Disk";
+    return "Local Disk";
+}
+
+static int has_ending(const char *name, const char *const *endings) {
+    size_t n = strlen(name);
+    for (int i = 0; endings[i]; ++i) {
+        size_t k = strlen(endings[i]);
+        if (n > k && !strcasecmp(name + n - k, endings[i])) return 1;
+    }
+    return 0;
+}
+
+static int is_archive(const char *name) {
+    static const char *const endings[] = {".zip", ".7z", ".rar", ".tar", ".tgz", ".txz", ".gz", ".xz", 0};
+    return has_ending(name, endings);
+}
+
+static int is_image(const char *name) {
+    static const char *const endings[] = {".iso", ".img", ".ima", 0};
+    return has_ending(name, endings);
+}
 
 static void go(const char *path, int remember) {
     if (remember && strcmp(path, folder)) {
@@ -100,6 +148,15 @@ static const char *type_of(const struct item *it) {
     if (!strcasecmp(dot, ".TXT")) return "Text Document";
     if (!strcasecmp(dot, ".DRV")) return "Device Driver";
     if (!strcasecmp(dot, ".DSP")) return "Package";
+    if (!strcasecmp(dot, ".ZIP")) return "ZIP Archive";
+    if (!strcasecmp(dot, ".7Z")) return "7-Zip Archive";
+    if (!strcasecmp(dot, ".RAR")) return "RAR Archive";
+    if (!strcasecmp(dot, ".TAR")) return "Tar Archive";
+    if (!strcasecmp(dot, ".TGZ") || !strcasecmp(dot, ".TXZ") || ((!strcasecmp(dot, ".GZ") || !strcasecmp(dot, ".XZ")) && dot - it->name > 4 && !strncasecmp(dot - 4, ".tar", 4))) return "Compressed Tar Archive";
+    if (!strcasecmp(dot, ".GZ")) return "Gzip File";
+    if (!strcasecmp(dot, ".XZ")) return "XZ File";
+    if (!strcasecmp(dot, ".ISO")) return "CD/DVD Image";
+    if (!strcasecmp(dot, ".IMG") || !strcasecmp(dot, ".IMA")) return "Disk Image";
     if (!strcasecmp(dot, ".JPG") || !strcasecmp(dot, ".JPEG") || !strcasecmp(dot, ".PNG") || !strcasecmp(dot, ".BMP")) return "Picture";
     static char kind[32];
     snprintf(kind, sizeof(kind), "%.8s File", dot + 1);
@@ -143,13 +200,13 @@ static void apply_view(void) {
 
 static void load_folder(void) {
     item_count = 0;
+    read_volumes();
     if (!folder[0]) {
-        struct dosxc_volume volumes[26];
-        int n = dosxc_sys_volumes(volumes, 26);
-        for (int i = 0; i < n && i < MAX_FILES; ++i) {
+        for (int i = 0; i < vol_count && i < MAX_FILES; ++i) {
             memset(&items[i], 0, sizeof(items[i]));
-            snprintf(items[i].name, sizeof(items[i].name), "%c:", volumes[i].letter);
+            snprintf(items[i].name, sizeof(items[i].name), "%c:", vols[i].letter);
             items[i].attributes = DOSXC_ATTR_DIRECTORY;
+            items[i].size = vols[i].total_bytes;
             ++item_count;
         }
     } else {
@@ -242,13 +299,13 @@ static void build_nav(void) {
     snprintf(path, sizeof(path), "%c:\\SYSTEM", info.drive);
     add_node(node_count, path, "System", 1, ICON_FOLDER, 0);
     add_node(node_count, "", "Computer", 0, ICON_COMPUTER, 2);
-    struct dosxc_volume volumes[26];
-    int n = dosxc_sys_volumes(volumes, 26);
-    for (int i = 0; i < n && i < 26; ++i) {
-        char root[8], label[32];
-        snprintf(root, sizeof(root), "%c:\\", volumes[i].letter);
-        snprintf(label, sizeof(label), "Local Disk (%c:)", volumes[i].letter);
+    read_volumes();
+    for (int i = 0; i < vol_count; ++i) {
+        char root[8], label[40];
+        snprintf(root, sizeof(root), "%c:\\", vols[i].letter);
+        snprintf(label, sizeof(label), "%s (%c:)", drive_kind(vols[i].letter), vols[i].letter);
         add_node(node_count, root, label, 1, ICON_DRIVE, 0);
+        nodes[node_count - 1].eject = ejectable(vols[i].letter);
     }
     nav_scroll.total = node_count;
 }
@@ -295,25 +352,54 @@ static void paint_address(struct window *w, const struct canvas *c) {
     if (!search.text[0] && !search_focus) text(c, s.x + 6, s.y + 6, &font_regular, "Search", C_DISABLED);
 }
 
+enum { CMD_ORGANIZE, CMD_NEW_FOLDER, CMD_OPEN, CMD_EXTRACT, CMD_MOUNT, CMD_EJECT };
+static const char *const command_labels[] = {"Organize", "New folder", "Open", "Extract all", "Mount", "Eject"};
+
+static const struct item *selected_item(void) { return selected >= 0 && selected < shown_count ? &shown[selected] : 0; }
+
+/* The drive Eject acts on: the drive selected under Computer, or the one being shown. */
+static char eject_target(void) {
+    const struct item *it = selected_item();
+    if (!folder[0]) return it && ejectable(it->name[0]) ? it->name[0] : 0;
+    return ejectable(folder[0]) ? folder[0] : 0;
+}
+
+static int commands(int *ids) {
+    int n = 0;
+    const struct item *it = selected_item();
+    ids[n++] = CMD_ORGANIZE;
+    ids[n++] = CMD_NEW_FOLDER;
+    ids[n++] = CMD_OPEN;
+    if (it && folder[0] && !(it->attributes & DOSXC_ATTR_DIRECTORY) && is_archive(it->name)) ids[n++] = CMD_EXTRACT;
+    if (it && folder[0] && !(it->attributes & DOSXC_ATTR_DIRECTORY) && is_image(it->name)) ids[n++] = CMD_MOUNT;
+    if (eject_target()) ids[n++] = CMD_EJECT;
+    return n;
+}
+
+static int command_width(int id) { return text_width(&font_regular, command_labels[id]) + (id == CMD_ORGANIZE ? 30 : 18); }
+
+static void eject_glyph(const struct canvas *c, int x, int y, u32 color) {
+    for (int k = 0; k < 5; ++k) fill(c, x + 4 - k, y + k, 2 * k + 1, 1, color);
+    fill(c, x, y + 6, 9, 2, color);
+}
+
 static void paint_command(struct window *w, const struct canvas *c) {
     fill(c, 0, ADDRESS_H, w->content.w, COMMAND_H, C_WINDOW);
     fill(c, 0, ADDRESS_H + COMMAND_H - 1, w->content.w, 1, C_SHADOW1);
-    static const char *const labels[] = {"Organize", "New folder", "Open"};
-    int x = 8;
-    for (int i = 0; i < 3; ++i) {
-        int width = text_width(&font_regular, labels[i]) + (i == 0 ? 30 : 18);
-        button(c, (struct rect){x, ADDRESS_H + 3, width, 22}, labels[i], 0, 0);
-        if (i == 0) for (int k = 0; k < 4; ++k) fill(c, x + width - 12 + k, ADDRESS_H + 12 + k, 7 - 2 * k, 1, C_TEXT);
+    int ids[8], n = commands(ids), x = 8;
+    for (int i = 0; i < n; ++i) {
+        int width = command_width(ids[i]);
+        button(c, (struct rect){x, ADDRESS_H + 3, width, 22}, command_labels[ids[i]], 0, 0);
+        if (ids[i] == CMD_ORGANIZE) for (int k = 0; k < 4; ++k) fill(c, x + width - 12 + k, ADDRESS_H + 12 + k, 7 - 2 * k, 1, C_TEXT);
         x += width + 4;
     }
 }
 
 static int command_at(int x) {
-    static const char *const labels[] = {"Organize", "New folder", "Open"};
-    int left = 8;
-    for (int i = 0; i < 3; ++i) {
-        int width = text_width(&font_regular, labels[i]) + (i == 0 ? 30 : 18);
-        if (x >= left && x < left + width) return i;
+    int ids[8], n = commands(ids), left = 8;
+    for (int i = 0; i < n; ++i) {
+        int width = command_width(ids[i]);
+        if (x >= left && x < left + width) return ids[i];
         left += width + 4;
     }
     return -1;
@@ -342,6 +428,11 @@ static void paint_nav(struct window *w, const struct canvas *c) {
         }
         draw_icon(&inner, x, y + 2, n->icon);
         text(&inner, x + 20, y + 5, n->header ? &font_bold : &font_regular, n->label, n->header ? 0x1e3a78 : C_TEXT);
+        if (n->eject) {
+            int ex = r.x + r.w - (node_count > nav_scroll.visible ? 14 : 0) - 16;
+            fill(&inner, ex - 3, y + 1, 15, NAV_ROW - 2, C_BASE);
+            eject_glyph(&inner, ex, y + 6, 0x505050);
+        }
     }
     if (node_count > nav_scroll.visible) vscroll_paint(c, &nav_scroll, (struct rect){r.x + r.w - 14, r.y, 14, r.h});
 }
@@ -357,7 +448,8 @@ static void format_date(long long t, char *out, size_t size) {
 static void format_size(unsigned long long s, char *out, size_t size) {
     if (s < 1024) snprintf(out, size, "%llu bytes", s);
     else if (s < 1024 * 1024) snprintf(out, size, "%llu KB", s / 1024);
-    else snprintf(out, size, "%llu.%llu MB", s >> 20, ((s >> 10) & 1023) * 10 / 1024);
+    else if (s < 1024ull * 1024 * 1024) snprintf(out, size, "%llu.%llu MB", s >> 20, ((s >> 10) & 1023) * 10 / 1024);
+    else snprintf(out, size, "%llu.%llu GB", s >> 30, ((s >> 20) & 1023) * 10 / 1024);
 }
 
 static void column_edges(const struct rect r, int edges[5]) {
@@ -396,19 +488,24 @@ static void paint_list(struct window *w, const struct canvas *c) {
         int dir = it->attributes & DOSXC_ATTR_DIRECTORY;
         const char *dot = strrchr(it->name, '.');
         int program = dot && (!strcasecmp(dot, ".EXE") || !strcasecmp(dot, ".BAT") || !strcasecmp(dot, ".COM"));
-        draw_icon(&inner, e[0] + 4, y + 2, !folder[0] ? ICON_DRIVE : dir ? ICON_FOLDER : program ? ICON_PROGRAM : image_is_picture(it->name) ? ICON_PICTURE : ICON_FILE);
+        int icon = !folder[0] ? ICON_DRIVE : dir ? ICON_FOLDER : program ? ICON_PROGRAM : image_is_picture(it->name) ? ICON_PICTURE :
+                   is_archive(it->name) ? ICON_PACKAGE : is_image(it->name) ? ICON_DRIVE : ICON_FILE;
+        draw_icon(&inner, e[0] + 4, y + 2, icon);
         if (list_scroll.top + i == renaming) {
             field_paint(c, &rename_field, (struct rect){e[0] + 24, y, e[1] - e[0] - 30, ROW}, 1);
         } else {
             struct canvas name_clip = inner;
             name_clip.clip = rect_both(inner.clip, (struct rect){e[0], y, e[1] - e[0] - 4, ROW});
-            text(&name_clip, e[0] + 26, y + 5, &font_regular, it->name, C_TEXT);
+            char label[300];
+            if (!folder[0]) snprintf(label, sizeof(label), "%s (%s)", drive_kind(it->name[0]), it->name);
+            else snprintf(label, sizeof(label), "%s", it->name);
+            text(&name_clip, e[0] + 26, y + 5, &font_regular, label, C_TEXT);
         }
         char line[40];
         format_date(it->mtime, line, sizeof(line));
         if (folder[0]) text(&inner, e[1] + 6, y + 5, &font_regular, line, 0x505050);
-        text(&inner, e[2] + 6, y + 5, &font_regular, !folder[0] ? "Drive" : type_of(it), 0x505050);
-        if (!dir && folder[0]) { format_size(it->size, line, sizeof(line)); text(&inner, e[3] + 6, y + 5, &font_regular, line, 0x505050); }
+        text(&inner, e[2] + 6, y + 5, &font_regular, !folder[0] ? drive_kind(it->name[0]) : type_of(it), 0x505050);
+        if (folder[0] ? !dir : it->size != 0) { format_size(it->size, line, sizeof(line)); text(&inner, e[3] + 6, y + 5, &font_regular, line, 0x505050); }
     }
     vscroll_paint(c, &list_scroll, (struct rect){r.x + r.w - 14, top, 14, r.h - HEADER_H});
 }
@@ -422,8 +519,13 @@ static void paint_details(struct window *w, const struct canvas *c) {
         const struct item *it = &shown[selected];
         draw_icon(c, 14, y + 18, (it->attributes & DOSXC_ATTR_DIRECTORY) ? ICON_FOLDER : image_is_picture(it->name) ? ICON_PICTURE : ICON_FILE);
         text(c, 44, y + 9, &font_bold, it->name, C_TEXT);
-        text(c, 44, y + 25, &font_regular, type_of(it), 0x505050);
-        if (!(it->attributes & DOSXC_ATTR_DIRECTORY)) {
+        text(c, 44, y + 25, &font_regular, folder[0] ? type_of(it) : drive_kind(it->name[0]), 0x505050);
+        if (!folder[0] && it->size) {
+            char size[32];
+            format_size(it->size, size, sizeof(size));
+            snprintf(line, sizeof(line), "Size: %s%s", size, ejectable(it->name[0]) ? "    (Eject removes it safely)" : "");
+            text(c, 44, y + 39, &font_regular, line, 0x505050);
+        } else if (!(it->attributes & DOSXC_ATTR_DIRECTORY)) {
             char size[32];
             format_size(it->size, size, sizeof(size));
             snprintf(line, sizeof(line), "Size: %s", size);
@@ -451,13 +553,221 @@ static void item_path(const struct item *it, char *out, size_t size) {
     snprintf(out, size, "%s%s%s", folder, folder[strlen(folder) - 1] == '\\' ? "" : "\\", it->name);
 }
 
+static void ask_extract(const char *path);
+static void mount_image(const char *path);
+
 static void open_item(int index) {
     if (index < 0 || index >= shown_count) return;
     const struct item *it = &shown[index];
     char path[520];
     item_path(it, path, sizeof(path));
     if (it->attributes & DOSXC_ATTR_DIRECTORY) go(path, 1);
+    else if (is_image(it->name)) mount_image(path);
+    else if (is_archive(it->name)) ask_extract(path);
     else gui_open_file(path);
+}
+
+static struct window *progress_w;
+static struct {
+    char verb[24], name[120], current[200];
+    unsigned long long done, total;
+    int cancel;
+    long long shown;
+} job;
+static const struct rect progress_cancel = {316, 92, 80, 24};
+
+static void progress_paint(struct window *w, const struct canvas *c) {
+    fill(c, 0, 0, w->content.w, w->content.h, C_WINDOW);
+    char line[200];
+    snprintf(line, sizeof(line), "%s %s", job.verb, job.name);
+    struct canvas inner = *c;
+    inner.clip = rect_both(c->clip, (struct rect){16, 0, w->content.w - 32, w->content.h});
+    text(&inner, 16, 12, &font_bold, line, C_TEXT);
+    text(&inner, 16, 32, &font_regular, job.current, 0x505050);
+    int width = w->content.w - 32, inside = width - 4;
+    bevel(c, 16, 52, width, 20, 1);
+    fill(c, 18, 54, inside, 16, C_BASE);
+    long long filled = job.total ? (long long)(job.done > job.total ? job.total : job.done) * inside / (long long)job.total : 0;
+    fill(c, 18, 54, (int)filled, 16, C_SELECTION);
+    char done[32], total[32];
+    format_size(job.done > job.total ? job.total : job.done, done, sizeof(done));
+    format_size(job.total, total, sizeof(total));
+    snprintf(line, sizeof(line), "%s of %s", done, total);
+    text(c, 16, 80, &font_regular, line, 0x505050);
+    button(c, progress_cancel, job.cancel ? "Stopping" : "Cancel", 0, 0);
+}
+
+static void progress_mouse(struct window *w, int x, int y, int kind, int value) {
+    (void)value;
+    if (kind == M_DOWN && rect_has(progress_cancel, x, y)) { job.cancel = 1; window_paint(w); }
+}
+
+static void progress_key(struct window *w, int key) { if (key == 27) { job.cancel = 1; window_paint(w); } }
+static int progress_closing(struct window *w) { job.cancel = 1; window_paint(w); return 0; }
+
+static const struct app_ops progress_ops = {progress_paint, progress_mouse, progress_key, 0, 0, 0, 0, progress_closing};
+
+static int progress_report(void *context, const char *name, unsigned long long done, unsigned long long total) {
+    (void)context;
+    if (name) snprintf(job.current, sizeof(job.current), "%s", name);
+    job.done = done;
+    job.total = total;
+    long long now = (long long)dosxc_sys_nanoseconds();
+    if (progress_w && now - job.shown > 50000000) {
+        job.shown = now;
+        window_paint(progress_w);
+        gui_pump();
+    }
+    return job.cancel;
+}
+
+static const char *base_name(const char *path) {
+    const char *base = path;
+    for (const char *p = path; *p; ++p)
+        if (*p == '\\' || *p == '/') base = p + 1;
+    return base;
+}
+
+static void begin_progress(const char *verb, const char *path) {
+    memset(&job, 0, sizeof(job));
+    snprintf(job.verb, sizeof(job.verb), "%s", verb);
+    snprintf(job.name, sizeof(job.name), "%s", base_name(path));
+    progress_w = window_open(412, 124, "File Explorer", ICON_FOLDER, &progress_ops, 0);
+    if (progress_w) { window_modal(progress_w); gui_pump(); }
+}
+
+static void end_progress(void) {
+    if (progress_w) window_close(progress_w);
+    progress_w = 0;
+}
+
+static int path_exists(const char *path) {
+    struct dosxc_stat st;
+    return dosxc_sys_stat(path, &st) >= 0;
+}
+
+/* DIR\BASE EXT, or DIR\BASE (2) EXT and so on when that is taken. */
+static void free_name(const char *dir, const char *base, const char *ext, char *out, size_t size) {
+    const char *sep = dir[0] && dir[strlen(dir) - 1] != '\\' ? "\\" : "";
+    snprintf(out, size, "%s%s%s%s", dir, sep, base, ext);
+    for (int n = 2; n < 1000 && path_exists(out); ++n) snprintf(out, size, "%s%s%s (%d)%s", dir, sep, base, n, ext);
+}
+
+static void parent_dir(const char *path, char *out, size_t size) {
+    snprintf(out, size, "%s", path);
+    char *cut = strrchr(out, '\\');
+    if (!cut) { out[0] = 0; return; }
+    if (cut == out + 2 && out[1] == ':') cut[1] = 0;
+    else *cut = 0;
+}
+
+static void select_named(const char *name) {
+    for (int i = 0; i < shown_count; ++i)
+        if (!strcasecmp(shown[i].name, name)) {
+            selected = i;
+            if (selected >= list_scroll.top + list_scroll.visible) list_scroll.top = selected - list_scroll.visible + 1;
+            break;
+        }
+    if (main_w) window_paint(main_w);
+}
+
+static void run_extract(const char *archive, const char *dest, int open_after) {
+    char error[300];
+    begin_progress("Extracting", archive);
+    struct arc_progress p = {progress_report, 0};
+    int r = arc_extract(archive, dest, &p, error, sizeof(error));
+    int cancelled = job.cancel;
+    end_progress();
+    load_folder();
+    if (r && !cancelled) message_box("Extract", "The files could not all be extracted.", error);
+    else if (!r && open_after) go(dest, 1);
+}
+
+static void extract_to_folder(const char *archive) {
+    char dir[520], stem[260], dest[600];
+    parent_dir(archive, dir, sizeof(dir));
+    arc_stem(archive, stem, sizeof(stem));
+    free_name(dir, stem, "", dest, sizeof(dest));
+    run_extract(archive, dest, 1);
+}
+
+static void extract_answer(int answer, void *data) {
+    if (answer == 1) extract_to_folder(data);
+    free(data);
+}
+
+static void ask_extract(const char *path) {
+    char question[100];
+    snprintf(question, sizeof(question), "Extract the files from \"%.50s\"?", base_name(path));
+    char *copy = strdup(path);
+    if (copy) ask_box("Extract", question, "Extract", "Not now", extract_answer, copy);
+}
+
+static void extract_typed(const char *text, void *data) {
+    if (text && text[0]) run_extract(data, text, 1);
+    free(data);
+}
+
+static void extract_selected(int how) {
+    const struct item *it = selected_item();
+    if (!it || !folder[0]) return;
+    char path[520];
+    item_path(it, path, sizeof(path));
+    if (how == 0) { run_extract(path, folder, 0); return; }
+    if (how == 1) { extract_to_folder(path); return; }
+    char stem[260], dest[600];
+    arc_stem(path, stem, sizeof(stem));
+    free_name(folder, stem, "", dest, sizeof(dest));
+    char *copy = strdup(path);
+    if (copy) input_box("Extract", "Extract the files to this folder:", dest, extract_typed, copy);
+}
+
+static void compress_selected(int format) {
+    const struct item *it = selected_item();
+    if (!it || !folder[0]) return;
+    char source[520], base[260], target[600], error[300];
+    item_path(it, source, sizeof(source));
+    snprintf(base, sizeof(base), "%s", it->name);
+    char *dot = strrchr(base, '.');
+    if (dot && dot != base && !(it->attributes & DOSXC_ATTR_DIRECTORY)) *dot = 0;
+    free_name(folder, base, arc_extension(format), target, sizeof(target));
+    begin_progress("Compressing", source);
+    const char *sources[1] = {source};
+    struct arc_progress p = {progress_report, 0};
+    int r = arc_create(target, format, sources, 1, &p, error, sizeof(error));
+    int cancelled = job.cancel;
+    end_progress();
+    load_folder();
+    if (r && !cancelled) message_box("Compress", "The archive could not be made.", error);
+    else if (!r) select_named(base_name(target));
+}
+
+static void mount_image(const char *path) {
+    int r = dosxc_sys_drive(DOSXC_DRIVE_MOUNT, 0, (char *)path, strlen(path) + 1);
+    if (r < 0) {
+        const char *why = r == -DOSXC_EINVAL ? "It holds no CD (ISO 9660) or FAT volume." :
+                          r == -DOSXC_EXDEV ? "Copy it to a disk drive and mount it from there." :
+                          r == -DOSXC_EBUSY ? "Eject a disk image first: too many are mounted." :
+                          r == -DOSXC_ENOSPC ? "There is no free drive letter for it." : "It could not be mounted.";
+        message_box("Mount", why, base_name(path));
+        return;
+    }
+    build_nav();
+    char root[4] = {(char)r, ':', '\\', 0};
+    go(root, 1);
+}
+
+static void eject_drive(char letter) {
+    if (!letter) return;
+    int r = dosxc_sys_drive(DOSXC_DRIVE_EJECT, letter, 0, 0);
+    if (r < 0) {
+        char drive[4] = {letter, ':', 0};
+        message_box("Eject", "The drive could not be ejected.", drive);
+        return;
+    }
+    build_nav();
+    if (folder[0] && toupper((unsigned char)folder[0]) == toupper((unsigned char)letter)) go("", 1);
+    else load_folder();
 }
 
 static int copy_file(const char *from, const char *to) {
@@ -584,7 +894,53 @@ static void paste(void) {
     load_folder();
 }
 
-static const char organize_menu[] = "Open\nCopy\nPaste\n-\nNew folder\nRename\nDelete\n-\nSet as wallpaper\nAdd shortcut to desktop\n";
+enum { A_NONE, A_OPEN, A_COPY, A_PASTE, A_NEW_FOLDER, A_RENAME, A_DELETE, A_WALLPAPER, A_SHORTCUT, A_EXTRACT_HERE,
+       A_EXTRACT_FOLDER, A_EXTRACT_ASK, A_ZIP, A_7Z, A_TAR_GZ, A_TAR_XZ, A_MOUNT, A_EJECT };
+static int menu_actions[40], menu_count;
+static char menu_text[1200];
+
+static void menu_add(const char *label, int action) {
+    if (menu_count == 40) return;
+    size_t n = strlen(menu_text);
+    snprintf(menu_text + n, sizeof(menu_text) - n, "%s\n", label);
+    menu_actions[menu_count++] = action;
+}
+
+static const char *build_menu(void) {
+    menu_text[0] = 0;
+    menu_count = 0;
+    const struct item *it = selected_item();
+    int file = it && folder[0] && !(it->attributes & DOSXC_ATTR_DIRECTORY);
+    menu_add("Open", A_OPEN);
+    if (file && is_archive(it->name)) {
+        char stem[200], label[260];
+        arc_stem(it->name, stem, sizeof(stem));
+        snprintf(label, sizeof(label), "Extract to \"%.40s\\\"", stem);
+        menu_add("Extract here", A_EXTRACT_HERE);
+        menu_add(label, A_EXTRACT_FOLDER);
+        menu_add("Extract to...", A_EXTRACT_ASK);
+    }
+    if (file && is_image(it->name)) menu_add("Mount", A_MOUNT);
+    if (eject_target()) menu_add("Eject", A_EJECT);
+    menu_add("-", A_NONE);
+    menu_add("Copy", A_COPY);
+    menu_add("Paste", A_PASTE);
+    if (it && folder[0]) {
+        menu_add("-", A_NONE);
+        menu_add("Compress to ZIP (.zip)", A_ZIP);
+        menu_add("Compress to 7-Zip (.7z)", A_7Z);
+        menu_add("Compress to .tar.gz", A_TAR_GZ);
+        menu_add("Compress to .tar.xz", A_TAR_XZ);
+    }
+    menu_add("-", A_NONE);
+    menu_add("New folder", A_NEW_FOLDER);
+    menu_add("Rename", A_RENAME);
+    menu_add("Delete", A_DELETE);
+    menu_add("-", A_NONE);
+    if (it && image_is_picture(it->name)) menu_add("Set as wallpaper", A_WALLPAPER);
+    menu_add("Add shortcut to desktop", A_SHORTCUT);
+    return menu_text;
+}
 
 static void shortcut_to_desktop(void) {
     if (selected < 0 || selected >= shown_count) return;
@@ -610,21 +966,37 @@ static void shortcut_to_desktop(void) {
 }
 
 static void popup_action(int index) {
-    switch (index) {
-    case 0: open_item(selected); break;
-    case 1: copy_selected(); break;
-    case 2: paste(); break;
-    case 4: new_folder(); break;
-    case 5: start_rename(); break;
-    case 6: delete_selected(); break;
-    case 8:
+    if (index < 0 || index >= menu_count) return;
+    switch (menu_actions[index]) {
+    case A_OPEN: open_item(selected); break;
+    case A_COPY: copy_selected(); break;
+    case A_PASTE: paste(); break;
+    case A_NEW_FOLDER: new_folder(); break;
+    case A_RENAME: start_rename(); break;
+    case A_DELETE: delete_selected(); break;
+    case A_WALLPAPER:
         if (selected >= 0 && selected < shown_count && image_is_picture(shown[selected].name)) {
             char path[520];
             item_path(&shown[selected], path, sizeof(path));
             gui_set_wallpaper(path);
         }
         break;
-    case 9: shortcut_to_desktop(); break;
+    case A_SHORTCUT: shortcut_to_desktop(); break;
+    case A_EXTRACT_HERE: extract_selected(0); break;
+    case A_EXTRACT_FOLDER: extract_selected(1); break;
+    case A_EXTRACT_ASK: extract_selected(2); break;
+    case A_ZIP: compress_selected(ARC_ZIP); break;
+    case A_7Z: compress_selected(ARC_7Z); break;
+    case A_TAR_GZ: compress_selected(ARC_TAR_GZ); break;
+    case A_TAR_XZ: compress_selected(ARC_TAR_XZ); break;
+    case A_MOUNT:
+        if (selected_item()) {
+            char path[520];
+            item_path(selected_item(), path, sizeof(path));
+            mount_image(path);
+        }
+        break;
+    case A_EJECT: eject_drive(eject_target()); break;
     }
 }
 
@@ -651,7 +1023,7 @@ static void ex_mouse(struct window *w, int x, int y, int kind, int value) {
             selected = at < shown_count ? at : -1;
         }
         window_paint(w);
-        window_popup(w, x, y, organize_menu, 2);
+        window_popup(w, x, y, build_menu(), 2);
         return;
     }
     if (kind != M_DOWN && kind != M_DOUBLE) return;
@@ -663,9 +1035,12 @@ static void ex_mouse(struct window *w, int x, int y, int kind, int value) {
     if (rect_has(search_rect(w), x, y)) { search_focus = 1; window_paint(w); return; }
     if (y >= ADDRESS_H && y < ADDRESS_H + COMMAND_H) {
         switch (command_at(x)) {
-        case 0: window_popup(w, 8, ADDRESS_H + COMMAND_H, organize_menu, 2); break;
-        case 1: new_folder(); break;
-        case 2: open_item(selected); break;
+        case CMD_ORGANIZE: window_popup(w, 8, ADDRESS_H + COMMAND_H, build_menu(), 2); break;
+        case CMD_NEW_FOLDER: new_folder(); break;
+        case CMD_OPEN: open_item(selected); break;
+        case CMD_EXTRACT: extract_selected(1); break;
+        case CMD_MOUNT: open_item(selected); break;
+        case CMD_EJECT: eject_drive(eject_target()); break;
         }
         return;
     }
@@ -675,6 +1050,8 @@ static void ex_mouse(struct window *w, int x, int y, int kind, int value) {
         struct node *n = &nodes[at];
         if (n->header == 2) { go("", 1); return; }
         if (n->header) return;
+        int ex = nav.x + nav.w - (node_count > nav_scroll.visible ? 14 : 0) - 16;
+        if (n->eject && x >= ex - 3) { eject_drive(n->path[0]); return; }
         int tx = nav.x + 8 + n->depth * 16 - 14;
         if (n->depth > 0 && x >= tx && x < tx + 16) { expand(at); window_paint(w); return; }
         char target[260];
@@ -743,7 +1120,12 @@ static void ex_tick(struct window *w) {
     counter = 0;
     struct dosxc_volume volumes[26];
     int n = dosxc_sys_volumes(volumes, 26);
-    if (last_volumes != -1 && n != last_volumes) { build_nav(); window_paint(w); }
+    if (last_volumes != -1 && n != last_volumes) {
+        build_nav();
+        if (folder[0] && !volume_info(folder[0])) go("", 0);
+        else if (!folder[0]) load_folder();
+        window_paint(w);
+    }
     last_volumes = n;
 }
 
@@ -758,11 +1140,20 @@ int main(int argc, char **argv) {
     struct dosxc_sysinfo info;
     dosxc_sys_sysinfo(&info);
     snprintf(folder, sizeof(folder), "%c:\\", info.drive);
-    if (argc > 1) snprintf(folder, sizeof(folder), "%s", argv[1]);
+    const char *opening = 0;
+    if (argc > 2 && !strcmp(argv[1], "/open")) {
+        opening = argv[2];
+        parent_dir(opening, folder, sizeof(folder));
+    } else if (argc > 1) snprintf(folder, sizeof(folder), "%s", argv[1]);
     main_w = window_open(860, 540, "File Explorer", ICON_FOLDER, &ex_ops, 0);
     if (!main_w) return 1;
     main_w->resizable = 1;
     load_folder();
+    if (opening) {
+        select_named(base_name(opening));
+        if (is_image(opening)) mount_image(opening);
+        else if (is_archive(opening)) ask_extract(opening);
+    }
     gui_run();
     return 0;
 }

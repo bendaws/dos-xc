@@ -1,0 +1,16 @@
+{% extends 'base.html' %}
+{% set titles = {'register':'Create an account', 'login':'Sign in', 'resend':'Resend confirmation', 'confirm':'Confirm your email'} %}
+{% block title %}{{ titles[mode] }} · DOS-XC Package Catalog{% endblock %}
+{% block content %}
+
+<section class="form-panel"><h1>{{ titles[mode] }}</h1>
+{% if mode == 'register' %}<p>Confirm your email to activate your account.</p>{% elif mode == 'resend' %}<p>Confirmation links expire after 24 hours.</p>{% endif %}
+<form method="post"><input type="hidden" name="csrf" value="{{ csrf() }}">
+{% if mode in ['register', 'login'] %}<label for="username">Username</label><input id="username" name="username" required maxlength="40" autocomplete="username" {% if mode == 'register' %}pattern="[A-Za-z0-9 ]+" aria-describedby="username-help"{% endif %}>{% if mode == 'register' %}<small id="username-help">Letters, numbers and spaces only. Up to 40 characters.</small>{% endif %}{% endif %}
+{% if mode in ['register', 'resend'] %}<label for="email">Email address</label><input id="email" name="email" type="email" required maxlength="254" autocomplete="email">{% endif %}
+{% if mode in ['register', 'login'] %}<label for="password">Password</label><input id="password" name="password" type="password" required maxlength="256" autocomplete="{{ 'new-password' if mode == 'register' else 'current-password' }}" {% if mode == 'register' %}minlength="12" aria-describedby="password-help"{% endif %}>{% if mode == 'register' %}<small id="password-help">At least 12 characters.</small>{% endif %}{% endif %}
+<button class="primary" type="submit">{{ {'register':'Create account', 'login':'Sign in', 'resend':'Send confirmation email', 'confirm':'Confirm email address'}[mode] }}</button>
+</form>
+{% if mode == 'register' %}<p class="form-note">Already registered? <a href="{{ url_for('login') }}">Sign in</a></p>{% elif mode == 'login' %}<p class="form-note"><a href="{{ url_for('register') }}">Create an account</a> <span class="divider">|</span> <a href="{{ url_for('resend') }}">Resend confirmation</a></p>{% endif %}
+</section>
+{% endblock %}

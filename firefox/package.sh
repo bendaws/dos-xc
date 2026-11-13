@@ -49,5 +49,5 @@ for edition in $EDITIONS; do
         "default=browser" "types=htm html xhtml svg" "url=1" > "$tree/MENU.CFG"
     package_port dosfox Version=162.0a1 Author="Ben Daws" \
         Description="Firefox for DOS-XC (ported)" \
-        Path=.
+        Path=. Requires=desktop
 done

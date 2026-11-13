@@ -336,7 +336,7 @@ static const struct { const char *label, *app, *icon; } builtin_choices[] = {
     {"File Explorer", "EXPLORER.EXE", "folder"}, {"File Editor", "EDITOR.EXE", "editor"},
     {"Calculator", "CALC.EXE", "calc"}, {"Paint", "PAINT.EXE", "paint"},
     {"Task Manager", "TASKMGR.EXE", "tasks"}, {"DOS Prompt", "TERMINAL.EXE", "prompt"},
-    {"Package Manager", "PKGMGR.EXE", "package"}, {"Solitaire", "SOLITAIRE.EXE", "cards"},
+    {"Solitaire", "SOLITAIRE.EXE", "cards"},
     {"Minesweeper", "MINES.EXE", "mines"}, {"Chess", "CHESS.EXE", "chess"},
 };
 #define MAX_CHOICES 40

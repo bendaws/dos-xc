@@ -6,4 +6,4 @@ Build it alone with `desktop/package.sh [32] [64]`.
 
 ## Licence
 
-BSD 3-Clause; see [LICENSE.txt](LICENSE.txt). The bitmap fonts in `fonts.h` come from SerenityOS; see [LICENSE.SerenityOS](LICENSE.SerenityOS).
+BSD 3-Clause; see [LICENSE.txt](LICENSE.txt). [`archive`](archive) (File Explorer's archive formats) uses XZ Embedded from `os/pkg/xz` (0BSD) to read `.xz`. The bitmap fonts in `fonts.h` come from SerenityOS; see [LICENSE.SerenityOS](LICENSE.SerenityOS).

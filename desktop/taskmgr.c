@@ -8,6 +8,7 @@
 
 #define MAX_PROCS 40
 #define HISTORY 120
+#define MAX_CORES 32
 #define TAB_Y (MENUBAR_H + 4)
 #define TAB_H 22
 #define PAGE_Y (TAB_Y + TAB_H)
@@ -30,6 +31,10 @@ static unsigned long long last_now, last_idle;
 static unsigned char cpu_history[HISTORY];
 static int history_count;
 static unsigned char mem_history[HISTORY];
+static int cores;                                 /* processors measured; 0 before the first sample */
+static unsigned long long last_core_idle[MAX_CORES];
+static unsigned char core_history[MAX_CORES][HISTORY];
+static int core_percent[MAX_CORES];
 static struct dosxc_task_stats stats;
 static struct window *main_w;
 
@@ -53,8 +58,11 @@ static void refresh(void) {
     int n = (int)dosxc_sys_task(DOSXC_TASK_LIST, list, MAX_PROCS, 0);
     if (n < 0) n = 0;
     if (n > MAX_PROCS) n = MAX_PROCS;
+    unsigned long long core_idle[MAX_CORES];
+    long found = dosxc_sys_task(DOSXC_TASK_CPU_IDLE, core_idle, MAX_CORES, 0);
     dosxc_sys_task(DOSXC_TASK_STATS, &stats, 0, 0);
     unsigned long long elapsed = stats.now_ns - last_now;
+    unsigned long long capacity = elapsed * (stats.cpus ? stats.cpus : 1);
     struct proc fresh[MAX_PROCS];
     for (int i = 0; i < n; ++i) {
         struct proc *p = &fresh[i];
@@ -67,7 +75,7 @@ static void refresh(void) {
         unsigned long long before = 0;
         for (int k = 0; k < proc_count; ++k)
             if (procs[k].pid == p->pid) before = procs[k].last_cpu;
-        if (elapsed && last_now) p->percent = (int)((list[i].cpu_ns - before) * 100 / elapsed);
+        if (elapsed && last_now) p->percent = (int)((list[i].cpu_ns - before) * 100 / capacity);
         if (p->percent > 100) p->percent = 100;
         p->last_cpu = list[i].cpu_ns;
     }
@@ -76,16 +84,29 @@ static void refresh(void) {
     proc_scroll.total = n;
     if (elapsed && last_now) {
         unsigned long long idle = stats.idle_ns - last_idle;
-        int busy = 100 - (int)(idle * 100 / elapsed);
+        int busy = 100 - (int)(idle * 100 / capacity);
         cpu_percent = busy < 0 ? 0 : busy > 100 ? 100 : busy;
         memmove(cpu_history, cpu_history + 1, HISTORY - 1);
         memmove(mem_history, mem_history + 1, HISTORY - 1);
         cpu_history[HISTORY - 1] = (unsigned char)cpu_percent;
+        for (int i = 0; i < cores && found == cores; ++i) {
+            unsigned long long spare = core_idle[i] - last_core_idle[i];
+            int used = spare >= elapsed ? 0 : 100 - (int)(spare * 100 / elapsed);
+            core_percent[i] = used > 100 ? 100 : used;
+            memmove(core_history[i], core_history[i] + 1, HISTORY - 1);
+            core_history[i][HISTORY - 1] = (unsigned char)core_percent[i];
+        }
         mem_history[HISTORY - 1] = (unsigned char)((stats.memory_total - stats.memory_free) * 100 / stats.memory_total);
         if (history_count < HISTORY) ++history_count;
     }
     last_now = stats.now_ns;
     last_idle = stats.idle_ns;
+    if (found != cores) {                          /* older kernel, or processors started or stopped */
+        cores = found > 0 ? (int)found : 0;
+        memset(core_history, 0, sizeof(core_history));
+        memset(core_percent, 0, sizeof(core_percent));
+    }
+    for (int i = 0; i < cores; ++i) last_core_idle[i] = core_idle[i];
     struct gui_board *board = gui_board();
     app_count = board->window_count;
     int me = dosxc_sys_getpid(), kept = 0;
@@ -185,9 +206,8 @@ static void meter(const struct canvas *c, struct rect r, const char *title, int 
     text(c, in.x + (in.w - text_width(&font_regular, label)) / 2, in.y + in.h - 14, &font_regular, label, 0x00ff00);
 }
 
-static void history(const struct canvas *c, struct rect r, const char *title, const unsigned char *values) {
-    graph_box(c, r, title);
-    struct rect in = {r.x + 8, r.y + 10, r.w - 16, r.h - 18};
+/* A usage history (percentages, newest last) drawn in IN. */
+static void plot(const struct canvas *c, struct rect in, const unsigned char *values) {
     fill(c, in.x, in.y, in.w, in.h, 0);
     for (int y = in.y + in.h; y > in.y; y -= 12) fill(c, in.x, y - 1, in.w, 1, 0x004000);
     for (int x = in.x + 11; x < in.x + in.w; x += 12) fill(c, x, in.y, 1, in.h, 0x004000);
@@ -199,8 +219,30 @@ static void history(const struct canvas *c, struct rect r, const char *title, co
         int y1 = in.y + in.h - 1 - a * (in.h - 2) / 100, y2 = in.y + in.h - 1 - b * (in.h - 2) / 100;
         for (int x = x1; x <= x2 && x < in.x + in.w; ++x) {
             int y = y1 + (y2 - y1) * (x - x1) / step;
-            if (x >= in.x) fill(c, x, y, 1, 2, 0x00ff00);
+            int next = x < x2 ? y1 + (y2 - y1) * (x + 1 - x1) / step : y;
+            int top = y < next ? y : next, span = (y < next ? next - y : y - next) + 2;
+            if (x >= in.x) fill(c, x, top, 1, span, 0x00ff00);
         }
+    }
+}
+
+static void history(const struct canvas *c, struct rect r, const char *title, const unsigned char *values) {
+    graph_box(c, r, title);
+    plot(c, (struct rect){r.x + 8, r.y + 10, r.w - 16, r.h - 18}, values);
+}
+
+/* One graph per processor, in rows of up to 8, each labelled with its use now. */
+static void core_histories(const struct canvas *c, struct rect r) {
+    graph_box(c, r, "CPU Usage History");
+    struct rect in = {r.x + 8, r.y + 10, r.w - 16, r.h - 18};
+    int rows = (cores + 7) / 8, columns = (cores + rows - 1) / rows, gap = 6, label_h = 14;
+    int w = (in.w - (columns - 1) * gap) / columns, h = (in.h - (rows - 1) * gap) / rows;
+    for (int i = 0; i < cores; ++i) {
+        struct rect g = {in.x + (i % columns) * (w + gap), in.y + (i / columns) * (h + gap), w, h};
+        char label[24];
+        snprintf(label, sizeof(label), "CPU %d: %d%%", i, core_percent[i]);
+        text(c, g.x, g.y, &font_regular, label, C_TEXT);
+        plot(c, (struct rect){g.x, g.y + label_h, g.w, g.h - label_h}, core_history[i]);
     }
 }
 
@@ -210,14 +252,15 @@ static void paint_performance(struct window *w, const struct canvas *c) {
     char label[24];
     snprintf(label, sizeof(label), "%d %%", cpu_percent);
     meter(c, (struct rect){left, top, gw, h}, "CPU Usage", cpu_percent, label);
-    history(c, (struct rect){left + gw + 10, top, rw, h}, "CPU Usage History", cpu_history);
+    if (cores > 1) core_histories(c, (struct rect){left + gw + 10, top, rw, h});
+    else history(c, (struct rect){left + gw + 10, top, rw, h}, "CPU Usage History", cpu_history);
     int mem = stats.memory_total ? (int)((stats.memory_total - stats.memory_free) * 100 / stats.memory_total) : 0;
     snprintf(label, sizeof(label), "%llu M", (unsigned long long)(stats.memory_total - stats.memory_free) >> 20);
     meter(c, (struct rect){left, top + h + 12, gw, h}, "Mem Usage", mem, label);
     history(c, (struct rect){left + gw + 10, top + h + 12, rw, h}, "Memory Usage History", mem_history);
     int y = top + 2 * h + 22;
     char line[64];
-    snprintf(line, sizeof(line), "Totals:  Processes %d    Tasks %u", proc_count, stats.tasks);
+    snprintf(line, sizeof(line), "Totals:  Processes %d    Tasks %u    Processors %d", proc_count, stats.tasks, cores > 1 ? cores : 1);
     text(c, left, y + 8, &font_regular, line, C_TEXT);
     snprintf(line, sizeof(line), "Physical Memory (K):  Total %llu    Available %llu",
              (unsigned long long)stats.memory_total >> 10, (unsigned long long)stats.memory_free >> 10);

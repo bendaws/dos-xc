@@ -1,0 +1,12 @@
+{% extends 'base.html' %}
+{% from 'moderation.html' import user_controls with context %}
+{% block title %}{{ profile.username }} · DOS-XC Package Catalog{% endblock %}
+{% block content %}
+{% if deletion_message %}<div class="deleted-banner" role="alert">{{ deletion_message }}</div>{% endif %}
+<h1>{{ profile.username }}</h1>
+{% if is_admin %}{{ user_controls(profile) }}{% endif %}
+<div class="table-scroll"><table><caption class="sr-only">Packages by {{ profile.username }}</caption><thead><tr><th scope="col">Package</th><th scope="col">Version</th><th scope="col">Architecture</th><th scope="col">Status</th></tr></thead><tbody>
+{% for package in packages %}<tr><td><a href="{{ url_for('details', package_id=package.id) }}">{{ package.name }}</a></td><td>{{ package.version }}</td><td>{{ package.arch }}-bit</td><td>{{ 'Active' if package.installable else 'Deleted' }}</td></tr>{% else %}<tr><td colspan="4" class="empty">No packages.</td></tr>{% endfor %}
+</tbody></table></div>
+{% if total > 25 or page > 1 %}<nav class="pagination" aria-label="User packages">{% if page > 1 %}<a href="{{ url_for('user_profile', user_id=profile.id, page=page-1) }}">‹ Previous</a>{% endif %}<span>Page {{ page }}</span>{% if page * 25 < total %}<a href="{{ url_for('user_profile', user_id=profile.id, page=page+1) }}">Next ›</a>{% endif %}</nav>{% endif %}
+{% endblock %}

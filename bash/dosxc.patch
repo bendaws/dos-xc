@@ -1,0 +1,227 @@
+diff --color -ru a/config-top.h b/config-top.h
+--- a/config-top.h	2024-10-24 13:14:21
++++ b/config-top.h	2026-11-12 08:43:41
+@@ -93,6 +93,10 @@
+ 
+ /* System-wide .bashrc file for interactive shells. */
+ /* #define SYS_BASHRC "/etc/bash.bashrc" */
++#if defined (__dosxc__)
++/* The bash package names its startup file in its environment. */
++#  define SYS_BASHRC (getenv ("BASH_SYSTEM_RC") ? getenv ("BASH_SYSTEM_RC") : "/etc/bash.bashrc")
++#endif
+ 
+ /* System-wide .bash_logout for login shells. */
+ /* #define SYS_BASH_LOGOUT "/etc/bash.bash_logout" */
+diff --color -ru a/execute_cmd.c b/execute_cmd.c
+--- a/execute_cmd.c	2025-06-05 10:02:01
++++ b/execute_cmd.c	2026-11-12 08:44:09
+@@ -6007,7 +6007,22 @@
+   /* Find the name of the interpreter to exec. */
+   execname = getinterp (sample, sample_len, &i);
+   size_increment = 1;
++#if defined (__dosxc__)
++  /* "#!/bin/sh" and "#!/usr/bin/env python3": DOS-XC has no such folders,
++     so an interpreter that is not there is looked for on PATH. */
++  if ((file_status (execname) & FS_EXISTS) == 0)
++    {
++      char *base = strrchr (execname, '/'), *found;
+ 
++      found = find_user_command (base ? base + 1 : execname);
++      if (found)
++	{
++	  free (execname);
++	  execname = found;
++	}
++    }
++#endif
++
+   /* Now the argument, if any. */
+   for (firstarg = NULL, start = i; WHITECHAR(i); i++)
+     ;
+@@ -6120,6 +6135,56 @@
+     } \
+   while (0)
+       
++#if defined (__dosxc__)
++/* Batch files and 16-bit DOS programs run through the DOS-XC command shell. */
++static int
++dosxc_for_command_shell (const char *command)
++{
++  size_t n = strlen (command);
++  char magic[2], *with;
++  int fd, got;
++
++  if (n > 4 && (strcasecmp (command + n - 4, ".bat") == 0 || strcasecmp (command + n - 4, ".cmd") == 0 ||
++		strcasecmp (command + n - 4, ".com") == 0))
++    return 1;
++  fd = open (command, O_RDONLY);
++  if (fd < 0 && strchr (command, '.') == 0)
++    {
++      with = (char *)xmalloc (n + 5);
++      strcpy (with, command);
++      strcat (with, ".EXE");
++      fd = open (with, O_RDONLY);
++      free (with);
++    }
++  if (fd < 0)
++    return 0;
++  got = read (fd, magic, 2);
++  close (fd);
++  return got == 2 && magic[0] == 'M' && magic[1] == 'Z';
++}
++
++static void
++dosxc_execve_command_shell (const char *command, char **args, char **env)
++{
++  char *comspec = getenv ("COMSPEC"), **argv, *dos;
++  int n, i;
++
++  for (n = 0; args[n]; n++)
++    ;
++  argv = (char **)xmalloc ((n + 3) * sizeof (char *));
++  dos = savestring (command);
++  for (i = 0; dos[i]; i++)
++    if (dos[i] == '/')
++      dos[i] = '\\';
++  argv[0] = "COMMAND.EXE";
++  argv[1] = "/C";
++  argv[2] = dos;
++  for (i = 1; i <= n; i++)
++    argv[i + 2] = args[i];
++  execve (comspec && *comspec ? comspec : "/SYSTEM/COMMAND.EXE", argv, env);
++}
++#endif
++
+ /* Call execve (), handling interpreting shell scripts, and handling
+    exec failures. */
+ int
+@@ -6130,6 +6195,11 @@
+   size_t larray;
+ 
+   SETOSTYPE (0);		/* Some systems use for USG/POSIX semantics */
++#if defined (__dosxc__)
++  if (dosxc_for_command_shell (command))
++    dosxc_execve_command_shell (command, args, env);
++  else
++#endif
+   execve (command, args, env);
+   i = errno;			/* error from execve() */
+   CHECK_TERMSIG;
+diff --color -ru a/findcmd.c b/findcmd.c
+--- a/findcmd.c	2023-05-31 15:30:31
++++ b/findcmd.c	2026-11-12 08:43:41
+@@ -553,6 +553,30 @@
+   full_path = sh_makepath (xpath, name, 0);
+ 
+   status = file_status (full_path);
++#if defined (__dosxc__)
++  /* Programs are NAME.EXE, batch files NAME.BAT. */
++  if ((status & FS_EXISTS) == 0 && strchr (name, '.') == 0)
++    {
++      static const char *const suffixes[] = { ".EXE", ".BAT", ".COM" };
++      int s;
++      char *with;
++
++      for (s = 0; s < 3 && (status & FS_EXISTS) == 0; s++)
++	{
++	  with = (char *)xmalloc (strlen (full_path) + 5);
++	  strcpy (with, full_path);
++	  strcat (with, suffixes[s]);
++	  status = file_status (with);
++	  if (status & FS_EXISTS)
++	    {
++	      free (full_path);
++	      full_path = with;
++	    }
++	  else
++	    free (with);
++	}
++    }
++#endif
+ 
+   if (xpath != path)
+     free (xpath);
+diff --color -ru a/general.c b/general.c
+--- a/general.c	2025-06-25 14:54:35
++++ b/general.c	2026-11-12 08:43:41
+@@ -1053,11 +1053,22 @@
+      `:'.  If I is 0, then the path has a leading colon.  Trailing colons
+      are handled OK by the `else' part of the if statement; an empty
+      string is returned in that case. */
++#if defined (__dosxc__)
++  /* DOS-XC lists folders with ';' ("C:\\SYSTEM;C:/BIN"), and also with ':'
++     when that is not the colon of a drive ("C:/BIN:/USR/BIN"). */
++  if (i && (string[i] == ':' || string[i] == ';'))
++    i++;
++
++  for (start = i; string[i] && string[i] != ';' &&
++		  (string[i] != ':' || (i == start + 1 && ISALPHA ((unsigned char)string[start]))); i++)
++    ;
++#else
+   if (i && string[i] == ':')
+     i++;
+ 
+   for (start = i; string[i] && string[i] != ':'; i++)
+     ;
++#endif
+ 
+   *p_index = i;
+ 
+diff --color -ru a/general.h b/general.h
+--- a/general.h	2025-06-25 14:52:47
++++ b/general.h	2026-11-12 08:43:41
+@@ -257,7 +257,7 @@
+ /* Some useful definitions for Unix pathnames.  Argument convention:
+    x == string, c == character */
+ 
+-#if !defined (__CYGWIN__)
++#if !defined (__CYGWIN__) && !defined (__dosxc__)
+ #  define ABSPATH(x)	((x)[0] == '/')
+ #  define RELPATH(x)	((x)[0] != '/')
+ #else /* __CYGWIN__ */
+@@ -268,7 +268,7 @@
+ #define ROOTEDPATH(x)	(ABSPATH(x))
+ 
+ #define DIRSEP	'/'
+-#if !defined (__CYGWIN__)
++#if !defined (__CYGWIN__) && !defined (__dosxc__)
+ #  define ISDIRSEP(c)	((c) == '/')
+ #else
+ #  define ISDIRSEP(c)	((c) == '/' || (c) == '\\')
+diff --color -ru a/lib/sh/pathcanon.c b/lib/sh/pathcanon.c
+--- a/lib/sh/pathcanon.c	2022-12-29 12:18:23
++++ b/lib/sh/pathcanon.c	2026-11-12 08:43:41
+@@ -113,7 +113,7 @@
+   if (rooted = ROOTEDPATH(path))
+     {
+       stub_char = DIRSEP;
+-#if defined (__CYGWIN__)
++#if defined (__CYGWIN__) || defined (__dosxc__)
+       base = (ISALPHA((unsigned char)result[0]) && result[1] == ':') ? result + 3 : result + 1;
+ #else
+       base = result + 1;
+@@ -124,7 +124,7 @@
+   else
+     {
+       stub_char = '.';
+-#if defined (__CYGWIN__)
++#if defined (__CYGWIN__) || defined (__dosxc__)
+       base = (ISALPHA((unsigned char)result[0]) && result[1] == ':') ? result + 2 : result;
+ #else
+       base = result;
+diff --color -ru a/pathnames.h.in b/pathnames.h.in
+--- a/pathnames.h.in	2024-04-25 15:30:01
++++ b/pathnames.h.in	2026-11-12 08:43:41
+@@ -25,7 +25,11 @@
+ #define DEFAULT_HOSTS_FILE "/etc/hosts"
+ 
+ /* The default login shell startup file. */
+-#define SYS_PROFILE "/etc/profile"
++#if defined (__dosxc__)
++#  define SYS_PROFILE (getenv ("BASH_SYSTEM_RC") ? getenv ("BASH_SYSTEM_RC") : "/etc/profile")
++#else
++#  define SYS_PROFILE "/etc/profile"
++#endif
+ 
+ /* The default location of the bash debugger initialization/startup file. */
+ #define DEBUGGER_START_FILE	"@DEBUGGER_START_FILE@"

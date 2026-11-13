@@ -269,6 +269,9 @@ static __inline__ long dosxc_sys_shm(int operation, const char *name, int flags)
 static __inline__ long dosxc_sys_user(int operation, const void *a, void *b) {
     return __dosxc_syscall3(DOSXC_SYS_USER, (__dosxc_word)operation, (__dosxc_word)a, (__dosxc_word)b);
 }
+static __inline__ int dosxc_sys_clock(int operation, struct dosxc_clock *clock) {
+    return (int)__dosxc_syscall2(DOSXC_SYS_CLOCK, operation, (__dosxc_word)clock);
+}
 static __inline__ long dosxc_sys_events(int operation, void *a, void *b) {
     return (long)__dosxc_syscall3(DOSXC_SYS_EVENTS, (__dosxc_word)operation, (__dosxc_word)a, (__dosxc_word)b);
 }

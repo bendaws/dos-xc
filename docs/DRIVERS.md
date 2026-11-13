@@ -7,6 +7,7 @@ startup, and `PKG` starts and stops them as it installs and removes them.
 ```
 DRIVERS                   drivers currently loaded
 DRIVERS /LOG              what they reported (start here when something fails)
+DRIVERS /DEVICES          PCI devices and the driver running each
 DRIVERS /LOAD file.drv    load one now
 DRIVERS /UNLOAD name.drv  stop one
 ```
@@ -58,6 +59,34 @@ Rules that follow from running inside the system:
   physically contiguous.
 * Stop all DMA in `remove`.  It runs at unload, restart and power off.
 * Never wait without a time limit: nothing else runs while you wait.
+
+`pci_ids` lists vendor and device IDs; `{DK_ANY}` as the device matches every
+device of a vendor, and `{DK_CLASS, 0x0403}` matches every function of a PCI
+class and subclass (here HD Audio), whoever made it.  Prefer exact IDs or a
+class: a driver whose table names a device is started for it automatically.
+
+## Finding drivers automatically
+
+`\SYSTEM\DRIVERS\STORE` holds every driver DOS-XC ships (the live media builds
+it from the packages; Setup copies it to the disk).  At startup, after the
+drivers in `\SYSTEM\DRIVERS`, the system reads the ID table of each store
+driver that is not running, without running any of its code
+(`DOSXC_DRIVER_MATCH`), and starts only the ones naming a device no driver has
+taken.  A store driver that then takes no device is unloaded again.  Drivers
+without a table (`pci_ids` 0, such as `HYPERV.DRV`) are always tried.
+
+The desktop goes further at each login of an administrator (`DEVICES.EXE /AUTO`):
+
+1. store drivers matching a device without a driver are started;
+2. every package in `\Packages` on any drive (the live media, a USB stick)
+   whose `Driver=` files match such a device is installed or updated with
+   `PKG`, so it is kept and updated like any package;
+3. on an installed system, a package is also installed when one of its drivers
+   is running only from the store.
+
+It opens a New Hardware window when something was installed and stays out of
+sight otherwise.  An empty file `\SYSTEM\DRIVERS\MANUAL` turns this off; Control
+Panel > Device Manager > Find Drivers still does it on request.
 
 ## Network adapters
 
@@ -114,6 +143,22 @@ sit apart from the host's until it reaches a screen edge.
 
 **This driver has only been compiled.**  It has not run on Hyper-V.  Start with
 `DRIVERS /LOG` when something fails: each stage of the connection logs there.
+
+## Graphics
+
+DOS-XC has no native driver for Intel, AMD or NVIDIA graphics: the desktop draws
+into the framebuffer the firmware set up (VESA BIOS on a BIOS boot, GOP on UEFI),
+so it gets the modes the card's firmware offers and one monitor.  On a BIOS boot
+the monitor's EDID is read through VBE, so the desktop starts at the monitor's
+native resolution when the card's firmware lists it, and otherwise the largest
+mode that fits.  The 64-bit edition maps the framebuffer write-combining (PAT),
+which makes drawing on real cards many times faster than uncached access.  The
+card's HDMI/DisplayPort audio is an HD Audio function and `HDA.DRV` can drive
+it, but only one sound device is used, normally the board's own.
+
+A modern GPU's display engine (NVIDIA since Turing, AMD since RDNA) is set up
+through signed firmware and very large drivers; nothing smaller than those
+drivers can change its modes, so the firmware path is the one DOS-XC supports.
 
 ## Packaging
 

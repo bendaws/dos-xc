@@ -98,21 +98,15 @@ static void paint_packages(const struct canvas *c) {
 }
 
 static struct field account_fields[4];
-static int account_focus, accounts_wanted;
+static int account_focus;
 static char account_error[80];
 static const char *const account_labels[4] = {"User name:", "Nickname:", "Password:", "Password again:"};
-static const struct rect accounts_box = {24, 132, 300, 18};
 static struct rect account_field(int i) { return (struct rect){150, 160 + i * 30, 240, 22}; }
 
 static void paint_accounts(const struct canvas *c) {
-    paint_text(c, 24, 66, "User accounts give everyone who uses this computer a user name, a\n"
-                          "password and folders of their own.  Only administrators change the\n"
-                          "system and install programs.  Other users are added in Control Panel.");
-    bevel(c, accounts_box.x, accounts_box.y + 2, 14, 14, 1);
-    fill(c, accounts_box.x + 2, accounts_box.y + 4, 10, 10, C_BASE);
-    if (accounts_wanted) fill(c, accounts_box.x + 4, accounts_box.y + 6, 6, 6, C_TEXT);
-    text(c, accounts_box.x + 20, accounts_box.y + 4, &font_bold, "Use user accounts (the first is an administrator)", C_TEXT);
-    if (!accounts_wanted) return;
+    paint_text(c, 24, 66, "Create the administrator: the account that changes the system and\n"
+                          "installs programs.  Everyone who uses this computer gets a user name,\n"
+                          "a password and folders of their own; add them later in Control Panel.");
     for (int i = 0; i < 4; ++i) {
         text(c, 40, account_field(i).y + 5, &font_regular, account_labels[i], C_TEXT);
         struct field shown = account_fields[i];
@@ -125,7 +119,6 @@ static void paint_accounts(const struct canvas *c) {
 static int accounts_accept(void) {
     account_error[0] = 0;
     memset(&setup_account, 0, sizeof(setup_account));
-    if (!accounts_wanted) return 0;
     if (!setup_valid_name(account_fields[0].text)) snprintf(account_error, sizeof(account_error), "The user name may only have letters and digits.");
     else if (strcmp(account_fields[2].text, account_fields[3].text)) snprintf(account_error, sizeof(account_error), "The two passwords are not the same.");
     if (account_error[0]) return -1;
@@ -149,7 +142,7 @@ static void paint_confirm(const struct canvas *c) {
     }
     text(c, 24, 118, &font_regular, "Programs to install:", C_TEXT);
     text(c, 24, 134, &font_regular, *list ? list : "(none)", C_TEXT);
-    snprintf(line, sizeof(line), "User accounts: %s%s", setup_account.enabled ? "on, administrator " : "off", setup_account.enabled ? setup_account.name : "");
+    snprintf(line, sizeof(line), "Account: administrator %s", setup_account.name);
     text(c, 24, 160, &font_regular, line, C_TEXT);
 }
 
@@ -268,8 +261,7 @@ static void wizard_mouse(struct window *w, int x, int y, int kind, int value) {
     if (rect_has(back_button, x, y) && page != PAGE_WELCOME) { go_back(); return; }
     if (rect_has(help_button, x, y)) { return_page = page; page = PAGE_HELP; window_paint(w); return; }
     if (page == PAGE_ACCOUNTS) {
-        if (rect_has(accounts_box, x, y)) accounts_wanted = !accounts_wanted;
-        for (int i = 0; accounts_wanted && i < 4; ++i)
+        for (int i = 0; i < 4; ++i)
             if (rect_has(account_field(i), x, y)) account_focus = i;
         window_paint(w);
         return;
@@ -280,7 +272,7 @@ static void wizard_mouse(struct window *w, int x, int y, int kind, int value) {
     if (page == PAGE_PACKAGES && package_scroll.top + at < setup_package_count && x < list_area.x + list_area.w - 14) {
         at += package_scroll.top;
         package_cursor = at;
-        if (!setup_packages[at].required) setup_packages[at].selected ^= 1;
+        if (!setup_packages[at].required) { setup_packages[at].selected ^= 1; setup_select_requirements(); }
         window_paint(w);
     }
 }
@@ -291,8 +283,7 @@ static void wizard_key(struct window *w, int key) {
     if (key == 27 && page != PAGE_DONE && page != PAGE_FAILED) { if (page == PAGE_HELP) go_next(); else if (page == PAGE_WELCOME) window_close(w); else go_back(); return; }
     if (page == PAGE_ACCOUNTS) {
         if (key == '\t') account_focus = (account_focus + 1) % 4;
-        else if (key == ' ' && !accounts_wanted) accounts_wanted = 1;
-        else if (accounts_wanted) field_key(&account_fields[account_focus], key);
+        else field_key(&account_fields[account_focus], key);
         window_paint(w);
         return;
     }
@@ -303,7 +294,10 @@ static void wizard_key(struct window *w, int key) {
     } else if (page == PAGE_PACKAGES && setup_package_count) {
         if (key == 0x101 && package_cursor) --package_cursor;
         if (key == 0x102 && package_cursor + 1 < setup_package_count) ++package_cursor;
-        if (key == ' ' && !setup_packages[package_cursor].required) setup_packages[package_cursor].selected ^= 1;
+        if (key == ' ' && !setup_packages[package_cursor].required) {
+            setup_packages[package_cursor].selected ^= 1;
+            setup_select_requirements();
+        }
         if (package_cursor < package_scroll.top) package_scroll.top = package_cursor;
         if (package_cursor >= package_scroll.top + package_scroll.visible) package_scroll.top = package_cursor - package_scroll.visible + 1;
         window_paint(w);

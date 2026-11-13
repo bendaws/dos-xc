@@ -441,6 +441,11 @@ int open_path(const char *path) {
     const char *dot = strrchr(path, '.');
     struct app_entry e;
     if (dot && !strchr(dot, '\\') && !program_for_type(dot + 1, &e)) return app_start(&e, path);
+    if (has_extension(path, (const char *const[]){".ZIP", ".7Z", ".RAR", ".TAR", ".TGZ", ".TXZ", ".GZ", ".XZ", ".ISO", ".IMG", ".IMA", 0})) {
+        desktop_path(app, sizeof(app), "Apps\\EXPLORER.EXE");
+        char *argv[4] = {app, "/open", (char *)path, 0};
+        return dosxc_sys_task(DOSXC_TASK_START, app, (long)argv, 0) < 0 ? -1 : 0;
+    }
     char editor[32];
     default_program("editor", editor, sizeof(editor));
     return program_start(editor[0] ? editor : "editor", path);

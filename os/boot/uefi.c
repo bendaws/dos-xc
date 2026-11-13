@@ -9,6 +9,7 @@
 static struct TABLE *st;
 static struct FILE *root;
 static struct BLOCK *volume,*source;
+static HANDLE boot_device;
 static struct GUID loaded_guid=GUID_LOADED,fs_guid=GUID_FS,block_guid=GUID_BLOCK;
 static struct BLOCK *targets[9];
 static UINTN target_count;
@@ -71,6 +72,33 @@ static int file_read(const char *path,void *p,UINTN *size) {
  struct FILE *f;if(root->open(root,&f,name,1,0))return -1;
  EFI_STATUS result=f->read(f,size,p);f->close(f);return result?-1:0;
 }
+static struct GUID path_guid={0x09576e91,0x6d3f,0x11d2,{0x8e,0x39,0x00,0xa0,0xc9,0x69,0x72,0x3b}};
+static struct GUID pci_guid={0x4cf5b200,0x68b8,0x4ca5,{0x9e,0xec,0xb2,0x3e,0x3f,0x50,0x02,0x9a}};
+/* The PCI controller behind HANDLE, as DISK_FLAG_PCI with its location, or 0. */
+static unsigned pci_of(HANDLE handle) {
+ void *path;HANDLE controller;void **io;
+ if(st->services->protocol(handle,&path_guid,&path))return 0;
+ typedef EFI_STATUS (*LOCATE)(struct GUID *,void **,HANDLE *);
+ if(((LOCATE)st->services->locate_path)(&pci_guid,&path,&controller))return 0;
+ if(st->services->protocol(controller,&pci_guid,(void **)&io))return 0;
+ typedef EFI_STATUS (*LOCATION)(void *,UINTN *,UINTN *,UINTN *,UINTN *);
+ UINTN segment,bus,device,function;
+ if(((LOCATION)io[14])(io,&segment,&bus,&device,&function)||segment||bus>255||device>31||function>7)return 0;
+ return DISK_FLAG_PCI|(unsigned)((bus<<8|device<<3|function)<<16);
+}
+/* The first 512-byte sector of the partition HANDLE stands for, on its disk. */
+static U64 partition_start(HANDLE handle) {
+ U8 *node;U64 start=0;
+ if(st->services->protocol(handle,&path_guid,(void **)&node))return 0;
+ for(int n=0;n<64&&node[0]!=0x7f;++n){
+  UINTN length=node[2]|(UINTN)node[3]<<8;
+  if(length<4)break;
+  if(node[0]==4&&node[1]==1&&length>=24)start=*(U64 *)(node+8);
+  if(node[0]==4&&node[1]==2&&length>=24)start=*(U64 *)(node+8)*4;
+  node+=length;
+ }
+ return start;
+}
 static struct BLOCK *disks[16];
 static HANDLE disk_handles[16];
 static unsigned disk_flags[16];
@@ -102,7 +130,7 @@ static void add_disks(int first_time) {
   UINTN slot=disk_total;
   if(slot==16)break;
   ++disk_total;
-  disks[slot]=disk;disk_handles[slot]=handles[i];disk_flags[slot]=flags;
+  disks[slot]=disk;disk_handles[slot]=handles[i];disk_flags[slot]=flags|pci_of(handles[i]);
  }
  st->services->free_pool(handles);
 }
@@ -216,12 +244,14 @@ static void boot_kernel(void) {
  U64 address=0x2000000;
  if(st->services->pages(2,2,768,&address))fatal("Cannot reserve memory for the system components.");
  U64 programs=0x4000000;if(st->services->pages(2,2,4096,&programs))fatal("Cannot reserve command program memory.");
- /* The largest block the firmware will spare becomes the 32/64-bit program
-    arena; the rest stays available to the firmware's own drivers. */
+ U64 ap_page=0x8000;if(st->services->pages(2,2,1,&ap_page))ap_page=0;
+ /* The largest block below 4 GiB the firmware will spare becomes the 32/64-bit
+    program arena (ring 3 rights cover the first 4 GiB); the rest stays
+    available to the firmware's own drivers. */
  static const U32 arena_mib[]={3072,2048,1536,1024,768,512,384,256,192,128,96,64,48,32};
  U64 arena=0,arena_size=0;
- for(UINTN i=0;i<sizeof(arena_mib)/sizeof(arena_mib[0]);++i){U64 at=0;
-  if(!st->services->pages(0,2,(UINTN)arena_mib[i]*256,&at)){arena=at;arena_size=(U64)arena_mib[i]<<20;break;}}
+ for(UINTN i=0;i<sizeof(arena_mib)/sizeof(arena_mib[0]);++i){U64 at=0xffffffffull;
+  if(!st->services->pages(1,2,(UINTN)arena_mib[i]*256,&at)){arena=at;arena_size=(U64)arena_mib[i]<<20;break;}}
  UINTN size=65536;
  if(file_read("\\SYSTEM\\KERNELU.BIN",(void *)0x2000000,&size))fatal("Cannot load SYSTEM\\KERNELU.BIN.");
  size=65536;if(file_read("\\SYSTEM\\COREU.DLL",(void *)0x2100000,&size))fatal("Cannot load SYSTEM\\COREU.DLL.");
@@ -238,13 +268,19 @@ static void boot_kernel(void) {
  info.disk_count=firmware_disk_count;info.disk_info=firmware_disk_info;info.disk_io=firmware_disk_io;info.reboot=firmware_reset;
  info.disk_rescan=firmware_disk_rescan;info.pointer=firmware_pointer;
  info.poweroff=firmware_poweroff;info.acpi_rsdp=acpi_rsdp();info.display=firmware_display;
+ info.system_pci=pci_of(boot_device);info.system_lba=partition_start(boot_device);info.ap_page=ap_page;
  st->out->attribute(st->out,7);st->out->clear(st->out);
  typedef void (__attribute__((sysv_abi)) *ENTRY)(struct boot_info *);
  ((ENTRY)0x2000000)(&info);
 }
 EFI_STATUS efi_main(HANDLE image,struct TABLE *table) {
  st=table;st->out->visible(st->out,0);struct LOADED *loaded;struct FS *fs;
- if(st->services->protocol(image,&loaded_guid,(void **)&loaded)||st->services->protocol(loaded->device,&fs_guid,(void **)&fs)||fs->open(fs,&root)||st->services->protocol(loaded->device,&block_guid,(void **)&volume))return 1;
+ /* The boot manager's 5-minute watchdog would reset the machine: DOS-XC keeps boot services. */
+ typedef EFI_STATUS (*WATCHDOG)(UINTN,U64,UINTN,CHAR16 *);
+ ((WATCHDOG)st->services->watchdog)(0,0,0,0);
+ if(st->services->protocol(image,&loaded_guid,(void **)&loaded))return 1;
+ boot_device=loaded->device;
+ if(st->services->protocol(loaded->device,&fs_guid,(void **)&fs)||fs->open(fs,&root)||st->services->protocol(loaded->device,&block_guid,(void **)&volume))return 1;
  for(UINTN i=0;i<(UINTN)st->out->state->max;++i){UINTN w,h;if(!st->out->query(st->out,i,&w,&h)&&w==80&&h==25){st->out->mode(st->out,i);break;}}
  U64 work=0;if(st->services->pages(0,2,16,&work))return 1;buffer=(U8 *)work;verify_buffer=buffer+32768;
  if(read_block(volume,0,512,buffer)||get32(buffer+0x1a0)!=0x53464442)fatal("Invalid DOS-XC system volume.");

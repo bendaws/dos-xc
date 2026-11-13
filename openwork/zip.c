@@ -1,5 +1,5 @@
 /*
- * DOS-XC /dosoffice/zip.c
+ * DOS-XC /openwork/zip.c
  * Copyright (c) 2026 Ben Daws - see LICENSE.txt
  */
 
@@ -223,5 +223,37 @@ void text_xml(struct text *t, const char *s, size_t n) {
         case '"': text_put(t, "&quot;"); break;
         default: text_add(t, s + i, 1);
         }
+    }
+}
+
+void text_utf8(struct text *t, const char *s, size_t n, int xml) {
+    for (size_t i = 0; i < n; ++i) {
+        unsigned char c = (unsigned char)s[i];
+        if (c >= 0x80) {
+            char two[2] = {(char)(0xc0 | c >> 6), (char)(0x80 | (c & 63))};
+            text_add(t, two, 2);
+        } else if (xml) text_xml(t, s + i, 1);
+        else text_add(t, s + i, 1);
+    }
+}
+
+void text_latin1(struct text *t, const char *s, size_t n) {
+    const unsigned char *u = (const unsigned char *)s, *end = u + n;
+    while (u < end) {
+        unsigned code = *u++;
+        if (code >= 0xc0) {
+            int extra = code >= 0xf0 ? 3 : code >= 0xe0 ? 2 : 1;
+            code &= 0x3f >> extra;
+            for (int k = 0; k < extra && u < end && (*u & 0xc0) == 0x80; ++k) code = code << 6 | (*u++ & 0x3f);
+        }
+        if (code == 0x2018 || code == 0x2019) code = '\'';
+        else if (code == 0x201c || code == 0x201d) code = '"';
+        else if (code == 0x2013 || code == 0x2014) code = '-';
+        else if (code == 0x2022) code = 0xb7;
+        else if (code == 0x2026) code = '.';
+        else if (code == 0x20ac) code = 'E';
+        else if (code == 0xfeff || code == 0x200b) continue;
+        char c = (char)(code < 256 ? code : '?');
+        text_add(t, &c, 1);
     }
 }

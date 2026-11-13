@@ -11,7 +11,7 @@ from pathlib import Path
 
 ROOT = Path(sys.argv[1])
 SELECTION = Path(sys.argv[2])
-REQUIRED = {'coreutils'}
+REQUIRED = {'coreutils', 'pkg'}
 
 def title(folder):
     """The heading of the folder's README."""

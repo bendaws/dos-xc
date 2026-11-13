@@ -26,29 +26,9 @@ static u8 replies[32];
 static unsigned reply_length;
 static int mouse_tracking, mouse_sgr;    /* 1000/1002/1003, 1006 */
 
-static int mouse_present, mouse_row = ROWS / 2, mouse_column = COLUMNS / 2, mouse_drawn;
+static int mouse_present, mouse_row = ROWS / 2, mouse_column = COLUMNS / 2;
 static int mouse_fraction_x, mouse_fraction_y, mouse_wheel;
 static unsigned mouse_buttons;
-static u16 mouse_saved;
-
-static volatile u16 *mouse_cell(void) {
-    return (volatile u16 *)(uptr)0xb8000 + mouse_row * COLUMNS + mouse_column;
-}
-
-void terminal_mouse_hide(void) {
-    if (!mouse_drawn) return;
-    mouse_drawn = 0;
-    volatile u16 *cell = mouse_cell();
-    if (*cell == (u16)(mouse_saved ^ 0x7700)) *cell = mouse_saved;
-}
-
-static void mouse_show(void) {
-    if (mouse_drawn || !mouse_present || !ctx->bios_available) return;
-    volatile u16 *cell = mouse_cell();
-    mouse_saved = *cell;
-    *cell = (u16)(mouse_saved ^ 0x7700);
-    mouse_drawn = 1;
-}
 
 static void flush_chunk(void) {
     if (!chunk_length) return;
@@ -323,12 +303,9 @@ dosxc_ssize terminal_write(const u8 *buffer, uptr size) {
         vc_output(current->vc, buffer, size);
         return (dosxc_ssize)size;
     }
-    int shown = mouse_drawn;
-    terminal_mouse_hide();
     sync_cursor();
     for (uptr i = 0; i < size; ++i) put_byte(buffer[i]);
     flush_chunk();
-    if (shown) mouse_show();
     return (dosxc_ssize)size;
 }
 
@@ -600,7 +577,7 @@ static void mouse_poll_console(void) {
         dx = m.dx; dy = m.dy; wheel = m.wheel; buttons = m.buttons;
     }
     if (!present) {
-        if (mouse_present) { terminal_mouse_hide(); mouse_present = 0; }
+        mouse_present = 0;
         return;
     }
     mouse_present = 1;
@@ -616,15 +593,6 @@ static void mouse_poll_console(void) {
     if (mouse_row < 0) mouse_row = 0;
     if (mouse_row >= ROWS) mouse_row = ROWS - 1;
     int moved = mouse_row != old_row || mouse_column != old_column;
-    if (moved && mouse_drawn) {
-        int r = mouse_row, c = mouse_column;
-        mouse_row = old_row;
-        mouse_column = old_column;
-        terminal_mouse_hide();
-        mouse_row = r;
-        mouse_column = c;
-    }
-    mouse_show();
     mouse_wheel += wheel;
     unsigned changed = buttons ^ mouse_buttons;
     if (raw_mode && mouse_tracking) {

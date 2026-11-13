@@ -244,6 +244,8 @@ static struct open_file *new_open_file(int kind) {
             open_files[i].kind = kind;
             return &open_files[i];
         }
+    static int warned;
+    if (!warned++) event_log(DOSXC_EVENT_ERROR, "Files", "The open file table is full (%d)", MAX_OPEN);
     return 0;
 }
 
@@ -272,6 +274,8 @@ static int lowest_fd(struct process *p, int minimum) {
     if (minimum < 0) minimum = 0;
     for (int fd = minimum; fd < MAX_FDS; ++fd)
         if (!p->fds[fd]) return fd;
+    static int warned;
+    if (!warned++) event_log(DOSXC_EVENT_ERROR, "Files", "%s (process %d) has %d descriptors open, the most there can be", event_program(p), p->pid, MAX_FDS);
     return -DOSXC_EMFILE;
 }
 
@@ -304,6 +308,8 @@ static int open_inode(struct open_file *f, const char *path, int flags) {
         if (!fs_writable(path)) return -DOSXC_EROFS;
         if (fs_save(path, empty_buffer, 0)) return -DOSXC_ENOSPC;
         if (fat_info(path, &info)) return -DOSXC_EIO;
+    } else if (writing && volume_image_busy(path)) {
+        return -DOSXC_EBUSY;
     } else if (!n && writing && (info.attributes & DOSXC_ATTR_READONLY)) {
         return -DOSXC_EACCES;
     }
@@ -437,8 +443,8 @@ static dosxc_ssize unix_send(struct open_file *f, const void *buffer, uptr size,
     for (;;) {
         struct unix_end *to = e->peer;
         if (!to) return -DOSXC_EPIPE;
-        if (to->tail - to->head + size <= UNIX_LIMIT || to->tail == to->head) {
-            if (to->passed_count + file_count > UNIX_PASSED) return -DOSXC_ENOBUFS;
+        if ((to->tail - to->head + size <= UNIX_LIMIT || to->tail == to->head) &&
+            to->passed_count + file_count <= UNIX_PASSED) {
             int r = unix_room(to, size ? size : 1);
             if (r) return r;
             u64 at = to->consumed + (to->tail - to->head);
@@ -503,7 +509,8 @@ static int unix_poll(struct open_file *f, int events) {
     struct unix_end *e = f->unix_end;
     int ready = 0;
     if ((events & DOSXC_POLL_IN) && (e->tail != e->head || e->passed_count || !e->peer)) ready |= DOSXC_POLL_IN;
-    if ((events & DOSXC_POLL_OUT) && e->peer && e->peer->tail - e->peer->head < UNIX_LIMIT) ready |= DOSXC_POLL_OUT;
+    if ((events & DOSXC_POLL_OUT) && e->peer && e->peer->tail - e->peer->head < UNIX_LIMIT && e->peer->passed_count < UNIX_PASSED)
+        ready |= DOSXC_POLL_OUT;
     if (!e->peer) ready |= DOSXC_POLL_HUP;
     return ready;
 }
@@ -834,6 +841,7 @@ static int api_unlink(const char *path) {
     if (fat_info(canonical, &info)) return -DOSXC_ENOENT;
     if (info.attributes & DOSXC_ATTR_DIRECTORY) return -DOSXC_EISDIR;
     if (info.attributes & DOSXC_ATTR_READONLY) return -DOSXC_EACCES;
+    if (volume_image_busy(canonical)) return -DOSXC_EBUSY;
     struct inode *n = find_inode(canonical);
     if (!fs_writable(canonical)) return -DOSXC_EROFS;
     if (n) n->unlinked = 1;
@@ -852,6 +860,7 @@ static int api_rename(const char *from, const char *to) {
     if (rt_equal_nocase(source, target)) return 0;
     if (rt_upper(source[0]) != rt_upper(target[0])) return -DOSXC_EXDEV;
     if (!fs_writable(source)) return -DOSXC_EROFS;
+    if (volume_image_busy(source) || volume_image_busy(target)) return -DOSXC_EBUSY;
     struct inode *n = find_inode(source);
     if (n && (r = flush(n))) return r;
     if (!fat_info(target, &existing)) {
@@ -1039,6 +1048,16 @@ int files_setup(struct process *child, struct process *parent, const char *outpu
             return fd < 0 ? fd : -DOSXC_EIO;
         }
     }
+    return 0;
+}
+
+int files_fork(struct process *child, struct process *parent) {
+    rt_strcpy(child->cwd, parent->cwd);
+    for (int fd = 0; fd < MAX_FDS; ++fd)
+        if ((child->fds[fd] = parent->fds[fd])) {
+            ++child->fds[fd]->refs;
+            child->cloexec[fd] = parent->cloexec[fd];
+        }
     return 0;
 }
 

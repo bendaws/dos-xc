@@ -61,9 +61,57 @@ static int is_file(const char *path) {
     return !stat(path, &st) && !S_ISDIR(st.st_mode);
 }
 
-#define DESKTOP_FOLDER "\\Programs\\DOS-XC Desktop"
+/* Does the package in FOLDER have a DESKTOP.EXE and, unless ANY, Provides=desktop? */
+static int is_desktop(const char *folder, int any) {
+    char path[400], line[300];
+    snprintf(path, sizeof(path), "%s\\DESKTOP.EXE", folder);
+    if (!is_file(path)) return 0;
+    if (any) return 1;
+    snprintf(path, sizeof(path), "%s\\PACKAGE.INF", folder);
+    FILE *f = fopen(path, "r");
+    if (!f) return 0;
+    int found = 0;
+    while (!found && fgets(line, sizeof(line), f)) {
+        line[strcspn(line, "\r\n")] = 0;
+        if (!starts(line, "Provides=")) continue;
+        for (char *role = strtok(line + 9, ";"); role && !found; role = strtok(0, ";")) {
+            role = skip_blanks(role);
+            size_t n = strlen(role);
+            while (n && role[n - 1] == ' ') role[--n] = 0;
+            found = same(role, "desktop");
+        }
+    }
+    fclose(f);
+    return found;
+}
+
+/* The desktop is the package that provides "desktop": the one named by
+   %DESKTOP% (set in AUTOEXEC.BAT), else DOS-XC Desktop, else the first other. */
+static int desktop_folder(char *out, size_t size) {
+    char name[64];
+    if (env_get("DESKTOP", name, sizeof(name)) >= 0 && name[0] && !strpbrk(name, "\\/:")) {
+        snprintf(out, size, "%c:\\Programs\\%s", system_drive, name);
+        if (is_desktop(out, 0)) return 1;
+    }
+    snprintf(out, size, "%c:\\Programs\\DOS-XC Desktop", system_drive);
+    if (is_desktop(out, 1)) return 1;
+    char programs[16];
+    snprintf(programs, sizeof(programs), "%c:\\Programs", system_drive);
+    struct dosxc_dirent *entries = malloc(sizeof(*entries) * 256);
+    int count = entries ? (int)dosxc_sys_listdir(programs, entries, 256) : 0, found = 0;
+    for (int i = 0; i < count && i < 256 && !found; ++i) {
+        if (!(entries[i].attributes & DOSXC_ATTR_DIRECTORY)) continue;
+        snprintf(out, size, "%s\\%s", programs, entries[i].name);
+        found = is_desktop(out, 0);
+    }
+    free(entries);
+    return found;
+}
+
 static int find_desktop_file(const char *relative, char *out, size_t size) {
-    snprintf(out, size, "%c:" DESKTOP_FOLDER "\\%s", system_drive, relative);
+    char folder[300];
+    if (!desktop_folder(folder, sizeof(folder))) return 0;
+    snprintf(out, size, "%s\\%s", folder, relative);
     return is_file(out);
 }
 
@@ -803,7 +851,7 @@ static int run_command(char *line) {
 
 /* Returns the desktop's exit status, or -1 when it did not run. */
 static int start_desktop(int ask) {
-    char program[64];
+    char program[400];
     if (!find_desktop_file("DESKTOP.EXE", program, sizeof(program))) return -1;
     for (int i = 0; ask && i < 12; ++i) {
         int k = dosxc_sys_console(DOSXC_CONSOLE_GETKEY, 0, 0);
@@ -829,11 +877,76 @@ static void read_secret(char *out, size_t size) {
     putchar('\n');
 }
 
+static int add_account(const char *name, const char *nickname, const char *password, const char *picture) {
+    struct dosxc_user_change c;
+    memset(&c, 0, sizeof(c));
+    snprintf(c.user.name, sizeof(c.user.name), "%s", name);
+    snprintf(c.user.nickname, sizeof(c.user.nickname), "%s", nickname);
+    snprintf(c.user.picture, sizeof(c.user.picture), "%s", picture);
+    c.user.admin = 1;
+    c.user.start = DOSXC_USER_START_DESKTOP;
+    snprintf(c.password, sizeof(c.password), "%s", password);
+    long r = dosxc_sys_user(DOSXC_USER_ADD, 0, &c);
+    memset(&c, 0, sizeof(c));
+    return (int)r;
+}
+
+/* One of the desktop's profile pictures, chosen at random, or "". */
+static void random_picture(char *out, size_t size) {
+    char folder[320];
+    out[0] = 0;
+    if (!desktop_folder(folder, 300)) return;
+    strcat(folder, "\\Pictures");
+    struct dosxc_dirent entries[32];
+    int count = (int)dosxc_sys_listdir(folder, entries, 32), pictures = 0;
+    for (int i = 0; i < count && i < 32; ++i) {
+        size_t n = strlen(entries[i].name);
+        if (n > 4 && same(entries[i].name + n - 4, ".JPG")) entries[pictures++] = entries[i];
+    }
+    if (!pictures) return;
+    unsigned pick = 0;
+    dosxc_sys_random(&pick, sizeof(pick));
+    snprintf(out, size, "%s\\%s", folder, entries[pick % (unsigned)pictures].name);
+}
+
+/* The live system's account, made afresh at every start: Live, no password. */
+static void live_account(void) {
+    if (dosxc_sys_user(DOSXC_USER_LIST, 0, 0) > 0) return;
+    char picture[160];
+    random_picture(picture, sizeof(picture));
+    if (!add_account("Live", "Live User", "", picture)) dosxc_sys_user(DOSXC_USER_LOGIN, "Live", "");
+}
+
+/* An installed system without accounts (made before they were always on). */
+static void first_administrator(void) {
+    say("\nDOS-XC needs an administrator account.  Choose a user name (letters and\ndigits) and a password.\n");
+    for (;;) {
+        char name[LINE_MAX_SHELL], nickname[LINE_MAX_SHELL], password[64], again[64];
+        fputs("\nUser name: ", stdout);
+        fflush(stdout);
+        if (!read_line(name) || !name[0]) continue;
+        fputs("Nickname (Enter: the user name): ", stdout);
+        fflush(stdout);
+        if (!read_line(nickname)) continue;
+        fputs("Password: ", stdout);
+        fflush(stdout);
+        read_secret(password, sizeof(password));
+        fputs("Password again: ", stdout);
+        fflush(stdout);
+        read_secret(again, sizeof(again));
+        int r = strcmp(password, again) ? 1 : add_account(name, nickname[0] ? nickname : name, password, "");
+        memset(password, 0, sizeof(password));
+        memset(again, 0, sizeof(again));
+        if (!r) return;
+        say(r == 1 ? "The two passwords are not the same.\n" : "That user name cannot be used: only letters and digits.\n");
+    }
+}
+
 /* At the first command prompt with user accounts on: nobody goes further
    until someone has logged in, on the desktop's login screen when the
    desktop is installed, else here. */
 static void log_in(void) {
-    char program[64];
+    char program[400];
     if (find_desktop_file("DESKTOP.EXE", program, sizeof(program))) {
         char *argv[3] = {program, "/LOGON", 0};
         fflush(stdout);
@@ -850,7 +963,7 @@ static void log_in(void) {
             dosxc_sys_user(DOSXC_USER_LIST, (void *)i, &u);
             printf("  %-20s %s%s\n", u.name, u.nickname, u.admin ? " (administrator)" : "");
         }
-        char name[64], password[64];
+        char name[LINE_MAX_SHELL], password[64];
         fputs("\nUser name: ", stdout);
         fflush(stdout);
         if (!read_line(name) || !name[0]) continue;
@@ -860,6 +973,29 @@ static void log_in(void) {
         if (!dosxc_sys_user(DOSXC_USER_LOGIN, name, password)) break;
         say("The user name or password is not right.\n");
     }
+}
+
+/* At start: a system update that got this far has started (see
+   os/programs/shell.c), so it is kept.  Returns what to tell the user, or "". */
+static void system_update_news(char *out, size_t size) {
+    char path[32];
+    out[0] = 0;
+    snprintf(path, sizeof(path), "%c:\\SYSTEM.OLD\\TRIAL", system_drive);
+    if (is_file(path) && !unlink(path)) {
+        struct dosxc_sysinfo info;
+        dosxc_sys_sysinfo(&info);
+        snprintf(out, size, "  The system has been updated to %s.\n", info.version);
+    }
+    snprintf(path, sizeof(path), "%c:\\SYSTEM\\UPDATE.MSG", system_drive);
+    FILE *f = fopen(path, "r");
+    if (!f) return;
+    char line[200];
+    if (fgets(line, sizeof(line), f)) {
+        line[strcspn(line, "\r\n")] = 0;
+        snprintf(out, size, "  %s\n  DOS-XC went back to the version it had before the update.\n", line);
+    }
+    fclose(f);
+    unlink(path);
 }
 
 /* ---- main ------------------------------------------------------------------ */
@@ -886,16 +1022,22 @@ int main(int argc, char **argv) {
     setvbuf(stdout, 0, _IOLBF, 0);
     char drive_root[4] = {system_drive, ':', '\\', 0};
     if (argc == 1 && dosxc_sys_getppid() == 0) {
+        char news[400];
+        system_update_news(news, sizeof(news));
         chdir(drive_root);
         build_path();
+        if (info.live) live_account();
+        else if (dosxc_sys_user(DOSXC_USER_LIST, 0, 0) <= 0) first_administrator();
         int accounts = dosxc_sys_user(DOSXC_USER_ENABLED, 0, 0) > 0;
         struct dosxc_user me;
         if (accounts) {
-            log_in();
+            dosxc_sys_user(DOSXC_USER_WHOAMI, 0, &me);
+            if (!me.name[0]) log_in();
             dosxc_sys_user(DOSXC_USER_WHOAMI, 0, &me);
             chdir(me.home);
         }
         welcome();
+        if (news[0]) printf("%s\n", news);
         char autoexec[32];
         snprintf(autoexec, sizeof(autoexec), "%c:\\AUTOEXEC.BAT", system_drive);
         if (is_file(autoexec)) {
@@ -906,7 +1048,7 @@ int main(int argc, char **argv) {
         char marker[8];
         if (accounts ? me.start == DOSXC_USER_START_DESKTOP : env_get("DESKTOPSTARTED", marker, sizeof(marker)) < 0) {
             if (!accounts) env_set("DESKTOPSTARTED", "1");
-            if (start_desktop(!accounts) == LOGGED_OUT) return 0;
+            if (start_desktop(!accounts || info.live) == LOGGED_OUT) return 0;
         }
     }
     char line[LINE_MAX_SHELL];

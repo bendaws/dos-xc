@@ -42,7 +42,14 @@ void setup_find_disks(void) {
 
 static int required(const char *name) { return !strcasecmp(name, "coreutils"); }
 static int preselected(const char *name) {
-    return required(name) || !strcasecmp(name, "batch") || !strcasecmp(name, "ethernet") || !strcasecmp(name, "hyperv") || !strcasecmp(name, "DOS-XC Desktop");
+    static const char *const builtins[] = {
+        "batch", "DOS-XC Desktop", "dosfox", "openwork", "ethernet",
+        "curl", "nano", "pkg", "VLC", "Vim", "xz", "zip"
+    };
+    if (required(name)) return 1;
+    for (unsigned i = 0; i < sizeof(builtins) / sizeof(builtins[0]); ++i)
+        if (!strcasecmp(name, builtins[i])) return 1;
+    return 0;
 }
 
 static int compare_packages(const void *a, const void *b) {
@@ -65,12 +72,48 @@ void setup_find_packages(void) {
         char error[100];
         if (dsp_read_info(p->file, &p->info, error, sizeof(error))) continue;
         if (p->info.arch != 16 && p->info.arch != (int)setup_system.bits) continue;
-        p->required = required(p->info.name);
-        p->selected = preselected(p->info.name);
+        if (!strcasecmp(p->info.name, "system")) continue;      /* Setup copies \SYSTEM itself */
+        p->required = required(p->info.name) || p->info.required;
+        p->selected = p->required || preselected(p->info.name);
         ++setup_package_count;
     }
     free(entries);
     qsort(setup_packages, (size_t)setup_package_count, sizeof(setup_packages[0]), compare_packages);
+    setup_select_requirements();
+}
+
+static int requirement_met(const struct dsp_info *system, const char *requirement) {
+    if (system && dsp_meets(system, requirement)) return 1;
+    for (int i = 0; i < setup_package_count; ++i)
+        if (setup_packages[i].selected && dsp_meets(&setup_packages[i].info, requirement)) return 1;
+    return 0;
+}
+
+int setup_select_requirements(void) {
+    struct dsp_info system;
+    char path[32], text[2048], item[300];
+    snprintf(path, sizeof(path), "%s\\SYSTEM\\PACKAGE.INF", setup_root);
+    FILE *f = fopen(path, "rb");
+    size_t n = f ? fread(text, 1, sizeof(text), f) : 0;
+    if (f) fclose(f);
+    int have_system = n && !dsp_parse_info(text, n, &system), added = 0;
+    for (int changed = 1; changed;) {
+        changed = 0;
+        for (int i = 0; i < setup_package_count; ++i) {
+            if (!setup_packages[i].selected) continue;
+            for (const char *p = setup_packages[i].info.requires; (p = dsp_next_item(p, item, sizeof(item)));) {
+                if (requirement_met(have_system ? &system : 0, item)) continue;
+                for (int j = 0; j < setup_package_count; ++j)
+                    if (!setup_packages[j].selected && dsp_meets(&setup_packages[j].info, item)) {
+                        setup_packages[j].selected = 1;
+                        changed = 1;
+                        ++added;
+                        break;
+                    }
+            }
+        }
+    }
+    return added;
 }
 
 void setup_size_text(char *out, size_t size, unsigned long long sectors) {
@@ -193,7 +236,7 @@ static int install_package(const struct package_choice *choice) {
         free(data);
         if (r) { dsp_close(&package); return fail("Cannot write", path); }
     }
-    char inf[160], text[1024];
+    char inf[160], text[2048];
     snprintf(inf, sizeof(inf), "%s\\PACKAGE.INF", folder);
     int length = dsp_format_info(&package.info, text, sizeof(text));
     dsp_close(&package);
@@ -245,6 +288,7 @@ int setup_install(const struct disk_choice *disk, setup_progress progress_fn, vo
     snprintf(system, sizeof(system), "%s\\SYSTEM", setup_root);
     snprintf(efi, sizeof(efi), "%s\\EFI", setup_root);
     files_total = count_tree(system) + count_tree(efi);
+    setup_select_requirements();
     for (int i = 0; i < setup_package_count; ++i) {
         if (!setup_packages[i].selected) continue;
         struct dsp package;

@@ -1,0 +1,14 @@
+{% extends 'base.html' %}
+{% block content %}
+<section aria-labelledby="results-title">
+  <div class="results-toolbar"><h1 id="results-title">{% if q %}“{{ q }}”{% else %}Packages{% endif %} <span>({{ total }})</span></h1>
+    <form action="{{ url_for('index') }}" class="filters"><input type="hidden" name="q" value="{{ q }}"><label class="sr-only" for="arch">Architecture</label><select id="arch" name="arch"><option value="">All architectures</option>{% for bits in ['64','32','16'] %}<option value="{{ bits }}" {% if arch == bits %}selected{% endif %}>{{ bits }}-bit{% if bits == '16' %} DOS{% endif %}</option>{% endfor %}</select><button class="small" type="submit">Apply</button></form>
+  </div>
+  <div class="table-scroll"><table><caption class="sr-only">Packages in the DOS-XC catalog, newest releases first</caption><thead><tr><th scope="col" class="title-column">Title</th><th scope="col">Version</th><th scope="col">Architecture</th><th scope="col">Size</th><th scope="col"><span class="sr-only">Download</span></th></tr></thead><tbody>
+  {% for package in packages %}<tr><td><a class="package-name" href="{{ url_for('details', package_id=package.id) }}">{{ package.name }}</a>{% if package.description %}<p class="package-description">{{ package.description }}</p>{% endif %}</td><td>{{ package.version }}</td><td>{{ package.arch }}-bit{% if package.arch == 16 %} DOS{% endif %}</td><td>{{ package.size|filesizeformat(true) }}</td><td><a class="button download" href="{{ package.download_url }}">Download</a></td></tr>
+  {% else %}<tr><td colspan="5" class="empty">{% if q or arch %}No matching packages. <a href="{{ url_for('index') }}">Clear filters</a>{% else %}No packages yet.{% endif %}</td></tr>{% endfor %}
+  </tbody></table></div>
+  <div class="pagination"><span>{% if total %}Showing {{ (page - 1) * 25 + 1 if packages else 0 }}–{{ [(page - 1) * 25 + packages|length, total]|min }} of {{ total }} releases{% else %}0 releases{% endif %}</span>{% if total > 25 or page > 1 %}<nav aria-label="Results pages">{% if page > 1 %}<a href="{{ url_for('index', q=q, arch=arch, page=page-1) }}">‹ Previous</a>{% endif %}<span>Page {{ page }}</span>{% if page * 25 < total %}<a href="{{ url_for('index', q=q, arch=arch, page=page+1) }}">Next ›</a>{% endif %}</nav>{% endif %}</div>
+</section>
+
+{% endblock %}

@@ -9,7 +9,12 @@ extern uptr runtime_exception_stubs[32];
 extern char runtime_spurious[];
 extern char runtime_syscall_entry[];
 extern char runtime_timer_gate[];
+extern char runtime_ap_timer[], runtime_ap_ipi[];
 int runtime_fxsr;
+#if __SIZEOF_POINTER__ == 8
+extern uptr runtime_firmware_stubs[224];
+uptr runtime_firmware_vectors[256];     /* UEFI: the firmware's handler of each wrapped vector */
+#endif
 
 static int sse;
 static u64 tsc_hz;
@@ -109,6 +114,19 @@ static void build_idt(void) {
         if (copy) idt[v] = ((struct gate *)firmware.base)[v];
         else set_gate(v, (uptr)runtime_spurious, cs, 0x8e);
     }
+#if __SIZEOF_POINTER__ == 8
+    /* With ring 3 programs under UEFI, each of the firmware's interrupts
+       goes through a stub that runs the firmware's handler and then may
+       switch tasks: the firmware's timer is the scheduler's clock. */
+    if (copy && runtime_ring3) {
+        for (int v = 32; v < 256; ++v) {
+            struct gate *g = &idt[v];
+            if (!(g->type & 0x80) || g->selector != cs) continue;
+            runtime_firmware_vectors[v] = (uptr)g->low | (uptr)g->middle << 16 | (uptr)g->high << 32;
+            set_gate(v, runtime_firmware_stubs[v - 32], cs, 0x8e);
+        }
+    }
+#endif
     for (int v = 0; v < 32; ++v)
         if (v != 2) set_gate(v, runtime_exception_stubs[v], cs, 0x8e);
     /* Reserved by Intel and unused: HYPERV.DRV's synthetic interrupt vector.
@@ -131,6 +149,8 @@ static void build_idt(void) {
     }
 #if __SIZEOF_POINTER__ == 8
     if (runtime_ring3) {
+        set_gate(0xe0, (uptr)runtime_ap_timer, cs, 0x8e);   /* the other processors' LAPIC timer */
+        set_gate(0xe1, (uptr)runtime_ap_ipi, cs, 0x8e);     /* and wake-up (smp.c) */
         set_gate(3, runtime_exception_stubs[3], cs, 0xee);  /* int3 from ring 3 */
         set_gate(4, runtime_exception_stubs[4], cs, 0xee);  /* into */
     }
@@ -140,27 +160,39 @@ static void build_idt(void) {
 }
 
 #if __SIZEOF_POINTER__ == 8
-/* The task state segment: the stack ring 3 code enters the kernel on
-   (RSP0), and, for ring 0 programs, the interrupt stacks of the timer gate
-   and of page faults. */
-static struct __attribute__((packed)) { u32 reserved0; u64 rsp[3]; u64 reserved1; u64 ist[7]; u64 reserved2; u16 reserved3, iomap; } tss;
+/* The task state segments, one per processor: the stack ring 3 code enters
+   the kernel on (RSP0), and, for ring 0 programs, the interrupt stacks of
+   the timer gate and of page faults (the boot processor's only).  Each takes
+   128 bytes, so switch64.asm finds its own from the task register. */
+struct __attribute__((packed, aligned(128))) tss_entry { u32 reserved0; u64 rsp[3]; u64 reserved1; u64 ist[7]; u64 reserved2; u16 reserved3, iomap; };
+static struct tss_entry tss[MAX_CPUS];
 static u8 gate_stack[16384] __attribute__((aligned(16)));
 u8 fault_stack[16384] __attribute__((aligned(16)));
-static u8 gdt[256];
+static u8 gdt[256 + 16 * MAX_CPUS];
+static struct descriptor_pointer gdt_pointer;
 
 int runtime_ring3;
-u64 *runtime_tss_rsp0 = &tss.rsp[0];
+u64 runtime_tss_area = (u64)(uptr)&tss[0].rsp[0];
+u32 runtime_tss_selector;
 u16 runtime_user_cs, runtime_user_ss;
 
+static void tss_descriptor(int index) {
+    u64 base = (u64)(uptr)&tss[index], size = sizeof(tss[0]) - 1;
+    u64 *d = (u64 *)(gdt + runtime_tss_selector + 16 * index);
+    d[0] = (size & 0xffff) | (base & 0xffffff) << 16 | 0x89ull << 40 | ((base >> 24) & 0xff) << 56;
+    d[1] = base >> 32;
+    tss[index].iomap = sizeof(tss[0]);
+}
+
 static void load_tss(void) {
-    struct descriptor_pointer old, fresh;
+    struct descriptor_pointer old;
     __asm__ volatile("sgdt %0" : "=m"(old));
     static uptr user_slot;
     uptr limit;
     if (old.base == (uptr)gdt) limit = user_slot;
     else {
         limit = (uptr)old.limit + 1;
-        if (limit > sizeof(gdt) - 32) return;
+        if (limit > 256 - 16) return;
         memcpy(gdt, (void *)old.base, limit);
         limit = (limit + 7) & ~(uptr)7;
         user_slot = limit;
@@ -171,20 +203,81 @@ static void load_tss(void) {
     runtime_user_ss = (u16)(limit | 3);
     runtime_user_cs = (u16)((limit + 8) | 3);
     limit += 16;
-    u64 base = (u64)(uptr)&tss, size = sizeof(tss) - 1;
-    u64 *d = (u64 *)(gdt + limit);
-    d[0] = (size & 0xffff) | (base & 0xffffff) << 16 | 0x89ull << 40 | ((base >> 24) & 0xff) << 56;
-    d[1] = base >> 32;
-    tss.ist[0] = (u64)(uptr)(gate_stack + sizeof(gate_stack));
-    tss.ist[1] = (u64)(uptr)(fault_stack + sizeof(fault_stack));
-    tss.iomap = sizeof(tss);
-    fresh.limit = (u16)(limit + 16 - 1);
-    fresh.base = (uptr)gdt;
-    __asm__ volatile("lgdt %0" ::"m"(fresh));
+    runtime_tss_selector = (u32)limit;
+    for (int i = 0; i < MAX_CPUS; ++i) tss_descriptor(i);
+    tss[0].ist[0] = (u64)(uptr)(gate_stack + sizeof(gate_stack));
+    tss[0].ist[1] = (u64)(uptr)(fault_stack + sizeof(fault_stack));
+    gdt_pointer.limit = (u16)(limit + 16 * MAX_CPUS - 1);
+    gdt_pointer.base = (uptr)gdt;
+    __asm__ volatile("lgdt %0" ::"m"(gdt_pointer));
     u16 selector = (u16)limit;
     __asm__ volatile("ltr %0" ::"r"(selector));
 }
+
+static u64 read_msr(u32 index) {
+    u32 low, high;
+    __asm__ volatile("rdmsr" : "=a"(low), "=d"(high) : "c"(index));
+    return ((u64)high << 32) | low;
+}
+
+static void write_msr(u32 index, u64 value) {
+    __asm__ volatile("wrmsr" ::"c"(index), "a"((u32)value), "d"((u32)(value >> 32)));
+}
+
+/* What the other processors copy from the boot processor as they start. */
+static struct { uptr cr0, cr4; u64 pat, xcr0; u16 cs, ss; } boot_state;
+
+void cpu_ap_prepare(void) {
+    boot_state.cr0 = read_cr0();
+    boot_state.cr4 = read_cr4();
+    boot_state.pat = read_msr(0x277);
+    if (boot_state.cr4 & (1u << 18)) {
+        u32 low, high;
+        __asm__ volatile("xgetbv" : "=a"(low), "=d"(high) : "c"(0));
+        boot_state.xcr0 = ((u64)high << 32) | low;
+    }
+    __asm__ volatile("mov %%cs,%0" : "=r"(boot_state.cs));
+    __asm__ volatile("mov %%ss,%0" : "=r"(boot_state.ss));
+}
+
+void cpu_ap_setup(int index) {
+    write_cr0(boot_state.cr0);
+    write_cr4(boot_state.cr4);
+    if (boot_state.cr4 & (1u << 18))
+        __asm__ volatile("xsetbv" ::"a"((u32)boot_state.xcr0), "d"((u32)(boot_state.xcr0 >> 32)), "c"(0));
+    write_msr(0x277, boot_state.pat);
+    __asm__ volatile("lgdt %0" ::"m"(gdt_pointer));
+    __asm__ volatile("pushq %0\n\tleaq 1f(%%rip),%%rax\n\tpushq %%rax\n\tlretq\n1:" ::"r"((uptr)boot_state.cs) : "rax", "memory");
+    __asm__ volatile("mov %0,%%ss\n\tmov %0,%%ds\n\tmov %0,%%es" ::"r"(boot_state.ss));
+    __asm__ volatile("mov %0,%%fs\n\tmov %0,%%gs" ::"r"(0));
+    tss_descriptor(index);
+    u16 selector = (u16)(runtime_tss_selector + 16 * index);
+    __asm__ volatile("ltr %0" ::"r"(selector));
+    __asm__ volatile("lidt %0" ::"m"(idt_pointer));
+}
+#else
+void cpu_ap_prepare(void) {}
+void cpu_ap_setup(int index) { (void)index; }
 #endif
+
+int cpu_index(void) {
+#if __SIZEOF_POINTER__ == 8
+    if (!runtime_tss_selector) return 0;
+    u16 selector;
+    __asm__ volatile("str %0" : "=r"(selector));
+    return (int)((selector - runtime_tss_selector) >> 4);
+#else
+    return 0;
+#endif
+}
+
+void cpu_set_gs(uptr value) {
+#if __SIZEOF_POINTER__ == 8
+    write_msr(0xc0000101u, value);
+#else
+    (void)value;
+#endif
+}
 
 /* The thread pointer: FS base, which %fs:offset thread-local accesses use. */
 void cpu_set_tp(uptr value) {
@@ -207,6 +300,7 @@ void cpu_preempt_start(void) {
 #if __SIZEOF_POINTER__ == 8
     load_tss();
 #endif
+    if (!ctx->bios_available) return;   /* UEFI: the firmware's timer, through its wrapped vectors */
     volatile u8 *cell = (volatile u8 *)0x70d0;
     cell[0] = rt_inb(0x21);              /* the masks the BIOS wants back */
     cell[1] = rt_inb(0xa1);
@@ -219,6 +313,7 @@ void cpu_preempt_start(void) {
 }
 
 void cpu_preempt_stop(void) {
+    if (!ctx->bios_available) return;
     volatile u8 *cell = (volatile u8 *)0x70d0;
     if (!cell[2]) return;
     rt_outb(0x43, 0x36);                 /* the BIOS's 18.2 Hz */
@@ -235,10 +330,14 @@ void cpu_install_idt(void) {
     __asm__ volatile("lidt %0" ::"m"(idt_pointer));
 }
 
-void cpu_kernel_idt(void) { __asm__ volatile("lidt %0" ::"m"(saved_idt)); }
+void cpu_kernel_idt(void) {
+    smp_stop();
+    __asm__ volatile("lidt %0" ::"m"(saved_idt));
+}
 
 void cpu_restore_idt(void) {
     if (--idt_depth) return;
+    smp_stop();
     __asm__ volatile("lidt %0" ::"m"(saved_idt));
 }
 
@@ -293,6 +392,43 @@ i64 cpu_rtc_time(void) {
     return rt_epoch(year, month, day, hour, minute, second);
 }
 
+/* The hardware clock holds local time, matching the DOS date/time ABI. */
+int cpu_rtc_set(i64 seconds) {
+    if (seconds < 0 || seconds > 4102444799LL) return -DOSXC_EINVAL;
+    i64 days = seconds / 86400 + 719468;
+    i64 era = days / 146097;
+    unsigned doe = (unsigned)(days - era * 146097);
+    unsigned yoe = (doe - doe / 1460 + doe / 36524 - doe / 146096) / 365;
+    unsigned doy = doe - (365 * yoe + yoe / 4 - yoe / 100), mp = (5 * doy + 2) / 153;
+    unsigned day = doy - (153 * mp + 2) / 5 + 1, month = mp < 10 ? mp + 3 : mp - 9;
+    unsigned year = yoe + (unsigned)era * 400 + (month <= 2);
+    unsigned hour = (unsigned)(seconds % 86400 / 3600);
+    unsigned minute = (unsigned)(seconds % 3600 / 60), second = (unsigned)(seconds % 60);
+    uptr flags;
+    __asm__ volatile("pushf; pop %0; cli" : "=r"(flags) :: "memory");
+    unsigned tries;
+    for (tries = 0; tries < 1000000 && (cmos(10) & 0x80); ++tries) {}
+    if (tries == 1000000) {
+        __asm__ volatile("push %0; popf" :: "r"(flags) : "memory", "cc");
+        return -DOSXC_EIO;
+    }
+    u8 status = cmos(11);
+    rt_outb(0x70, 11); rt_outb(0x71, status | 0x80);
+    unsigned pm = 0;
+    if (!(status & 2)) { pm = hour >= 12 ? 0x80 : 0; hour %= 12; if (!hour) hour = 12; }
+    const u8 registers[] = {0, 2, 4, 6, 7, 8, 9, 0x32};
+    unsigned values[] = {second, minute, hour, (unsigned)((seconds / 86400 + 4) % 7 + 1), day, month, year % 100, year / 100};
+    for (unsigned i = 0; i < sizeof(registers); ++i) {
+        unsigned v = values[i];
+        if (!(status & 4)) v = v / 10 * 16 + v % 10;
+        if (registers[i] == 4) v |= pm;
+        rt_outb(0x70, registers[i]); rt_outb(0x71, (u8)v);
+    }
+    rt_outb(0x70, 11); rt_outb(0x71, status);
+    __asm__ volatile("push %0; popf" :: "r"(flags) : "memory", "cc");
+    return 0;
+}
+
 void cpu_resume(void) {
     enable_sse();
 #if __SIZEOF_POINTER__ == 8
@@ -310,9 +446,10 @@ int cpu_init(void) {
     enable_sse();
 #if __SIZEOF_POINTER__ == 8
     if (ctx->bios_available) extend_paging();
-    /* Programs run in ring 3 on a 64-bit BIOS boot.  (Under UEFI the
-       firmware's own interrupt handlers stay in charge: still ring 0.) */
-    if (ctx->bios_available && !ring0_requested()) {
+    /* Programs run in ring 3 on 64-bit boots.  Under UEFI the firmware's
+       interrupt handlers stay in charge and run on the task's kernel stack
+       when they interrupt ring 3. */
+    if (!ring0_requested()) {
         load_tss();
         if (runtime_user_cs && !paging_user_identity(!shared_requested())) runtime_ring3 = 1;
     }

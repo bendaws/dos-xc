@@ -1,5 +1,5 @@
 /*
- * DOS-XC /dosoffice/sheet.h
+ * DOS-XC /openwork/sheet.h
  * Copyright (c) 2026 Ben Daws - see LICENSE.txt
  */
 

@@ -13,6 +13,13 @@ pref("network.process.enabled", false);
 pref("layers.gpu-process.enabled", false);
 pref("media.rdd-process.enabled", false);
 pref("media.utility-process.enabled", false);
+// With the RDD and utility processes off, the content process decodes media itself.
+pref("media.allow-audio-non-utility", true);
+// Software decoding is often slower than real time here (QEMU, no GPU).
+// Show frames as they are decoded instead of dropping every late one, and
+// keep sites such as YouTube on VP9, which decodes faster than AV1.
+pref("media.ruin-av-sync.enabled", true);
+pref("media.mediasource.av1.enabled", false);
 pref("extensions.webextensions.remote", false);
 
 pref("gfx.webrender.software", true);

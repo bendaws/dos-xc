@@ -53,6 +53,7 @@ for edition in $editions; do
     case "$edition" in 32|64) ;; *) echo "error: an edition is 32 or 64, not $edition" >&2; exit 1 ;; esac
 done
 [ -n "$editions" ] || { echo "error: choose at least one edition" >&2; exit 1; }
+case " $components " in *" pkg "*) ;; *) components="pkg $components" ;; esac
 case " $components " in *" coreutils "*) ;; *) components="coreutils $components" ;; esac
 DOSXC_EDITIONS=$editions
 export DOSXC_EDITIONS

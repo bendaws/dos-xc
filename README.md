@@ -5,6 +5,8 @@
 
 DOS-XC (DOS eXtended Core) is a full-fledged modern DOS operating system. It can run your 16-bit DOS programs through kernel-level emulation, or new modern 32-bit and 64-bit programs. In summary, it's like DOS but awesome.
 
+This repository contains the DOS-XC kernel, bootloader, and desktop, DOS-XC drivers for networking, CPU/GPU/HDD/SSD, etc.., along with the included (and ported) programs binaries and source code. For ported programs which were not originally built for DOS-XC, their source was substituted with a build script which would fetch their source code from the original authors or authorized distributors.
+
 > [!WARNING]
 > I know, DOS-XC is awesome and you would love to use it over your currently rock-solid stable operating system, but DOS-XC is beta software and should not be used as a daily machine unless you **llloovveee** DOS.
 >
@@ -27,7 +29,19 @@ DOS-XC wants to be a(n):
 - easy-to-use operating system that people from your dad to your kids can use
 - fun-to-use operating system that you can run your favorite DOS games with
 
-## Get the system
+## Specifications
+Specifications are for the desktop, command line, and kernel. You may want to see the recommended specs of the programs you are installing via their READMEs or project homepages.
+
+| Spec         | Required                   | Recommended                                            |
+|--------------|----------------------------|--------------------------------------------------------|
+| Memory (RAM) | >128MB                     | >1.0G                                                  |
+| CPU          | Any x86_64/i686+ processor | Any 2010 model or newer x86/x86_64 CPU                 |
+| Display      | 640x480 with 2MB+ VRAM     | Post-2008 integrated GPU or dedicated GPU              |
+| Disk         | 64MB HDD/SSD               | 8GB or more for multiple users and programs/packages   |
+| KB/Mouse     | PS/2 or USB                | Same                                                   |
+| Firmware     | BIOS or UEFI               | Same                                                   |
+
+## Downloads
 Every version has an accompanying GitHub release, so you can start there: https://github.com/bendaws/dos-xc/releases/latest
 
 - Download `DOSXC_<version>_x64.iso` for 64-bit systems, or `DOSXC_<version>_x86.iso` for 32-bit systems.
@@ -62,6 +76,9 @@ scripts/boot64.sh
 # Attach a virtual hard disk
 scripts/boot64.sh -hd disk.img
 ```
+
+## Packages
+Have a port of a program, or your own program for DOS-XC? Create an account for free at https://dos-packages.bendaws.net/ and upload your package. It's easy, I promise.
 
 ## Repo layout
 | Folder | Contents |

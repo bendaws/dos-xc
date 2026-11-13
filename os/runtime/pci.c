@@ -52,6 +52,14 @@ u64 pci_bar(const struct pci_function *f, int index, int *io) {
     return base >> 32 ? 0 : base;
 }
 
+/* For the kernel only: also above 4 GiB where the firmware mapped it (UEFI). */
+u64 pci_bar_kernel(const struct pci_function *f, int index, int *io) {
+#if __SIZEOF_POINTER__ == 8
+    if (!ctx->bios_available) return pci_bar64(f, index, io);
+#endif
+    return pci_bar(f, index, io);
+}
+
 void pci_enable(const struct pci_function *f, int memory, int io) {
     u16 command = pci_read16(f, 4);
     command |= 4;

@@ -33,6 +33,8 @@ static void defaults(void) {
         rules[rule_count] = (struct rule){1, 0, 0, "*", ""};
         snprintf(rules[rule_count++].program, sizeof(rules[0].program), "%s", default_programs[i]);
     }
+    rules[rule_count++] = (struct rule){1, 0, 2, "53", "DESKTOP.EXE"};
+    rules[rule_count++] = (struct rule){1, 0, 2, "123", "DESKTOP.EXE"};
 }
 
 static void load(void) {

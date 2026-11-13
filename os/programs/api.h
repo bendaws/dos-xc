@@ -27,6 +27,7 @@
 #define DISK_FLAG_REMOVABLE 1
 #define DISK_FLAG_READONLY 2
 #define DISK_FLAG_SYSTEM 4          /* the disk DOS-XC booted from */
+#define DISK_FLAG_PCI 0x100         /* bits 16-31 hold its PCI controller: bus << 8 | device << 3 | function */
 
 typedef unsigned (__attribute__((sysv_abi)) *disk_count_fn)(void);
 typedef int (__attribute__((sysv_abi)) *disk_info_fn)(unsigned disk, uint64_t *sectors, unsigned *flags);
@@ -92,6 +93,12 @@ struct command_context {
        count; 1: describe mode INDEX; 2: set it; 3: back to the console. */
     int (__attribute__((sysv_abi)) *display)(int op, unsigned index, unsigned *width, unsigned *height,
                                              unsigned *pitch, uint64_t *framebuffer);
+    /* UEFI: the system volume's controller (DISK_FLAG_PCI and location, as
+       in disk_info, or 0) and its first sector on that disk; a page at
+       0x8000 the firmware set aside for starting processors, or 0. */
+    unsigned system_pci;
+    uint64_t system_lba;
+    uint64_t ap_page;
 };
 
 #define RUNTIME_MAGIC 0x46454442u   /* "BDEF" */

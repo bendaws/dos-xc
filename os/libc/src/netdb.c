@@ -119,8 +119,11 @@ static int query_server(const struct name_server *server, const char *name, int 
         address_size = sizeof(*a);
     }
     int result = EAI_AGAIN;
-    for (int attempt = 0; attempt < 3 && result == EAI_AGAIN; ++attempt) {
-        if (sendto(fd, packet, packet_size, 0, (struct sockaddr *)&address, address_size) < 0) continue;
+    for (int attempt = 0; attempt < 5 && result == EAI_AGAIN; ++attempt) {
+        if (sendto(fd, packet, packet_size, 0, (struct sockaddr *)&address, address_size) < 0) {
+            poll(0, 0, 300);         /* e.g. the router's address is still being looked up */
+            continue;
+        }
         unsigned long long deadline = dosxc_sys_nanoseconds() + 2000000000ull;
         for (;;) {
             struct pollfd p = {fd, POLLIN, 0};

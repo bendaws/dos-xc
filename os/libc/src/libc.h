@@ -32,6 +32,10 @@ static inline struct __dosxc_rlock *__dosxc_guard_begin(struct __dosxc_rlock *lo
     return lock;
 }
 hidden void __dosxc_tls_init(void);
+hidden void __dir_record(int fd, const char *path);
+hidden void __dir_closed(int fd);
+hidden void __dir_copied(int from, int to);
+hidden const char *__dir_path(int fd);
 #define LOCK_GUARD(lock) \
     struct __dosxc_rlock *__guard __attribute__((cleanup(__dosxc_guard_end), unused)) = __dosxc_guard_begin(lock)
 

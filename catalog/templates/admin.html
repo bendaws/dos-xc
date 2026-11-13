@@ -1,0 +1,25 @@
+{% extends 'base.html' %}
+{% from 'moderation.html' import user_controls with context %}
+{% block title %}Admin · DOS-XC Package Catalog{% endblock %}
+{% block content %}
+<h1>Admin</h1>
+<nav class="admin-tabs" aria-label="Moderation"><a href="{{ url_for('admin_panel', view='users') }}" {% if view == 'users' %}aria-current="page"{% endif %}>Users</a><a href="{{ url_for('admin_panel', view='packages') }}" {% if view == 'packages' %}aria-current="page"{% endif %}>Packages</a><a href="{{ url_for('admin_panel', view='admins') }}" {% if view == 'admins' %}aria-current="page"{% endif %}>Admin emails</a></nav>
+{% if view == 'admins' %}
+<form class="admin-form" action="{{ url_for('admin_email') }}" method="post"><input type="hidden" name="csrf" value="{{ csrf() }}"><input type="hidden" name="action" value="appoint"><label for="admin-email">Admin email</label><input id="admin-email" name="email" type="email" required maxlength="254"><button type="submit">Appoint admin</button></form>
+<p class="muted">Admin access starts after the email is confirmed.</p>
+{% endif %}
+<form class="admin-form" method="get" action="{{ url_for('admin_panel') }}"><input type="hidden" name="view" value="{{ view }}"><label class="sr-only" for="admin-search">Search {{ view }}</label><input id="admin-search" name="q" value="{{ q }}" placeholder="Search {{ view }}" maxlength="160"><button type="submit">Search</button></form>
+<div class="table-scroll"><table>
+{% if view == 'users' %}
+<thead><tr><th scope="col">Username</th><th scope="col">Email</th><th scope="col">Status</th><th scope="col">Actions</th></tr></thead><tbody>
+{% for profile in rows %}<tr><td><a href="{{ url_for('user_profile', user_id=profile.id) }}">{{ profile.username }}</a></td><td>{{ profile.email }}</td><td>{{ 'Deleted' if profile.deleted else 'Unconfirmed' if not profile.verified else 'Admin' if profile.appointed_admin else 'Publisher' if profile.publisher else 'Active' }}</td><td>{{ user_controls(profile) }}</td></tr>{% else %}<tr><td colspan="4" class="empty">No users.</td></tr>{% endfor %}
+{% elif view == 'packages' %}
+<thead><tr><th scope="col">Package</th><th scope="col">Version</th><th scope="col">Architecture</th><th scope="col">Status</th><th scope="col">Actions</th></tr></thead><tbody>
+{% for package in rows %}<tr><td><a href="{{ url_for('details', package_id=package.id) }}">{{ package.name }}</a>{% if package.owner_id %}<br><a href="{{ url_for('user_profile', user_id=package.owner_id) }}">{{ package.owner_username }}</a>{% endif %}</td><td>{{ package.version }}</td><td>{{ package.arch }}-bit</td><td>{{ 'Deleted' if package.deleted else 'User deleted' if package.owner_deleted else 'Active' }}</td><td><form method="post" action="{{ url_for('moderate_package', package_id=package.id, action='restore' if package.deleted else 'delete') }}"><input type="hidden" name="csrf" value="{{ csrf() }}"><button type="submit" {% if not package.deleted %}class="danger"{% endif %}>{{ 'Restore' if package.deleted else 'Delete' }}</button></form></td></tr>{% else %}<tr><td colspan="5" class="empty">No packages.</td></tr>{% endfor %}
+{% else %}
+<thead><tr><th scope="col">Email</th><th scope="col">Account</th><th scope="col">Actions</th></tr></thead><tbody>
+{% for admin in rows %}<tr><td>{{ admin.email }}</td><td>{% if admin.user_id %}<a href="{{ url_for('user_profile', user_id=admin.user_id) }}">{{ admin.username }}</a>{% if not admin.verified %} · Unconfirmed{% endif %}{% else %}Not registered{% endif %}</td><td>{% if admin.email|lower != root_admin_email %}<form action="{{ url_for('admin_email') }}" method="post"><input type="hidden" name="csrf" value="{{ csrf() }}"><input type="hidden" name="email" value="{{ admin.email }}"><input type="hidden" name="action" value="revoke"><button type="submit">Remove admin</button></form>{% else %}Primary admin{% endif %}</td></tr>{% else %}<tr><td colspan="3" class="empty">No admin emails.</td></tr>{% endfor %}
+{% endif %}
+</tbody></table></div>
+<nav class="pagination" aria-label="Admin results"><span>{{ total }} {{ view }}</span>{% if page > 1 %}<a href="{{ url_for('admin_panel', view=view, q=q, page=page-1) }}">‹ Previous</a>{% endif %}{% if page * 25 < total %}<a href="{{ url_for('admin_panel', view=view, q=q, page=page+1) }}">Next ›</a>{% endif %}</nav>
+{% endblock %}

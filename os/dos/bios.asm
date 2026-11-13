@@ -98,6 +98,7 @@ video_service:
     mov di, [es:0x7056]
     mov dx, 0x7800
     mov es, dx
+    xor dx, dx
     int 0x10
     movzx eax, ax
     jmp bios_service.result

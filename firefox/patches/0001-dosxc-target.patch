@@ -893,6 +893,89 @@ index 352a103bba..bd6984ff70 100644
  // Used on Android to pass the list of fonts on the device
  // to the child process
  struct SystemFontListEntry {
+diff --git a/dom/media/MediaData.cpp b/dom/media/MediaData.cpp
+index 286c43d144..07be95ae4a 100644
+--- a/dom/media/MediaData.cpp
++++ b/dom/media/MediaData.cpp
+@@ -31,6 +31,21 @@
+ #  include "mozilla/gfx/gfxVars.h"
+ #endif
+ 
++#include "mozilla/Atomics.h"
++
++#ifdef MOZ_WIDGET_DOSXC
++#  include <dosxc/syscall.h>
++static void DosxcDiag(const char* aFormat, ...) {
++  struct dosxc_event_add e = {};
++  e.level = DOSXC_EVENT_WARNING;
++  va_list ap;
++  va_start(ap, aFormat);
++  vsnprintf(e.text, sizeof(e.text), aFormat, ap);
++  va_end(ap);
++  dosxc_sys_events(DOSXC_EVENTS_ADD, &e, nullptr);
++}
++#endif
++
+ namespace mozilla {
+ 
+ extern LazyLogModule sPDMLog;
+@@ -351,8 +366,18 @@ MediaResult VideoData::SetVideoDataToImage(PlanarYCbCrImage* aVideoImage,
+   PlanarYCbCrData data = ConstructPlanarYCbCrData(aInfo, aBuffer, aPicture);
+ 
+   if (aCopyData) {
+-    return MediaResult::Logged(aVideoImage->CopyData(data),
+-                               RESULT_DETAIL("Failed to copy image data"),
++    nsresult copied = aVideoImage->CopyData(data);
++#ifdef MOZ_WIDGET_DOSXC
++    static Atomic<bool> sReported;
++    if (NS_FAILED(copied) && !sReported.exchange(true)) {
++      DosxcDiag("Video frame copy failed (%x): picture %d,%d %dx%d strides %d/%d depth %d sub %d",
++                    unsigned(copied),
++                    data.mPictureRect.x, data.mPictureRect.y, data.mPictureRect.width,
++                    data.mPictureRect.height, data.mYStride, data.mCbCrStride,
++                    int(data.mColorDepth), int(data.mChromaSubsampling));
++    }
++#endif
++    return MediaResult::Logged(copied, RESULT_DETAIL("Failed to copy image data"),
+                                sPDMLog);
+   }
+   return MediaResult::Logged(aVideoImage->AdoptData(data),
+diff --git a/dom/media/mediasource/MediaSource.cpp b/dom/media/mediasource/MediaSource.cpp
+index 7089cba543..ec540aff5c 100644
+--- a/dom/media/mediasource/MediaSource.cpp
++++ b/dom/media/mediasource/MediaSource.cpp
+@@ -165,6 +165,14 @@ void MediaSource::IsTypeSupported(const nsAString& aType,
+           : nsContentUtils::ShouldResistFingerprinting(
+                 "Couldn't drill down ShouldResistFingerprinting",
+                 RFPTarget::MediaCapabilities);
++  if (!StaticPrefs::media_mediasource_av1_enabled() &&
++      !shouldResistFingerprinting) {
++    for (const auto& codec : codecs.Range()) {
++      if (IsAV1CodecString(codec)) {
++        return aRv.ThrowNotSupportedError("Can't play type");
++      }
++    }
++  }
+   const MediaMIMEType& mimeType = containerType->Type();
+   if (mimeType == MEDIAMIMETYPE("video/mp4") ||
+       mimeType == MEDIAMIMETYPE("audio/mp4")) {
+diff --git a/dom/media/platforms/ffmpeg/ffvpx/FFVPXRuntimeLinker.cpp b/dom/media/platforms/ffmpeg/ffvpx/FFVPXRuntimeLinker.cpp
+index 4d3eaf7529..1ee8569a67 100644
+--- a/dom/media/platforms/ffmpeg/ffvpx/FFVPXRuntimeLinker.cpp
++++ b/dom/media/platforms/ffmpeg/ffvpx/FFVPXRuntimeLinker.cpp
+@@ -105,6 +105,12 @@ bool FFVPXRuntimeLinker::Init() {
+   if (path.IsEmpty()) {
+     return false;
+   }
++#ifdef MOZ_WIDGET_DOSXC
++  // "X:/Programs/..." -> "/Programs/...": Gecko's paths mean DOSfox's drive.
++  if (path.Length() > 2 && path[1] == ':') {
++    path.Cut(0, 2);
++  }
++#endif
+   nsCOMPtr<nsIFile> libFile;
+   if (NS_FAILED(NS_NewPathStringLocalFile(path, getter_AddRefs(libFile)))) {
+     return false;
 diff --git a/dom/webgpu/SharedTexture.cpp b/dom/webgpu/SharedTexture.cpp
 index b3dd05dbbd..5e91ec60b6 100644
 --- a/dom/webgpu/SharedTexture.cpp
@@ -2128,7 +2211,7 @@ index 23c581f416..100a7ab62c 100644
 +#  endif  // MOZ_WIDGET_DOSXC
  #endif
 diff --git a/modules/libpref/init/StaticPrefList.yaml b/modules/libpref/init/StaticPrefList.yaml
-index d5ad87d5bc..a12e2e6e5e 100644
+index d5ad87d5bc..9d445a4411 100644
 --- a/modules/libpref/init/StaticPrefList.yaml
 +++ b/modules/libpref/init/StaticPrefList.yaml
 @@ -8111,7 +8111,7 @@
@@ -2140,6 +2223,20 @@ index d5ad87d5bc..a12e2e6e5e 100644
    # -1 = disabled (no preblend, original behavior)
    #  0 = sRGB transfer
    # >0 = value/100.0 exponent
+@@ -12764,6 +12764,13 @@
+   value: @IS_NOT_MOBILE@
+   mirror: always
+ 
++# Whether MediaSource offers AV1. When false, sites such as YouTube pick
++# another codec; plain <video> playback of AV1 is unaffected.
++- name: media.mediasource.av1.enabled
++  type: RelaxedAtomicBool
++  value: true
++  mirror: always
++
+ # Whether to enable MediaSource v2 support.
+ - name: media.mediasource.experimental.enabled
+   type: RelaxedAtomicBool
 diff --git a/netwerk/base/nsNetUtil.cpp b/netwerk/base/nsNetUtil.cpp
 index 1a62eada8b..480a388f78 100644
 --- a/netwerk/base/nsNetUtil.cpp
@@ -2453,7 +2550,7 @@ index c8779441a8..a6ac41d623 100644
    return std::make_unique<ScrollbarDrawingAndroid>();
 diff --git a/widget/dosxc/DosxcBoard.c b/widget/dosxc/DosxcBoard.c
 new file mode 100644
-index 0000000000..b14e1fc281
+index 0000000000..82ce18ac17
 --- /dev/null
 +++ b/widget/dosxc/DosxcBoard.c
 @@ -0,0 +1,171 @@
@@ -2512,7 +2609,7 @@ index 0000000000..b14e1fc281
 +
 +// The desktop may still be drawing an old buffer, and the renderer filling
 +// one: buffers are freed a few resizes later.
-+#define RETIRED 6
++#define RETIRED 16
 +struct pixels {
 +  u32* old[RETIRED];
 +  int next;

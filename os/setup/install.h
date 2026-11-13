@@ -29,6 +29,8 @@ typedef void (*setup_progress)(const char *name, unsigned percent, unsigned long
 void setup_init(void);                 /* sysinfo, source drive */
 void setup_find_disks(void);
 void setup_find_packages(void);        /* from \Packages on the media */
+/* Selects the packages that the selected ones need (Requires=); returns how many. */
+int setup_select_requirements(void);
 void setup_size_text(char *out, size_t size, unsigned long long sectors);
 /* Erase DISK and install everything selected.  0, or -1 with setup_failure set. */
 int setup_install(const struct disk_choice *disk, setup_progress progress, void (*status)(const char *text));

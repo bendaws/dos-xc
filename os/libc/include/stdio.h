@@ -39,6 +39,11 @@ extern FILE *stderr;
 
 int remove(const char *);
 int rename(const char *, const char *);
+int fpurge(FILE *);
+int renameat(int, const char *, int, const char *);
+#define RENAME_NOREPLACE 1
+#define RENAME_EXCHANGE 2
+int renameat2(int, const char *, int, const char *, unsigned);
 FILE *tmpfile(void);
 char *tmpnam(char *);
 char *tempnam(const char *, const char *);

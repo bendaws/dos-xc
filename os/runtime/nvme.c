@@ -103,9 +103,10 @@ static int make_queue(struct queue *q, volatile u8 *regs, u32 stride, int id) {
 void nvme_probe(const struct pci_function *f) {
     if (f->prog_if != 2 || controller_count == sizeof(controllers) / sizeof(controllers[0])) return;
     int io;
-    u64 base = pci_bar(f, 0, &io);
+    u64 base = pci_bar_kernel(f, 0, &io);
     if (!base || io) return;
     pci_enable(f, 1, 0);
+    storage_claim();
     struct controller *c = &controllers[controller_count];
     memset(c, 0, sizeof(*c));
     c->regs = (volatile u8 *)(uptr)base;

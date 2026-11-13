@@ -34,7 +34,7 @@ static inline __attribute__((unused)) int owned(uptr table) { return table >= (u
 #define ADDRESS 0x000ffffffffff000ull
 #define PS 0x80ull
 #define MAX_SPACES 64
-#define MAX_OWNED 512
+#define MAX_OWNED 1024
 
 /* A page-table tree.  Process trees start as a copy of the base tree's top
    level and own only the tables they changed (library data). */
@@ -107,13 +107,17 @@ static int make_base(void) {
 }
 
 /* Ring 3: the base tree maps the first 4 GiB itself with 2 MiB pages ring 3
-   may use (every page, for now).  The firmware's other top-level entries
-   are kept. */
+   may use (every page, for now).  The firmware's mappings above that are
+   kept for the kernel only (UEFI maps its memory and devices there). */
 int paging_user_identity(int isolated) {
     if (base || pool_used + 6 > POOL) return -1;
     u64 *pml4 = new_table(), *pdpt = new_table();
     u64 *old = (u64 *)(read_cr3() & ADDRESS);
-    for (int i = 1; i < 512; ++i) pml4[i] = old[i];
+    for (int i = 1; i < 512; ++i) pml4[i] = old[i] & ~4ull;
+    if ((old[0] & 1) && !(old[0] & PS)) {
+        u64 *old_pdpt = (u64 *)(uptr)(old[0] & ADDRESS);
+        for (int i = 4; i < 512; ++i) pdpt[i] = old_pdpt[i] & ~4ull;
+    }
     base = &spaces[0];
     base->used = 1;
     base->pml4 = pml4;
@@ -183,8 +187,10 @@ int aspace_map(struct aspace *a, uptr va, uptr pa) {
     if (!a) a = base;
     u64 *e = pte(a, va);
     if (!e) return -1;
+    u64 old = *e;
     *e = (*e & ~ADDRESS) | ((u64)pa & ADDRESS) | 3 | paging_user;
     if (a == current_space) invalidate(va);
+    if (old & 1) smp_tlb_flush(a == base ? 0 : a->pml4);
     return 0;
 }
 
@@ -195,8 +201,14 @@ void paging_share_top(unsigned index) {
 
 /* Ring 3's access to [VA, VA + SIZE) of the first 4 GiB in tree A: MODE 0
    none, 1 read, 2 read and write.  The pages keep their frames. */
+static void user_rights(struct aspace *a, uptr va, uptr size, int mode);
 void aspace_user(struct aspace *a, uptr va, uptr size, int mode) {
     if (!a || !paging_isolated || !size) return;
+    user_rights(a, va, size, mode);
+    smp_tlb_flush(a == base ? 0 : a->pml4);
+}
+
+static void user_rights(struct aspace *a, uptr va, uptr size, int mode) {
     uptr end = (va + size + PAGE - 1) & ~(uptr)(PAGE - 1);
     va &= ~(uptr)(PAGE - 1);
     if (end > 0x100000000ull) end = 0x100000000ull;
@@ -210,7 +222,7 @@ void aspace_user(struct aspace *a, uptr va, uptr size, int mode) {
                 continue;
             }
             u64 *pt = (u64 *)(uptr)(pde & ADDRESS);
-            pt[(va >> 12) & 511] = (pt[(va >> 12) & 511] & ~4ull) | 2;
+            if ((pt[(va >> 12) & 511] & ADDRESS) == va) pt[(va >> 12) & 511] = (pt[(va >> 12) & 511] & ~4ull) | 2;
             if (a == current_space) invalidate(va);
             va += PAGE;
             continue;
@@ -218,7 +230,7 @@ void aspace_user(struct aspace *a, uptr va, uptr size, int mode) {
         u64 *e = pte(a, va);
         if (!e) return;
         u64 flags = mode == 2 ? 6 : mode == 1 ? 4 : 2;
-        *e = (*e & ~6ull) | flags;
+        if ((*e & ADDRESS) == va) *e = (*e & ~6ull) | flags;     /* not frames a fork copied */
         if (a == current_space) invalidate(va);
         va += PAGE;
     }
@@ -230,6 +242,56 @@ void aspace_user_all(uptr va, uptr size, int mode) {
 }
 
 u64 *aspace_root(const struct aspace *a) { return a ? a->pml4 : 0; }
+
+static int pat_ready(void) {
+    static int state;
+    if (state) return state > 0;
+    u32 a = 1, b, c = 0, d;
+    __asm__ volatile("cpuid" : "+a"(a), "=b"(b), "+c"(c), "=d"(d));
+    state = -1;
+    if (!(d & (1u << 16))) return 0;
+    u32 low, high;
+    __asm__ volatile("rdmsr" : "=a"(low), "=d"(high) : "c"(0x277u));
+    high = (high & ~0xffu) | 0x01;          /* PAT entry 4 (PAT bit, no PCD/PWT): write-combining */
+    __asm__ volatile("wbinvd" ::: "memory");
+    __asm__ volatile("wrmsr" ::"c"(0x277u), "a"(low), "d"(high));
+    __asm__ volatile("wbinvd" ::: "memory");
+    write_cr3(read_cr3());
+    smp_set_pat(((u64)high << 32) | low);
+    state = 1;
+    return 1;
+}
+
+static void combine_in(u64 *pml4, uptr va, uptr end) {
+    if (!(pml4[0] & 1)) return;
+    u64 *pdpt = (u64 *)(uptr)(pml4[0] & ADDRESS);
+    while (va < end) {
+        u64 pdpte = pdpt[(va >> 30) & 511];
+        if (!(pdpte & 1) || (pdpte & PS)) { va = (va | ((1ull << 30) - 1)) + 1; continue; }
+        u64 *pde = &((u64 *)(uptr)(pdpte & ADDRESS))[(va >> 21) & 511];
+        if (!(*pde & 1)) { va = (va | ((1ull << 21) - 1)) + 1; continue; }
+        if (*pde & PS) {
+            *pde = (*pde & ~0x18ull) | 0x1000ull;
+            va = (va | ((1ull << 21) - 1)) + 1;
+            continue;
+        }
+        u64 *e = &((u64 *)(uptr)(*pde & ADDRESS))[(va >> 12) & 511];
+        if (*e & 1) *e = (*e & ~0x18ull) | PS;
+        va += PAGE;
+    }
+}
+
+/* Write-combining for [VA, VA + SIZE) below 4 GiB (a framebuffer), in every tree. */
+void paging_write_combining(uptr va, uptr size) {
+    if (!base || !size || va >= 0x100000000ull || !pat_ready()) return;
+    uptr end = va + size;
+    if (end > 0x100000000ull) end = 0x100000000ull;
+    for (int i = 0; i < MAX_SPACES; ++i)
+        if (spaces[i].used) combine_in(spaces[i].pml4, va & ~(uptr)(PAGE - 1), end);
+    __asm__ volatile("wbinvd" ::: "memory");
+    write_cr3(read_cr3());
+    smp_tlb_flush(0);
+}
 
 /* May ring 3 code of the running process use [P, P + N) (writing too, when
    WRITE)?  Mappings the process has not touched yet count when vm.c would
@@ -327,6 +389,7 @@ void aspace_user_all(uptr va, uptr size, int mode) { (void)va; (void)size; (void
 u64 *aspace_root(const struct aspace *a) { (void)a; return 0; }
 struct aspace *aspace_at(int index) { (void)index; return 0; }
 void paging_user_base(uptr va, uptr size, int mode) { (void)va; (void)size; (void)mode; }
+void paging_write_combining(uptr va, uptr size) { (void)va; (void)size; }
 int paging_user_ok(uptr p, uptr n, int write) { (void)p; (void)n; (void)write; return 1; }
 int paging_user_string(const char *s) { (void)s; return 1; }
 struct aspace *aspace_new(void) { return 0; }

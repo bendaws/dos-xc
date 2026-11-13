@@ -13,6 +13,7 @@ struct ifaddrs {
     struct sockaddr *ifa_addr, *ifa_netmask, *ifa_dstaddr;
     void *ifa_data;
 };
+#define ifa_broadaddr ifa_dstaddr
 #ifdef __cplusplus
 extern "C" {
 #endif

@@ -1,0 +1,83 @@
+diff --color -ruN a/modules/gui/qt/qt.cpp b/modules/gui/qt/qt.cpp
+--- a/modules/gui/qt/qt.cpp	2024-06-05 10:56:07
++++ b/modules/gui/qt/qt.cpp	2026-11-12 14:45:35
+@@ -51,6 +51,13 @@
+ #include <vlc_plugin.h>
+ #include <vlc_vout_window.h>
+ 
++#ifdef __dosxc__
++ #include <QtPlugin>
++ Q_IMPORT_PLUGIN(QDosxcIntegrationPlugin)
++ Q_IMPORT_PLUGIN(QSvgIconPlugin)
++ Q_IMPORT_PLUGIN(QSvgPlugin)
++#endif
++
+ #ifdef _WIN32 /* For static builds */
+  #include <QtPlugin>
+ 
+@@ -603,6 +610,8 @@
+         else if( platform == qfu("wayland") )
+             p_sys->voutWindowType = VOUT_WINDOW_TYPE_WAYLAND;
+         else if( platform == qfu("windows") )
++            p_sys->voutWindowType = VOUT_WINDOW_TYPE_HWND;
++        else if( platform == qfu("dosxc") )
+             p_sys->voutWindowType = VOUT_WINDOW_TYPE_HWND;
+         else if( platform == qfu("cocoa" ) )
+             p_sys->voutWindowType = VOUT_WINDOW_TYPE_NSOBJECT;
+diff --color -ruN a/src/text/url.c b/src/text/url.c
+--- a/src/text/url.c	2024-06-05 10:56:07
++++ b/src/text/url.c	2026-11-12 14:45:35
+@@ -160,6 +160,20 @@
+     path = p;
+ #endif
+ 
++#ifdef __dosxc__
++    if (isalpha ((unsigned char)path[0]) && path[1] == ':')
++    {
++        char *ret;
++        if (asprintf (&buf, "/%s", path) == -1)
++            return NULL;
++        for (char *p = buf; *p; p++)
++            if (*p == '\\')
++                *p = '/';
++        ret = vlc_path2uri (buf, scheme);
++        free (buf);
++        return ret;
++    }
++#endif
+ #if defined (_WIN32) || defined (__OS2__)
+     /* Drive letter */
+     if (isalpha ((unsigned char)path[0]) && (path[1] == ':'))
+@@ -263,6 +277,10 @@
+     if (schemelen == 4 && !strncasecmp (url, "file", 4))
+     {
+ #if !defined (_WIN32) && !defined (__OS2__)
++# ifdef __dosxc__
++        if (path[0] == '/' && isalpha ((unsigned char)path[1]) && path[2] == ':')
++            return memmove (path, path + 1, strlen (path + 1) + 1);
++# endif
+         /* Leading slash => local path */
+         if (*path == '/')
+             return path;
+diff --git a/modules/gui/qt/components/interface_widgets.cpp b/modules/gui/qt/components/interface_widgets.cpp
+--- a/modules/gui/qt/components/interface_widgets.cpp
++++ b/modules/gui/qt/components/interface_widgets.cpp
+@@ -132,6 +132,10 @@
+     stable->setPalette( plt );
+     stable->setAutoFillBackground(true);
+     /* Force the widget to be native so that it gets a winId() */
++#ifdef __dosxc__
++    /* Only the video surface is drawn by the DOS-XC output module. */
++    stable->setAttribute( Qt::WA_DontCreateNativeAncestors, true );
++#endif
+     stable->setAttribute( Qt::WA_NativeWindow, true );
+     /* Indicates that the widget wants to draw directly onto the screen.
+        Widgets with this attribute set do not participate in composition
+@@ -139,6 +143,6 @@
+     /* This is currently disabled on X11 as it does not seem to improve
+      * performance, but causes the video widget to be transparent... */
+-#if !defined (QT5_HAS_X11)
++#if !defined (QT5_HAS_X11) && !defined (__dosxc__)
+     stable->setAttribute( Qt::WA_PaintOnScreen, true );
+ #else
+     stable->setMouseTracking( true );

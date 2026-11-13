@@ -197,17 +197,22 @@ static void open_add_user(int first) {
 #define ROW 22
 struct panel {
     struct dosxc_user me, users[32];
-    int count, selected, enabled, admin;
-    struct surface picture;
+    int count, selected, enabled, admin, unlocked;
+    char unlocked_by[32];
+    struct surface picture, thumbs[32];
 };
 static struct panel *pd;
-static const struct rect list_box = {12, 100, 300, 154};
+static const struct rect list_box = {12, 140, 330, 198};
+static const struct rect lock_button = {360, 104, 108, 24};
+/* Managing accounts: unlocked by an administrator, or anyone while accounts are off. */
+static int managing(void) { return pd->unlocked || !pd->enabled; }
 
 static void panel_reload(void) {
     if (!pd) return;
     pd->enabled = dosxc_sys_user(DOSXC_USER_ENABLED, 0, 0) > 0;
     dosxc_sys_user(DOSXC_USER_WHOAMI, 0, &pd->me);
     pd->admin = pd->me.admin;
+    if (!pd->enabled) pd->unlocked = 0;
     long n = dosxc_sys_user(DOSXC_USER_LIST, 0, &pd->users[0]);
     pd->count = 0;
     for (long i = 0; i < n && i < 32; ++i) dosxc_sys_user(DOSXC_USER_LIST, (void *)i, &pd->users[pd->count++]);
@@ -215,13 +220,29 @@ static void panel_reload(void) {
     free(pd->picture.px);
     pd->picture = (struct surface){0};
     user_picture(pd->me.picture, 48, &pd->picture);
+    for (int i = 0; i < 32; ++i) {
+        free(pd->thumbs[i].px);
+        pd->thumbs[i] = (struct surface){0};
+        if (i < pd->count) user_picture(pd->users[i].picture, ROW - 4, &pd->thumbs[i]);
+    }
     if (panel) window_paint(panel);
 }
 
 static const char *const own_buttons[4] = {"Picture...", "Nickname...", "Password...", "Start in"};
-static const char *const admin_buttons[5] = {"Add...", "Remove", "Administrator", "Home Folder...", "Accounts"};
+static const char *const admin_buttons[5] = {"Add...", "Remove", "Administrator", "Home Folder...", "Picture..."};
 static struct rect own_button(int i) { return (struct rect){12 + i * 76, 66, 72, 24}; }
-static struct rect admin_button(int i) { return (struct rect){320, 100 + i * 30, 108, 24}; }
+static struct rect admin_button(int i) { return (struct rect){360, 140 + i * 29, 108, 24}; }
+
+static void draw_lock(const struct canvas *c, int x, int y, int open) {
+    u32 ink = open ? 0x2f7d32 : 0x8a6d00;
+    fill(c, x + 2, y + 8, 12, 9, ink);
+    for (int i = 0; i < 2; ++i) {
+        fill(c, x + 4 + i, y + 2, 1, open ? 3 : 6, ink);
+        fill(c, x + 10 + i + (open ? 4 : 0), y + 2, 1, 6, ink);
+    }
+    fill(c, x + 4, y + 1, open ? 12 : 8, 2, ink);
+    fill(c, x + 7, y + 11, 2, 3, 0xffffff);
+}
 
 static void panel_paint(struct window *w, const struct canvas *c) {
     (void)w;
@@ -229,32 +250,44 @@ static void panel_paint(struct window *w, const struct canvas *c) {
     else draw_icon_big(c, 20, 18, &icons[ICON_USER]);
     char line[120];
     if (pd->enabled && pd->me.name[0]) snprintf(line, sizeof(line), "%s (%s)%s", pd->me.nickname, pd->me.name, pd->me.admin ? ", administrator" : "");
-    else snprintf(line, sizeof(line), "User accounts are off: everyone uses %s.", pd->me.home);
+    else snprintf(line, sizeof(line), "There are no accounts yet: add the first administrator.");
     text(c, 70, 14, &font_bold, line, C_TEXT);
     if (pd->enabled && pd->me.name[0]) {
         snprintf(line, sizeof(line), "Home: %s.  Starts at the %s.", pd->me.home, pd->me.start == DOSXC_USER_START_PROMPT ? "command prompt" : "desktop");
         text(c, 70, 34, &font_regular, line, C_TEXT);
         for (int i = 0; i < 4; ++i) button(c, own_button(i), own_buttons[i], 0, 0);
     }
+    fill(c, 12, 96, 456, 1, C_SHADOW1);
+    draw_lock(c, 12, 108, managing());
+    if (!pd->enabled) text(c, 34, 110, &font_regular, "Until there is an administrator, anyone can add accounts.", C_TEXT);
+    else if (pd->unlocked) {
+        snprintf(line, sizeof(line), "Unlocked by %s. Lock it when you are done.", pd->unlocked_by);
+        text(c, 34, 110, &font_regular, line, C_TEXT);
+    } else text(c, 34, 110, &font_regular, "Locked. An administrator can unlock it to manage accounts.", C_TEXT);
+    if (pd->enabled) button(c, lock_button, pd->unlocked ? "Lock" : "Unlock...", 0, !pd->unlocked);
     bevel(c, list_box.x - 2, list_box.y - 2, list_box.w + 4, list_box.h + 4, 1);
     fill(c, list_box.x, list_box.y, list_box.w, list_box.h, C_BASE);
     for (int i = 0; i < pd->count && (i + 1) * ROW <= list_box.h; ++i) {
         int y = list_box.y + i * ROW;
         if (i == pd->selected) fill(c, list_box.x, y, list_box.w, ROW, C_SELECTION);
         snprintf(line, sizeof(line), "%s (%s)%s", pd->users[i].nickname, pd->users[i].name, pd->users[i].admin ? " - administrator" : "");
-        draw_icon(c, list_box.x + 3, y + 3, ICON_USER);
+        if (pd->thumbs[i].px) blit(c, list_box.x + 2, y + 2, &pd->thumbs[i]);
+        else draw_icon(c, list_box.x + 3, y + 3, ICON_USER);
         text(c, list_box.x + 24, y + 6, &font_regular, line, i == pd->selected ? 0xffffff : C_TEXT);
     }
-    if (!pd->admin) { text(c, 320, 104, &font_regular, "Administrators", C_DISABLED); text(c, 320, 118, &font_regular, "manage accounts.", C_DISABLED); return; }
     for (int i = 0; i < 5; ++i) {
         const char *label = admin_buttons[i];
-        if (i == 4) label = pd->enabled ? "Turn Off" : "Turn On";
-        button(c, admin_button(i), label, 0, 0);
+        struct rect r = admin_button(i);
+        if (managing()) button(c, r, label, 0, 0);
+        else {
+            bevel(c, r.x, r.y, r.w, r.h, 0);
+            text(c, r.x + (r.w - text_width(&font_regular, label)) / 2, r.y + 7, &font_regular, label, C_DISABLED);
+        }
     }
 }
 
 static void report(long r, const char *what) {
-    if (!r) { panel_reload(); return; }
+    if (!r) { panel_reload(); me_reload(); return; }
     message_box("User Accounts", what, r == -DOSXC_EPERM ? "Only administrators can do that." :
                 r == -DOSXC_EBUSY ? "There must always be an administrator." :
                 r == -DOSXC_EACCES ? "The password is not right." : "It did not work.");
@@ -279,6 +312,14 @@ static void picture_set(const char *path, void *data) {
     struct dosxc_user u = pd->me;
     snprintf(u.picture, sizeof(u.picture), "%s", path);
     set_field(pd->me.name, DOSXC_USER_SET_PICTURE, &u, 0, 0);
+}
+
+static void selected_picture_set(const char *path, void *data) {
+    (void)data;
+    if (!path || !pd || pd->selected < 0 || pd->selected >= pd->count) return;
+    struct dosxc_user u = pd->users[pd->selected];
+    snprintf(u.picture, sizeof(u.picture), "%s", path);
+    set_field(u.name, DOSXC_USER_SET_PICTURE, &u, 0, 0);
 }
 
 static void nickname_set(const char *text, void *data) {
@@ -315,6 +356,23 @@ static void remove_confirmed(int ok, void *data) {
     if (ok && pd->selected >= 0) report(dosxc_sys_user(DOSXC_USER_REMOVE, pd->users[pd->selected].name, 0), "The account could not be removed.");
 }
 
+static char unlock_name[32];
+static void unlock_password(const char *text, void *data) {
+    (void)data;
+    if (!text || !pd) return;
+    long r = dosxc_sys_user(DOSXC_USER_UNLOCK, unlock_name, (void *)text);
+    if (r) message_box("User Account Center", "It could not be unlocked.", "Use the name and password of an administrator.");
+    else { pd->unlocked = 1; snprintf(pd->unlocked_by, sizeof(pd->unlocked_by), "%s", unlock_name); }
+    memset(unlock_name, 0, sizeof(unlock_name));
+    panel_reload();
+}
+static void unlock_named(const char *text, void *data) {
+    (void)data;
+    if (!text || !text[0]) return;
+    snprintf(unlock_name, sizeof(unlock_name), "%s", text);
+    secret_box("Unlock", "Administrator's password:", unlock_password, 0);
+}
+
 static void panel_mouse(struct window *w, int x, int y, int kind, int value) {
     (void)value;
     if (kind != M_DOWN && kind != M_DOUBLE) return;
@@ -334,14 +392,13 @@ static void panel_mouse(struct window *w, int x, int y, int kind, int value) {
             return;
         }
     }
-    if (!pd->admin) return;
-    if (rect_has(admin_button(0), x, y)) { open_add_user(!pd->count); return; }
-    if (rect_has(admin_button(4), x, y)) {
-        if (!pd->enabled && !pd->count) { open_add_user(1); return; }
-        report(dosxc_sys_user(DOSXC_USER_ENABLE, (void *)(long)!pd->enabled, 0), pd->enabled ? "User accounts could not be turned off." : "Add an administrator first.");
-        if (pd->enabled) message_box("User Accounts", "User accounts are on.", "Log out to see the login screen.");
+    if (pd->enabled && rect_has(lock_button, x, y)) {
+        if (pd->unlocked) { dosxc_sys_user(DOSXC_USER_LOCK, 0, 0); pd->unlocked = 0; panel_reload(); }
+        else input_box("Unlock", "Administrator's user name:", pd->me.admin ? pd->me.name : "", unlock_named, 0);
         return;
     }
+    if (!managing()) return;
+    if (rect_has(admin_button(0), x, y)) { open_add_user(!pd->count); return; }
     if (pd->selected < 0 || pd->selected >= pd->count) return;
     struct dosxc_user *u = &pd->users[pd->selected];
     if (rect_has(admin_button(1), x, y)) {
@@ -354,23 +411,27 @@ static void panel_mouse(struct window *w, int x, int y, int kind, int value) {
         set_field(u->name, DOSXC_USER_SET_ADMIN, &changed, 0, 0);
     } else if (rect_has(admin_button(3), x, y)) {
         input_box("Home Folder", "Home folder (empty: C:\\Users\\name):", u->home, home_set, 0);
+    } else if (rect_has(admin_button(4), x, y)) {
+        picture_chooser(selected_picture_set, 0);
     }
 }
 
 static void panel_closed(struct window *w) {
     (void)w;
+    dosxc_sys_user(DOSXC_USER_LOCK, 0, 0);
     free(pd->picture.px);
+    for (int i = 0; i < 32; ++i) free(pd->thumbs[i].px);
     free(pd);
     pd = 0;
     panel = 0;
 }
 static const struct app_ops panel_ops = {panel_paint, panel_mouse, 0, panel_closed};
 
-void open_user_accounts(void) {
+void open_account_center(void) {
     if (panel) { window_raise(panel); return; }
     pd = calloc(1, sizeof(*pd));
     if (!pd) return;
     panel_reload();
-    panel = window_open(440, 268, "User Accounts", ICON_USER, &panel_ops, pd);
+    panel = window_open(480, 350, "User Account Center", ICON_USER, &panel_ops, pd);
     if (!panel) { free(pd); pd = 0; }
 }

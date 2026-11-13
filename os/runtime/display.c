@@ -115,19 +115,52 @@ static void add_mode(struct adapter *a, u32 width, u32 height, unsigned firmware
     a->firmware_base[at] = base;
 }
 
-/* The preferred resolution from the EDID block QEMU puts at the start of
-   the MMIO BAR. */
-static void bochs_edid(struct adapter *a) {
+/* The first detailed timing of an EDID block is the monitor's native mode. */
+static int edid_preferred(struct adapter *a, const u8 *edid) {
     static const u8 magic[8] = {0, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0};
+    if (memcmp(edid, magic, 8) || (!edid[54] && !edid[55])) return -1;
+    a->preferred_width = edid[56] | (u32)(edid[58] & 0xf0) << 4;
+    a->preferred_height = edid[59] | (u32)(edid[61] & 0xf0) << 4;
+    return 0;
+}
+
+/* QEMU puts the EDID block at the start of the MMIO BAR. */
+static void bochs_edid(struct adapter *a) {
     if (!a->mmio) return;
     u8 edid[128];
     for (unsigned i = 0; i < sizeof(edid); ++i) edid[i] = a->mmio[i];
-    if (memcmp(edid, magic, 8) || (!edid[54] && !edid[55])) return;
-    a->preferred_width = edid[56] | (u32)(edid[58] & 0xf0) << 4;
-    a->preferred_height = edid[59] | (u32)(edid[61] & 0xf0) << 4;
+    edid_preferred(a, edid);
+}
+
+static const struct pci_function *other_gpu;
+static struct pci_function first_gpu;
+
+static void note_gpu(const struct pci_function *f) {
+    if (!other_gpu || (first_gpu.vendor == 0x8086 && f->vendor != 0x8086)) { first_gpu = *f; other_gpu = &first_gpu; }
+}
+
+/* A name for the card the firmware drives, from its PCI identity. */
+static void firmware_name(struct adapter *a, const char *how) {
+    const char *maker = 0;
+    if (other_gpu) {
+        if (other_gpu->vendor == 0x10de) maker = "NVIDIA";
+        else if (other_gpu->vendor == 0x1002) maker = "AMD";
+        else if (other_gpu->vendor == 0x8086) maker = "Intel";
+        else if (other_gpu->vendor == 0x15ad) maker = "VMware";
+        else if (other_gpu->vendor == 0x1414) maker = "Hyper-V";
+    }
+    if (!maker) { rt_strcpy(a->name, how); return; }
+    uptr n = rt_strlen(maker);
+    memcpy(a->name, maker, n);
+    a->name[n++] = ' ';
+    a->name[n++] = '(';
+    for (const char *p = how; *p && n + 2 < sizeof(a->name); ++p) a->name[n++] = *p;
+    a->name[n++] = ')';
+    a->name[n] = 0;
 }
 
 static void found_display(const struct pci_function *f) {
+    if (f->vendor != 0x1234 || f->id != 0x1111) note_gpu(f);
     if (adapter_count == MAX_ADAPTERS || f->vendor != 0x1234 || f->id != 0x1111) return;
     struct adapter *a = &adapters[adapter_count];
     memset(a, 0, sizeof(*a));
@@ -229,7 +262,9 @@ static void vbe_scan(void) {
         add_mode(a, width, height, numbers[i], pitch, *(u32 *)(mode + 0x28));
     }
     if (!a->mode_count) return;
-    rt_strcpy(a->name, "VESA BIOS display");
+    memset(mode, 0, 128);
+    if (bios_video(0x4f15, 0x0001, 0, 0x400) == 0x004f) edid_preferred(a, mode);
+    firmware_name(a, "VESA BIOS");
     adapter_count = 1;
 }
 
@@ -245,7 +280,7 @@ static void gop_scan(void) {
         if (width >= 640 && height >= 480) add_mode(a, width, height, (unsigned)i, pitch, base);
     }
     if (!a->mode_count) return;
-    rt_strcpy(a->name, "UEFI display");
+    firmware_name(a, "UEFI");
     adapter_count = 1;
 }
 
@@ -255,6 +290,7 @@ static void scan(void) {
     adapter_count = 0;
     pci_scan_class(3, 0, found_display);
     pci_scan_class(3, 0x80, found_display);
+    pci_scan_class(3, 0x02, found_display);
     if (!adapter_count && ctx->bios_available) vbe_scan();
     if (!adapter_count && !ctx->bios_available && ctx->display) gop_scan();
 }
@@ -265,7 +301,6 @@ static int set_mode(struct adapter *a, const struct dosxc_display_mode *wanted) 
         if (a->modes[i].width == wanted->width && a->modes[i].height == wanted->height) index = i;
     if (index < 0) return -DOSXC_EINVAL;
     if (!graphics) {
-        terminal_mouse_hide();
         if (ctx->bios_available) memcpy(text_copy, (void *)0xb8000, sizeof(text_copy));
     }
     int r = 0;
@@ -285,6 +320,7 @@ static int set_mode(struct adapter *a, const struct dosxc_display_mode *wanted) 
     a->height = wanted->height;
     graphics = 1;
     owner = current ? current->pid : 0;
+    paging_write_combining((uptr)a->framebuffer, (uptr)a->pitch * a->height);
     if (current && a->framebuffer < 0x100000000ull) aspace_user(current->space, (uptr)a->framebuffer, (uptr)a->pitch * a->height, 2);
     return 0;
 }

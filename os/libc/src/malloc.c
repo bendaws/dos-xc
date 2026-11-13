@@ -138,9 +138,27 @@ static size_t request_size(size_t n) {
     return size < MIN_CHUNK ? MIN_CHUNK : size;
 }
 
+/* Large blocks: on 64-bit, pages mapped anywhere (no contiguous run of memory
+   needed, so they do not fragment); else, and when that fails, the arena. */
+#define PAGED_BASE 0x100000000000ull
+static void *large_block(size_t total) {
+#if defined(__x86_64__)
+    long r = dosxc_sys_memory(DOSXC_VM_MAP, 0, total, 3 | DOSXC_VM_POPULATE << 8);
+    if (r > 0) return (void *)r;
+#endif
+    return dosxc_sys_alloc(total);
+}
+static void large_free(void *block, size_t total) {
+#if defined(__x86_64__)
+    if ((uintptr_t)block >= PAGED_BASE) { dosxc_sys_memory(DOSXC_VM_UNMAP, block, total, 0); return; }
+#endif
+    (void)total;
+    dosxc_sys_release(block);
+}
+
 static void *map_large(size_t size) {
     size_t total = (size + 4095) & ~(size_t)4095;
-    chunk *c = dosxc_sys_alloc(total);
+    chunk *c = large_block(total);
     if (!c) return 0;
     c->prev_size = 0;
     c->size = total | MAPPED | INUSE | PREV_INUSE;
@@ -183,7 +201,7 @@ void free(void *p) {
     chunk *c = CHUNK(p);
     if (c->size & MAPPED) {
         total_mapped -= SIZE(c) + c->prev_size;
-        dosxc_sys_release((char *)c - c->prev_size);
+        large_free((char *)c - c->prev_size, SIZE(c) + c->prev_size);
         return;
     }
     if (!(c->size & INUSE)) {

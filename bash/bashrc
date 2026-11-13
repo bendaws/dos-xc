@@ -1,0 +1,15 @@
+# DOS-XC /bash/bashrc
+# Copyright (c) 2026 Ben Daws - see LICENSE.txt
+
+[ -n "$GNU_TOOLS" ] && case ";$PATH;" in *";$GNU_TOOLS;"*) ;; *) PATH="$GNU_TOOLS;$PATH" ;; esac
+export PATH
+[ -d "$TMPDIR" ] || mkdir -p "$TMPDIR" 2>/dev/null
+[ -n "$HOME" ] || HOME=$(cd / && pwd)
+export HOME
+SHELL=$BASH
+export SHELL
+if [ -n "$PS1" ]; then
+    PS1='\[\e[32m\]\u\[\e[0m\]:\[\e[1;34m\]\w\[\e[0m\]\$ '
+    HISTFILE=$HOME/.bash_history
+    [ -n "$GNU_TOOLS" ] && alias ls='ls --color=auto'
+fi

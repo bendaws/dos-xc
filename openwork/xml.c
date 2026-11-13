@@ -1,5 +1,5 @@
 /*
- * DOS-XC /dosoffice/xml.c
+ * DOS-XC /openwork/xml.c
  * Copyright (c) 2026 Ben Daws - see LICENSE.txt
  */
 
